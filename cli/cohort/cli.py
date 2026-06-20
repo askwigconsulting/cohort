@@ -25,6 +25,12 @@ from .install import (
     do_uninstall,
     resolve_selection,
 )
+from .improve import (
+    FeedbackError,
+    do_feedback,
+    do_propose_improvement,
+    do_submit_proposals,
+)
 from .install_model import CohortPaths
 from .logconf import emit_log
 from .project import (
@@ -668,6 +674,82 @@ def promote(
     _emit(report, json_output, lambda r: typer.echo(
         f"promote: {'(dry-run) ' if r['dry_run'] else ''}proposal staged at {r['proposal']} "
         f"(human-reviewed; no direct global write)"))
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def feedback(
+    ctx: typer.Context,
+    rating: str = typer.Option(..., "--rating", help="up | down"),
+    agent: Optional[str] = typer.Option(None, "--agent", help="Agent the feedback is about."),
+    command: Optional[str] = typer.Option(None, "--command", help="Command the feedback is about."),
+    note: str = typer.Option("", "--note", help="Free-text note."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Record one feedback entry (conflict-free file) for the Steward to learn from."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        report = do_feedback(find_repo_root(Path.cwd()), rating, agent, command, note, effective_dry_run)
+    except FeedbackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"feedback: {'(dry-run) ' if r['dry_run'] else ''}feedback/{r['file']}"))
+    raise typer.Exit(code=0)
+
+
+@app.command("propose-improvement")
+def propose_improvement(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Synthesize a structured improvement proposal from feedback + sessions (deterministic core)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        # The CLI uses the deterministic core (no enrichment seam → no LLM dependency);
+        # the real Steward enriches in-IDE.
+        report = do_propose_improvement(find_repo_root(Path.cwd()), effective_dry_run)
+    except FeedbackError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if report.get("dry_run"):
+        typer.echo(report["body"]) if not json_output else typer.echo(_json.dumps(report, indent=2))
+    else:
+        _emit(report, json_output, lambda r: typer.echo(f"propose-improvement: proposals/{r['file']}"))
+    raise typer.Exit(code=0)
+
+
+@app.command("submit-proposals")
+def submit_proposals(
+    ctx: typer.Context,
+    source: Optional[str] = typer.Option(None, "--source", help="Cohort source repo (PR target)."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Open a draft PR per proposal against the source repo (human reviews + merges)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    report = do_submit_proposals(find_repo_root(Path.cwd()), source_path, effective_dry_run)
+
+    def human(r: dict) -> None:
+        if r.get("degraded"):
+            typer.echo(
+                "note: gh/remote unavailable — proposals left as files in .cohort/proposals/ "
+                "for manual PR creation.",
+                err=True,
+            )
+        typer.echo(
+            f"submit-proposals: {'(dry-run) ' if r.get('dry_run') else ''}"
+            f"submitted {len(r['submitted'])} · skipped {len(r['skipped'])} (already submitted)"
+        )
+
+    _emit(report, json_output, human)
     raise typer.Exit(code=0)
 
 
