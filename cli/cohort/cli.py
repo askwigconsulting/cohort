@@ -35,8 +35,11 @@ from .project import (
     find_repo_root,
     staleness_check,
 )
+from .reports import do_report
+from .roster import AddAgentError, do_add_agent, prompt_add_agent_inputs
 from .schema import TreeResult, validate_tree
 from .source import SourceUnresolved, resolve_source
+from .status import do_status
 
 app = typer.Typer(
     add_completion=False,
@@ -497,6 +500,105 @@ def deinit(
 
     _emit(report, json_output, human)
     raise typer.Exit(code=0)
+
+
+@app.command("add-agent")
+def add_agent(
+    ctx: typer.Context,
+    name: Optional[str] = typer.Option(None, "--name", help="Agent slug (kebab-case)."),
+    display_name: Optional[str] = typer.Option(None, "--display-name"),
+    department: Optional[str] = typer.Option(None, "--department"),
+    topology: str = typer.Option("specialist", "--topology", help="specialist | generalist"),
+    description: Optional[str] = typer.Option(None, "--description"),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Author a new agent into the global roster, then recompile."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    if name is None:
+        inputs = prompt_add_agent_inputs()
+    else:
+        inputs = {
+            "name": name, "display_name": display_name or name,
+            "department": department or "General", "topology": topology,
+            "description": description or f"{display_name or name} advisor.",
+        }
+    try:
+        report = do_add_agent(
+            source_path, Path.home(), inputs["name"], inputs["display_name"],
+            inputs["department"], inputs["topology"], inputs["description"], effective_dry_run,
+        )
+    except AddAgentError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"add-agent: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def status(json_output: bool = typer.Option(False, "--json")) -> None:
+    """Read-only aggregate of the install (global + project)."""
+    report = do_status(Path.home(), Path.cwd())
+
+    def human(r: dict) -> None:
+        g = r["global"]
+        typer.echo(f"IDEs: {', '.join(g['ides']) or '-'}")
+        typer.echo(f"Roster: {g['roster']['count']} agents")
+        if "project" in r:
+            p = r["project"]
+            typer.echo(f"Project: {p['repo']}")
+            st = p["staleness"]
+            typer.echo(f"  staleness: {'STALE' if st['stale'] else 'fresh'} (>{st['threshold_hours']:g}h)")
+            w = p["wiring"]
+            extra = f" — run `{w['restore']}`" if "restore" in w else ""
+            typer.echo(f"  wiring: {w['state']}{extra}")
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+def _run_report(period, since, until, dry_run, json_output, ctx) -> None:
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    report = do_report(find_repo_root(Path.cwd()), period, since, until, effective_dry_run)
+    if "error" in report:
+        typer.echo(f"error: {report['error']}", err=True)
+        raise typer.Exit(code=1)
+    if dry_run or report.get("dry_run"):
+        typer.echo(report.get("body", "")) if not json_output else typer.echo(_json.dumps(report, indent=2))
+    else:
+        _emit(report, json_output, lambda r: typer.echo(f"{period}-report: .cohort/reports/{r['file']}"))
+    raise typer.Exit(code=0)
+
+
+@app.command("weekly-report")
+def weekly_report(
+    ctx: typer.Context,
+    since: Optional[str] = typer.Option(None, "--since"),
+    until: Optional[str] = typer.Option(None, "--until"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Generate a trailing-7-day report."""
+    _run_report("weekly", since, until, dry_run, json_output, ctx)
+
+
+@app.command("monthly-report")
+def monthly_report(
+    ctx: typer.Context,
+    since: Optional[str] = typer.Option(None, "--since"),
+    until: Optional[str] = typer.Option(None, "--until"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Generate a trailing-30-day report."""
+    _run_report("monthly", since, until, dry_run, json_output, ctx)
 
 
 @app.command("staleness-check", hidden=True)
