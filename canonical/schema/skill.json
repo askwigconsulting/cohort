@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cohort:skill",
+  "title": "Cohort skill frontmatter (composed with shared)",
+  "type": "object",
+  "required": [],
+  "properties": {
+    "triggers": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

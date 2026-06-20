@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cohort"
+version = "0.1.0"
+description = "A portable, multi-IDE agentic office harness — canonical artifacts compiled per IDE."
+requires-python = ">=3.10"
+dependencies = [
+    # Pin typer with an explicit click so a fresh-machine resolve is deterministic
+    # (some slim envs ship a typer without click); see Phase 9 CI.
+    "typer>=0.12,<1.0",
+    "click>=8.1,<9.0",
+    "PyYAML>=6.0",
+    "jsonschema>=4.20",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+cohort = "cohort.cli:run"
+
+[tool.setuptools.packages.find]
+where = ["cli"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

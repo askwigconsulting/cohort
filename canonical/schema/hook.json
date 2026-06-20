@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cohort:hook",
+  "title": "Cohort hook frontmatter (composed with shared)",
+  "type": "object",
+  "required": ["event", "action"],
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": [
+        "session_start",
+        "pre_write",
+        "post_write",
+        "pre_command",
+        "post_command",
+        "on_stale"
+      ]
+    },
+    "matcher": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    }
+  }
+}

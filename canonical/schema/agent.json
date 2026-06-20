@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cohort:agent",
+  "title": "Cohort agent frontmatter (composed with shared)",
+  "type": "object",
+  "required": ["department"],
+  "properties": {
+    "department": {
+      "type": "string"
+    },
+    "topology": {
+      "type": "string",
+      "enum": ["specialist", "generalist"],
+      "default": "specialist"
+    },
+    "advisory": {
+      "type": "boolean",
+      "default": true,
+      "description": "v1 safety invariant: must be true."
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": []
+    }
+  }
+}

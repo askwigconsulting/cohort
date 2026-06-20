@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cohort:context",
+  "title": "Cohort context frontmatter (composed with shared)",
+  "description": "The single project-context template. scope must be project and name must be project-context (enforced in code as E070_SCOPE_CONSTRAINT).",
+  "type": "object",
+  "required": [],
+  "properties": {}
+}

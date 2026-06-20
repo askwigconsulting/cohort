@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cohort:command",
+  "title": "Cohort command frontmatter (composed with shared)",
+  "type": "object",
+  "required": ["invocation"],
+  "properties": {
+    "invocation": {
+      "type": "string"
+    },
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "required": { "type": "boolean", "default": false },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "dry_run": {
+      "type": "boolean",
+      "default": true,
+      "description": "v1 safety invariant: must not be false."
+    }
+  }
+}
