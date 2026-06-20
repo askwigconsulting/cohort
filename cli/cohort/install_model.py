@@ -118,3 +118,11 @@ class CohortPaths:
     @property
     def canonical(self) -> Path:
         return self.cohort_home / "canonical"
+
+    @property
+    def compiled(self) -> Path:
+        return self.cohort_home / "compiled"
+
+    def compiled_ide(self, ide: str) -> Path:
+        """Staging root for one IDE's rendered artifacts."""
+        return self.compiled / ide

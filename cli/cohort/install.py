@@ -140,8 +140,17 @@ def build_global_plan(paths: CohortPaths, source: Path, mode: str) -> list[Op]:
 
 
 def adapter_ops(ides: list[str], paths: CohortPaths, source: Path, mode: str) -> list[Op]:
-    """Per-IDE ops, produced by adapters in Phase 2/7. Empty in Phase 1."""
-    return []
+    """Per-IDE ops placing each IDE's *staged* files (Phase 2).
+
+    Reads existing staging only — ``install`` never compiles. A selected IDE with
+    no staging contributes nothing (the caller surfaces a "run recompile" hint).
+    """
+    from .compile import scan_staging_ops
+
+    ops: list[Op] = []
+    for ide in ides:
+        ops += scan_staging_ops(paths, ide, mode)
+    return ops
 
 
 def _existing_global_mode(existing, paths: CohortPaths) -> Optional[str]:
@@ -178,6 +187,7 @@ class InstallReport:
     records: list[OpRecord]
     install_id: Optional[str]
     dry_run: bool
+    staging_missing: list[str] = field(default_factory=list)
 
     @property
     def summary(self) -> dict[str, int]:
@@ -195,6 +205,7 @@ class InstallReport:
             "install_id": self.install_id,
             "ops": [r.to_dict() for r in self.records],
             "summary": self.summary,
+            "staging_missing": list(self.staging_missing),
         }
 
 
@@ -267,6 +278,7 @@ def do_install(
         raise ClobberRefused(pf.clobbers)
 
     merged = merge_ides(existing.ides if existing else [], selection)
+    staging_missing = [ide for ide in selection if not paths.compiled_ide(ide).exists()]
     if dry_run:
         return InstallReport(
             mode=mode,
@@ -274,6 +286,7 @@ def do_install(
             records=_classified_to_records(pf, force),
             install_id=None,
             dry_run=True,
+            staging_missing=staging_missing,
         )
 
     if existing is not None:
@@ -292,6 +305,7 @@ def do_install(
         records=_outcomes_to_records(outcomes),
         install_id=manifest.install_id,
         dry_run=False,
+        staging_missing=staging_missing,
     )
 
 
