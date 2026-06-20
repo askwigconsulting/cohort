@@ -1,0 +1,28 @@
+name: CI
+
+# Runs once the repo is on GitHub (the standing remote dependency). Until then,
+# every job here is runnable locally: `pip install -e .`, `cohort validate
+# ./canonical`, `shellcheck installer/bootstrap.sh`, `pytest`.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: pip install -e .
+      - name: shellcheck (CI-required; locally skip-when-absent)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck installer/bootstrap.sh
+      - name: Schema lint (zero-tolerance)
+        run: cohort validate ./canonical
+      - name: Full suite + golden/parity + install-smoke + e2e + YAML-safety lint
+        run: python -m pytest -q
