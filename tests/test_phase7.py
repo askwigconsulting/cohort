@@ -77,6 +77,8 @@ def test_codex_agent_renders_as_toml():
     text = agent.content.decode()
     assert text.startswith("name = ")
     assert ".codex/agents/" in agent.staged_rel
+    # advisory enforced mechanically, not prose-only (sandbox_mode read-only)
+    assert 'sandbox_mode = "read-only"' in text
 
 
 def test_cursor_agent_advisory_readonly():

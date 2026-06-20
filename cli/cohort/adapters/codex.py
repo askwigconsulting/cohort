@@ -10,9 +10,11 @@ Verified layout (OpenAI Codex CLI, mid-2026, doc-cited):
 ``dest_root = base`` and the full subpath is encoded in each staged_rel, because
 Codex's roots aren't uniform (``.codex/`` vs ``.agents/``).
 
-‹verify› field-level items before golden-lock: the exact Codex agent tool/
-permission field for advisory read-only enforcement, and the canonical→Codex
-hook-event names. The structure below is stable; these refine the bytes.
+Advisory is enforced mechanically via ``sandbox_mode = "read-only"`` (doc-
+confirmed) — the Codex analogue of Claude's tool-strip, not prose-only.
+
+‹verify› remaining before golden-lock (byte refinements only): the canonical→
+Codex hook-event names. The structure below is stable.
 """
 
 from __future__ import annotations
@@ -60,15 +62,17 @@ def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     if ir.fields.get("topology") == "generalist":
         body = body.replace(OFFICE_DIRECTORY_MARKER, directory or "")
     instructions = f"{header}\n\n{body}"
-    # TOML literal (''' ) needs no escaping; our bodies never contain '''.
     lines = [
         f"name = {_toml_basic(ir.name)}",
         f"description = {_toml_basic(ir.description)}",
-        "# advisory: true (read-only) — ‹verify Codex tool-permission field›",
-        "developer_instructions = '''",
-        instructions,
-        "'''",
     ]
+    # Advisory is enforced mechanically, not just in prose: Codex subagents honor
+    # sandbox_mode = "read-only" (doc-confirmed), the Codex analogue of Claude's
+    # tool-strip. Every roster agent is advisory.
+    if ir.fields.get("advisory", True):
+        lines.append('sandbox_mode = "read-only"')
+    # TOML literal (''') needs no escaping; our bodies never contain '''.
+    lines += ["developer_instructions = '''", instructions, "'''"]
     return StagedFile(f".codex/agents/{ir.name}.toml", ("\n".join(lines) + "\n").encode("utf-8"))
 
 
