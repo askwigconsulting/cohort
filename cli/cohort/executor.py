@@ -77,8 +77,13 @@ def classify(
     op: Op,
     recorded_copy_hashes: dict[str, str],
     prior_merge: Optional[dict[str, Op]] = None,
+    force: bool = False,
 ) -> OpStatus:
-    """Classify one op against current filesystem state (force-agnostic)."""
+    """Classify one op against current filesystem state.
+
+    ``force`` only affects merge ops (it re-asserts a diverged/removed block or
+    entry — the restore path); clobber/copy classification stays force-agnostic.
+    """
     dest = Path(op.dest)
     if op.op == OpType.MKDIR.value:
         if dest.is_dir() and not dest.is_symlink():
@@ -104,26 +109,29 @@ def classify(
     if op.op == OpType.MERGE.value:
         # Merging into a user-owned file is never a clobber; it's satisfied only
         # when re-merging changes nothing AND reports no divergence to warn about.
-        plan = _plan_merge(op, (prior_merge or {}).get(op.dest))
+        plan = _plan_merge(op, (prior_merge or {}).get(op.dest), force)
         return OpStatus.SATISFIED if (not plan["changed"] and plan["skipped"] == 0) else OpStatus.APPLY
+    if op.op == OpType.SCAFFOLD.value:
+        # Create-if-absent: a team-owned file is never overwritten or clobbered.
+        return OpStatus.SATISFIED if dest.exists() else OpStatus.APPLY
     raise ValueError(f"unknown op type: {op.op!r}")
 
 
-def _plan_merge(op: Op, prior: Optional[Op]) -> dict:
+def _plan_merge(op: Op, prior: Optional[Op], force: bool = False) -> dict:
     """Plan a merge op against the current file + the prior recorded identity."""
     dest = Path(op.dest)
     created = not dest.exists()
     if op.strategy == "block":
         text = dest.read_text(encoding="utf-8") if dest.exists() else ""
         desired = Path(op.src).read_text(encoding="utf-8")
-        plan = merge.plan_block_merge(text, desired, prior.block_hash if prior else None)
+        plan = merge.plan_block_merge(text, desired, prior.block_hash if prior else None, force)
         plan["created"] = created
         return plan
     # json
     fragment = json.loads(Path(op.src).read_text(encoding="utf-8"))
     existing = json.loads(dest.read_text(encoding="utf-8")) if dest.exists() else {}
     new_obj, owned, skipped = merge.merge_hooks(
-        existing, fragment, prior.tags if prior else None
+        existing, fragment, prior.tags if prior else None, force
     )
     return {
         "new_obj": new_obj,
@@ -166,7 +174,7 @@ def preflight(
     classified: list[ClassifiedOp] = []
     clobbers: list[ClassifiedOp] = []
     for op in plan:
-        status = classify(op, recorded, prior_merge)
+        status = classify(op, recorded, prior_merge, force)
         c = ClassifiedOp(op=op, status=status)
         if status == OpStatus.CLOBBER and not force:
             clobbers.append(c)
@@ -207,7 +215,7 @@ def apply(
     outcomes: list[OpOutcome] = []
     for op in plan:
         if op.op == OpType.MERGE.value:
-            outcomes.append(_apply_merge(op, paths, manifest, prior_merge.get(op.dest)))
+            outcomes.append(_apply_merge(op, paths, manifest, prior_merge.get(op.dest), force))
             continue
         status = classify(op, recorded)
         if status == OpStatus.SATISFIED:
@@ -224,15 +232,16 @@ def apply(
 
 
 def _apply_merge(
-    op: Op, paths: CohortPaths, manifest: Manifest, prior: Optional[Op]
+    op: Op, paths: CohortPaths, manifest: Manifest, prior: Optional[Op], force: bool = False
 ) -> OpOutcome:
     """Apply a merge op, honoring divergence on re-merge (decision K).
 
     A canonical entry the user has edited/removed is left untouched (never
-    re-added/overwritten); the recorded op carries the identity reverse needs.
-    The per-dest merge op is *replaced* in the manifest, not appended.
+    re-added/overwritten) unless ``force`` re-asserts it; the recorded op carries
+    the identity reverse needs. The per-dest merge op is *replaced* in the
+    manifest, not appended.
     """
-    plan = _plan_merge(op, prior)
+    plan = _plan_merge(op, prior, force)
     dest = Path(op.dest)
     # `created` is sticky: if Cohort created the file at first install, that holds
     # across recompiles even though the file now exists.
@@ -243,7 +252,7 @@ def _apply_merge(
             dest.write_text(plan["new_text"], encoding="utf-8")
         recorded_op = Op(
             op=op.op, ide=op.ide, dest=op.dest, strategy="block",
-            created=created, block_hash=plan["block_hash"],
+            created=created, block_hash=plan["block_hash"], preserve=op.preserve,
         )
     else:  # json
         if plan["changed"]:
@@ -251,7 +260,7 @@ def _apply_merge(
             dest.write_text(merge.dumps_json(plan["new_obj"]), encoding="utf-8")
         recorded_op = Op(
             op=op.op, ide=op.ide, dest=op.dest, strategy="json",
-            created=created, tags=plan["tags"],
+            created=created, tags=plan["tags"], preserve=op.preserve,
         )
     # Replace any prior merge op for this dest so the manifest holds exactly one.
     manifest.ops = [o for o in manifest.ops if not (o.op == OpType.MERGE.value and o.dest == op.dest)]
@@ -289,6 +298,12 @@ def _place(op: Op, paths: CohortPaths, manifest: Manifest, recorded: dict[str, s
             shutil.copy2(src, dest)
         recorded_op = Op(op=op.op, ide=op.ide, dest=op.dest, src=op.src, tree_hash=path_hash(dest))
         recorded[op.dest] = recorded_op.tree_hash
+    elif op.op == OpType.SCAFFOLD.value:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(Path(op.src).read_bytes())
+        recorded_op = Op(
+            op=op.op, ide=op.ide, dest=op.dest, created=True, preserve=bool(op.preserve)
+        )
     else:
         raise ValueError(f"unknown op type: {op.op!r}")
     manifest.ops.append(recorded_op)
@@ -317,12 +332,24 @@ class ReverseResult:
         return sum(1 for o in self.outcomes if o.status == "dir_removed")
 
 
-def _reverse_place_ops(ops: list[Op], result: ReverseResult) -> None:
-    """Reverse non-mkdir ops LIFO, verifying Cohort ownership before removing."""
+def _reverse_place_ops(ops: list[Op], result: ReverseResult, purge: bool = False) -> None:
+    """Reverse non-mkdir ops LIFO, verifying Cohort ownership before removing.
+
+    ``preserve: true`` ops (team-owned scaffolded content) are skipped unless
+    ``purge`` — non-purge deinit never removes ``project_context.md`` etc.
+    """
     for op in reversed(ops):
         if op.op == OpType.MKDIR.value:
             continue
+        if op.preserve and not purge:
+            result.skipped += 1
+            continue
         dest = Path(op.dest)
+        if op.op == OpType.SCAFFOLD.value:
+            if dest.exists() and not dest.is_dir():
+                dest.unlink()
+                result.outcomes.append(OpOutcome(op=op, status="removed"))
+            continue
         if op.op == OpType.LINK.value:
             if _symlink_points_to(dest, op.src or ""):
                 dest.unlink()
@@ -388,11 +415,13 @@ def _restore_backup(op: Op, dest: Path, result: ReverseResult) -> None:
         result.skipped += 1
 
 
-def _reverse_created_dirs(ops: list[Op], result: ReverseResult) -> None:
+def _reverse_created_dirs(ops: list[Op], result: ReverseResult, purge: bool = False) -> None:
     """rmdir created dirs LIFO, only if empty (never remove a pre-existing dir)."""
     for op in reversed(ops):
         if op.op != OpType.MKDIR.value or not op.created:
             continue
+        if op.preserve and not purge:
+            continue  # team-owned dir (e.g. sessions/) — keep on non-purge deinit
         d = Path(op.dest)
         if d.is_dir() and not d.is_symlink() and not any(d.iterdir()):
             d.rmdir()
@@ -401,14 +430,16 @@ def _reverse_created_dirs(ops: list[Op], result: ReverseResult) -> None:
             result.skipped += 1
 
 
-def reverse_full(manifest: Manifest, paths: CohortPaths) -> ReverseResult:
+def reverse_full(manifest: Manifest, paths: CohortPaths, purge: bool = False) -> ReverseResult:
     """Reverse an entire install and tear down the non-op artifacts (A).
 
-    Order: LIFO-reverse link/copy/backup ops → delete backups/<id>/ → delete the
-    manifest file → rmdir-if-empty the recorded global mkdir dirs (state/, home).
+    Order: LIFO-reverse link/copy/backup/merge/scaffold ops → delete backups/<id>/
+    → delete the manifest → rmtree staging → rmdir-if-empty the created dirs and the
+    home. ``preserve: true`` ops are skipped unless ``purge`` (P4 deinit): non-purge
+    keeps team-owned content, so the home is not swept while content remains.
     """
     result = ReverseResult()
-    _reverse_place_ops(manifest.ops, result)
+    _reverse_place_ops(manifest.ops, result, purge)
 
     backups_dir = paths.backups / manifest.install_id
     if backups_dir.exists():
@@ -422,7 +453,7 @@ def reverse_full(manifest: Manifest, paths: CohortPaths) -> ReverseResult:
     if paths.compiled.exists():
         shutil.rmtree(paths.compiled)
 
-    _reverse_created_dirs(manifest.ops, result)
+    _reverse_created_dirs(manifest.ops, result, purge)
     # Safety sweep: compile pre-creates ~/.cohort (via the staging dir) before
     # install records its mkdir, so the home may not be a recorded created dir.
     # It is unambiguously Cohort's namespace — rmdir it (and state/) if now empty.

@@ -27,6 +27,14 @@ from .install import (
 )
 from .install_model import CohortPaths
 from .logconf import emit_log
+from .project import (
+    do_context_refresh,
+    do_deinit,
+    do_init,
+    do_snapshot,
+    find_repo_root,
+    staleness_check,
+)
 from .schema import TreeResult, validate_tree
 from .source import SourceUnresolved, resolve_source
 
@@ -338,7 +346,7 @@ def _warn_divergence(report: InstallReport) -> None:
         typer.echo(
             f"warning: left {report.diverged} user-edited merge entr"
             f"{'y' if report.diverged == 1 else 'ies'} untouched "
-            f"(divergence — edit canonical, not the compiled file).",
+            f"(divergence). Run `cohort recompile --force` to restore Cohort's entries.",
             err=True,
         )
 
@@ -371,6 +379,132 @@ def uninstall(
         typer.echo(_json.dumps(report.to_dict(), indent=2))
     else:
         _print_uninstall_human(report)
+    raise typer.Exit(code=0)
+
+
+# --- project scope (Phase 4) -----------------------------------------------
+
+context_app = typer.Typer(add_completion=False, help="Project context commands.")
+app.add_typer(context_app, name="context")
+
+
+def _emit(report: dict, json_output: bool, human) -> None:
+    if json_output:
+        typer.echo(_json.dumps(report, indent=2))
+    else:
+        human(report)
+
+
+@app.command()
+def init(
+    ctx: typer.Context,
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    force: bool = typer.Option(False, "--force", help="Restore Cohort blocks the user removed/edited."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan; change nothing."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Scaffold the project home and wire the context into Claude memory."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    report = do_init(find_repo_root(Path.cwd()), source_path, effective_dry_run, force)
+
+    def human(r: dict) -> None:
+        for op in r["ops"]:
+            typer.echo(f"{op['status']:>8}  {op['op']} {op['dest']}")
+        s = r["summary"]
+        typer.echo(f"init: applied {s['applied']} · skipped {s['skipped']}")
+
+    _emit(report, json_output, human)
+    if report.get("diverged"):
+        typer.echo(
+            "warning: a Cohort-managed block (e.g. the Claude @import wiring) was "
+            "edited or removed; left as-is. Run `cohort init --force` to restore it.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def snapshot(
+    ctx: typer.Context,
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    refresh_index: bool = typer.Option(False, "--refresh-index", help="Also regenerate the index."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Write a dated session snapshot (one unique file; conflict-free)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    report = do_snapshot(find_repo_root(Path.cwd()), effective_dry_run, refresh_index)
+    if "error" in report:
+        typer.echo(f"error: {report['error']}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"snapshot: {'(dry-run) ' if r['dry_run'] else ''}sessions/{r['file']}"))
+    raise typer.Exit(code=0)
+
+
+@context_app.command("refresh")
+def context_refresh(
+    ctx: typer.Context,
+    force: bool = typer.Option(False, "--force", help="Restore a user-removed/edited index block."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Regenerate the managed Recent-sessions index in project_context.md."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    report = do_context_refresh(find_repo_root(Path.cwd()), effective_dry_run, force)
+    if "error" in report:
+        typer.echo(f"error: {report['error']}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"context refresh: {'changed' if r.get('changed') else 'no change'}"))
+    if report.get("diverged"):
+        typer.echo(
+            "warning: the managed Recent-sessions block was edited or removed; left "
+            "as-is. Run `cohort context refresh --force` to restore it.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def deinit(
+    ctx: typer.Context,
+    purge: bool = typer.Option(False, "--purge", help="Also remove git-tracked content."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Reverse the project install (preserving team content unless --purge)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    report = do_deinit(find_repo_root(Path.cwd()), purge, effective_dry_run)
+
+    def human(r: dict) -> None:
+        if r.get("nothing"):
+            typer.echo("nothing to deinit")
+            return
+        if r["dry_run"]:
+            for op in r["ops"]:
+                typer.echo(f"{op['action']:>6}  {op['op']} {op['dest']}")
+            return
+        s = r["summary"]
+        typer.echo(
+            f"deinit{' --purge' if r['purge'] else ''}: removed {s['removed']} · "
+            f"restored {s['restored']} · preserved {s['preserved']}"
+        )
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+@app.command("staleness-check", hidden=True)
+def staleness_check_cmd() -> None:
+    """Internal: the session_start staleness hook target. Always exits 0."""
+    message = staleness_check(Path.cwd())
+    if message:
+        typer.echo(message, err=True)
     raise typer.Exit(code=0)
 
 
