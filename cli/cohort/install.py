@@ -254,7 +254,10 @@ def do_install(
     paths = CohortPaths(home)
     existing = load_manifest(paths.manifest)
     # The shared global home's mode is fixed by the first install; a later --copy
-    # applies to new per-IDE ops, never re-flips the shared canonical (S2).
+    # applies to new per-IDE ops and never re-flips the shared canonical (decision
+    # J, the natural consequence of S2: per-op type governs, mode is informational;
+    # a mode conversion is a deliberate uninstall+reinstall, not an add-IDE side
+    # effect).
     global_mode = _existing_global_mode(existing, paths) or mode
     plan = build_global_plan(paths, source, global_mode) + adapter_ops(
         selection, paths, source, mode
