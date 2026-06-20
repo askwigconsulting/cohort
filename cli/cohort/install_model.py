@@ -24,6 +24,7 @@ class OpType(str, Enum):
     LINK = "link"
     COPY = "copy"
     BACKUP = "backup"
+    MERGE = "merge"
 
 
 class OpStatus(str, Enum):
@@ -51,10 +52,14 @@ class Op:
     backup: Optional[str] = None
     created: Optional[bool] = None
     tree_hash: Optional[str] = None
+    # merge-op fidelity fields (P2-T3): how reverse verifies Cohort ownership.
+    strategy: Optional[str] = None  # "block" | "json"
+    block_hash: Optional[str] = None  # managed-block: hash of the block we wrote
+    tags: Optional[list] = None  # key-merge: [{event, entry_hash}] Cohort added
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"op": self.op, "ide": self.ide, "dest": self.dest}
-        for key in ("src", "backup", "created", "tree_hash"):
+        for key in ("src", "backup", "created", "tree_hash", "strategy", "block_hash", "tags"):
             value = getattr(self, key)
             if value is not None:
                 out[key] = value
@@ -70,6 +75,9 @@ class Op:
             backup=data.get("backup"),
             created=data.get("created"),
             tree_hash=data.get("tree_hash"),
+            strategy=data.get("strategy"),
+            block_hash=data.get("block_hash"),
+            tags=data.get("tags"),
         )
 
 
@@ -88,6 +96,7 @@ class OpOutcome:
 
     op: Op
     status: str  # applied | skipped | backup | removed | restored | dir_removed
+    diverged: int = 0  # merge entries left untouched because the user edited them
 
 
 @dataclass
@@ -118,3 +127,11 @@ class CohortPaths:
     @property
     def canonical(self) -> Path:
         return self.cohort_home / "canonical"
+
+    @property
+    def compiled(self) -> Path:
+        return self.cohort_home / "compiled"
+
+    def compiled_ide(self, ide: str) -> Path:
+        """Staging root for one IDE's rendered artifacts."""
+        return self.compiled / ide

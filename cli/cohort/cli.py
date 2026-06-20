@@ -14,6 +14,7 @@ from typing import Optional
 
 import typer
 
+from .compile import CompileError, CompileResult, compile_ide, write_staging
 from .executor import ClobberRefused
 from .install import (
     CancelledSelection,
@@ -24,6 +25,7 @@ from .install import (
     do_uninstall,
     resolve_selection,
 )
+from .install_model import CohortPaths
 from .logconf import emit_log
 from .schema import TreeResult, validate_tree
 from .source import SourceUnresolved, resolve_source
@@ -199,7 +201,146 @@ def install(
         typer.echo(_json.dumps(report.to_dict(), indent=2))
     else:
         _print_install_human(report)
+        _warn_divergence(report)
+        if report.staging_missing:
+            typer.echo(
+                f"note: no compiled artifacts for {', '.join(report.staging_missing)}; "
+                f"run `cohort recompile` to compile and place them.",
+                err=True,
+            )
     raise typer.Exit(code=0)
+
+
+# --- compile / recompile (Phase 2) -----------------------------------------
+
+
+def _print_compile_human(results: list[CompileResult]) -> None:
+    for result in results:
+        for sf in result.staged:
+            typer.echo(f"  staged  {result.ide}/{sf.staged_rel}")
+        typer.echo(f"compiled: {result.ide} · staged: {len(result.staged)}")
+
+
+def _resolve_for_compile(ide: Optional[str], source: Optional[str]):
+    """Shared selection + source resolution for compile/recompile."""
+    selection = resolve_selection(ide)
+    source_path = resolve_source(source)
+    return selection, source_path
+
+
+@app.command()
+def compile(  # noqa: A001 - matches the user-facing command name
+    ctx: typer.Context,
+    ide: Optional[str] = typer.Option(None, "--ide", help="claude (codex/cursor land in Phase 7)."),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Render to memory; write no staging."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Render canonical artifacts into staging (no install)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        selection, source_path = _resolve_for_compile(ide, source)
+    except CancelledSelection:
+        typer.echo("cancelled")
+        raise typer.Exit(code=0)
+    except (UsageError, SourceUnresolved) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+    paths = CohortPaths(Path.home())
+    start = time.perf_counter()
+    try:
+        results = [compile_ide(source_path, i) for i in selection]
+    except CompileError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if not effective_dry_run:
+        for result in results:
+            write_staging(paths, result)
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    for result in results:
+        emit_log(
+            component="compile",
+            action="compile",
+            scope="global",
+            ide=result.ide,
+            artifact=str(paths.compiled_ide(result.ide)),
+            status="dry-run" if effective_dry_run else "staged",
+            duration_ms=elapsed_ms,
+        )
+    if json_output:
+        typer.echo(_json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        _print_compile_human(results)
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def recompile(
+    ctx: typer.Context,
+    ide: Optional[str] = typer.Option(None, "--ide", help="IDEs to recompile + install."),
+    copy: bool = typer.Option(False, "--copy", help="Materialize copies instead of symlinks."),
+    force: bool = typer.Option(False, "--force", help="Back up and replace foreign files at a dest."),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Render to a temp + show the plan; write nothing."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Compile canonical → staging, then install (idempotent when unchanged)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        selection, source_path = _resolve_for_compile(ide, source)
+    except CancelledSelection:
+        typer.echo("cancelled")
+        raise typer.Exit(code=0)
+    except (UsageError, SourceUnresolved) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+    paths = CohortPaths(Path.home())
+    try:
+        results = [compile_ide(source_path, i) for i in selection]
+    except CompileError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    # dry-run recompile renders without writing staging (so install sees no new
+    # staging) and prints the plan it *would* apply.
+    if not effective_dry_run:
+        for result in results:
+            write_staging(paths, result)
+
+    mode = "copy" if copy else "link"
+    start = time.perf_counter()
+    try:
+        report = do_install(
+            home=Path.home(),
+            selection=selection,
+            mode=mode,
+            force=force,
+            source=source_path,
+            dry_run=effective_dry_run,
+        )
+    except ClobberRefused as exc:
+        typer.echo(f"error: {exc}", err=True)
+        typer.echo("re-run with --force to back up and replace them.", err=True)
+        raise typer.Exit(code=1)
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    _log_records("compile", "recompile", report.records, elapsed_ms)
+    if json_output:
+        typer.echo(_json.dumps(report.to_dict(), indent=2))
+    else:
+        _print_install_human(report)
+        _warn_divergence(report)
+    raise typer.Exit(code=0)
+
+
+def _warn_divergence(report: InstallReport) -> None:
+    if report.diverged:
+        typer.echo(
+            f"warning: left {report.diverged} user-edited merge entr"
+            f"{'y' if report.diverged == 1 else 'ies'} untouched "
+            f"(divergence — edit canonical, not the compiled file).",
+            err=True,
+        )
 
 
 @app.command()

@@ -140,8 +140,17 @@ def build_global_plan(paths: CohortPaths, source: Path, mode: str) -> list[Op]:
 
 
 def adapter_ops(ides: list[str], paths: CohortPaths, source: Path, mode: str) -> list[Op]:
-    """Per-IDE ops, produced by adapters in Phase 2/7. Empty in Phase 1."""
-    return []
+    """Per-IDE ops placing each IDE's *staged* files (Phase 2).
+
+    Reads existing staging only — ``install`` never compiles. A selected IDE with
+    no staging contributes nothing (the caller surfaces a "run recompile" hint).
+    """
+    from .compile import scan_staging_ops
+
+    ops: list[Op] = []
+    for ide in ides:
+        ops += scan_staging_ops(paths, ide, mode)
+    return ops
 
 
 def _existing_global_mode(existing, paths: CohortPaths) -> Optional[str]:
@@ -178,6 +187,8 @@ class InstallReport:
     records: list[OpRecord]
     install_id: Optional[str]
     dry_run: bool
+    staging_missing: list[str] = field(default_factory=list)
+    diverged: int = 0  # merge entries left untouched (user-edited) — skip+warn
 
     @property
     def summary(self) -> dict[str, int]:
@@ -195,6 +206,8 @@ class InstallReport:
             "install_id": self.install_id,
             "ops": [r.to_dict() for r in self.records],
             "summary": self.summary,
+            "staging_missing": list(self.staging_missing),
+            "diverged": self.diverged,
         }
 
 
@@ -267,6 +280,7 @@ def do_install(
         raise ClobberRefused(pf.clobbers)
 
     merged = merge_ides(existing.ides if existing else [], selection)
+    staging_missing = [ide for ide in selection if not paths.compiled_ide(ide).exists()]
     if dry_run:
         return InstallReport(
             mode=mode,
@@ -274,6 +288,7 @@ def do_install(
             records=_classified_to_records(pf, force),
             install_id=None,
             dry_run=True,
+            staging_missing=staging_missing,
         )
 
     if existing is not None:
@@ -292,6 +307,8 @@ def do_install(
         records=_outcomes_to_records(outcomes),
         install_id=manifest.install_id,
         dry_run=False,
+        staging_missing=staging_missing,
+        diverged=sum(o.diverged for o in outcomes),
     )
 
 
@@ -334,6 +351,8 @@ def _simulate_reverse(
             free = (not (dest.exists() or dest.is_symlink())) or dest in removed
             ok = free and Path(op.backup or "").exists()
             records.append(OpRecord(op, "restored" if ok else "skipped"))
+        elif op.op == OpType.MERGE.value:
+            records.append(OpRecord(op, "removed" if _merge_reversible(op) else "skipped"))
 
     if full:
         # Full teardown deletes these outside the op model before rmdir'ing state/.
@@ -351,6 +370,23 @@ def _simulate_reverse(
         else:
             records.append(OpRecord(op, "skipped"))
     return records
+
+
+def _merge_reversible(op: Op) -> bool:
+    """Read-only check: would a reverse of this merge op remove anything?"""
+    import json as _j
+
+    from . import merge as _m
+
+    dest = Path(op.dest)
+    if not dest.exists():
+        return False
+    if op.strategy == "block":
+        inner = _m.extract_block(dest.read_text(encoding="utf-8"))
+        return inner is not None and _m.block_hash(inner) == op.block_hash
+    existing = _j.loads(dest.read_text(encoding="utf-8"))
+    _new, removed, _skipped = _m.remove_tagged(existing, op.tags or [])
+    return removed > 0
 
 
 def do_uninstall(
