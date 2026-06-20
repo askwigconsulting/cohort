@@ -39,6 +39,13 @@ from .reports import do_report
 from .roster import AddAgentError, do_add_agent, prompt_add_agent_inputs
 from .schema import TreeResult, validate_tree
 from .source import SourceUnresolved, resolve_source
+from .specialists import (
+    AddSpecialistError,
+    PromoteError,
+    do_add_specialist,
+    do_promote,
+    prompt_add_specialist_inputs,
+)
 from .status import do_status
 
 app = typer.Typer(
@@ -554,6 +561,10 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
         if "project" in r:
             p = r["project"]
             typer.echo(f"Project: {p['repo']}")
+            specs = p.get("specialists", [])
+            typer.echo(f"  specialists: {', '.join(specs) or '-'}")
+            for s in p.get("shadowed", []):
+                typer.echo(f"    ! {s} shadows a global agent (project wins in this repo)")
             st = p["staleness"]
             typer.echo(f"  staleness: {'STALE' if st['stale'] else 'fresh'} (>{st['threshold_hours']:g}h)")
             w = p["wiring"]
@@ -599,6 +610,65 @@ def monthly_report(
 ) -> None:
     """Generate a trailing-30-day report."""
     _run_report("monthly", since, until, dry_run, json_output, ctx)
+
+
+@app.command("add-specialist")
+def add_specialist(
+    ctx: typer.Context,
+    name: Optional[str] = typer.Option(None, "--name", help="Specialist slug (kebab-case)."),
+    display_name: Optional[str] = typer.Option(None, "--display-name"),
+    department: Optional[str] = typer.Option(None, "--department"),
+    description: Optional[str] = typer.Option(None, "--description"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Add a project-isolated specialist to the current repo (requires `cohort init`)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    if name is None:
+        inputs = prompt_add_specialist_inputs()
+    else:
+        inputs = {
+            "name": name, "display_name": display_name or name,
+            "department": department or "Project",
+            "description": description or f"{display_name or name} (project specialist).",
+        }
+    try:
+        report = do_add_specialist(
+            find_repo_root(Path.cwd()), Path.home(), inputs["name"], inputs["display_name"],
+            inputs["department"], inputs["description"], effective_dry_run,
+        )
+    except AddSpecialistError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"add-specialist: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
+    if report.get("shadow"):
+        typer.echo(
+            f"warning: {report['name']} shares a name with a global roster agent; the project "
+            f"specialist takes precedence over the global one in this repo.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def promote(
+    ctx: typer.Context,
+    specialist: str = typer.Argument(..., help="The project specialist to propose for global."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Stage a proposal to promote a project specialist to the global roster (human-gated)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        report = do_promote(find_repo_root(Path.cwd()), specialist, effective_dry_run)
+    except PromoteError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"promote: {'(dry-run) ' if r['dry_run'] else ''}proposal staged at {r['proposal']} "
+        f"(human-reviewed; no direct global write)"))
+    raise typer.Exit(code=0)
 
 
 @app.command("staleness-check", hidden=True)
