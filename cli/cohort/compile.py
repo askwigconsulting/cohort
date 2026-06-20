@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .adapters.claude import MERGE_SUBDIR, ClaudeRenderer, MarkerError, StagedFile
+from .adapters.codex import CodexRenderer
+from .adapters.cursor import CursorRenderer
 from .executor import path_hash
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
@@ -21,8 +23,11 @@ from .loader import load_artifact
 from .schema import discover_artifacts, validate_frontmatter
 
 # Renderers by IDE — each is a descriptor the pipeline drives off (P7-R1).
-# Codex/Cursor renderers are added here in Phase 7-T1/T2.
-RENDERERS: dict = {"claude": ClaudeRenderer()}
+RENDERERS: dict = {
+    "claude": ClaudeRenderer(),
+    "codex": CodexRenderer(),
+    "cursor": CursorRenderer(),
+}
 
 
 class CompileError(Exception):

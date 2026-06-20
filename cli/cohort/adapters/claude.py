@@ -251,6 +251,7 @@ class ClaudeRenderer:
 
     ide = "claude"
     dest_subdir = ".claude"
+    supported_kinds = frozenset({"agent", "skill", "command", "hook", "memory"})
     merge_targets = (
         MergeTarget(IMPORT_BLOCK_REL, "CLAUDE.md", "block"),
         MergeTarget(HOOKS_FRAGMENT_REL, "settings.json", "json"),
