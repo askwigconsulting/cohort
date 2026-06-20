@@ -17,6 +17,7 @@ from typing import Any, Optional
 from .adapters.claude import MarkerError, render_agent
 from .compile import CompileResult, scan_staging_ops, write_staging
 from .executor import apply
+from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
 from .loader import load_artifact, load_artifact_text
@@ -145,17 +146,12 @@ def do_add_specialist(
 
 
 def _render_proposal(name: str, body: str) -> str:
-    fm = "\n".join(
-        [
-            "---",
-            "kind: promotion",  # unified proposals format (P8 [R7])
-            f"name: {name}",
-            "target: global",
-            f"requested_at: {now_iso()}",
-            "---",
-        ]
+    # unified proposals format (P8 [R7]); safe emitter (P9 [R-audit])
+    fm = dump_frontmatter(
+        [("kind", "promotion"), ("name", name), ("target", "global"),
+         ("requested_at", now_iso())]
     )
-    return f"{fm}\n{body.strip()}\n"
+    return f"{fm}{body.strip()}\n"
 
 
 def do_promote(repo: Path, name: str, dry_run: bool) -> dict[str, Any]:

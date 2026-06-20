@@ -26,6 +26,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths
 from .loader import load_artifact
 from .project import _short_id, _stage, _utc_compact, now_iso
@@ -58,13 +59,13 @@ def do_feedback(
     paths = _require_project(repo)
     if rating not in RATINGS:
         raise FeedbackError(f"rating must be one of {RATINGS}, got {rating!r}")
-    fm = ["---", f"rating: {rating}"]
+    pairs = [("rating", rating)]
     if agent:
-        fm.append(f"agent: {agent}")
+        pairs.append(("agent", agent))
     if command:
-        fm.append(f"command: {command}")
-    fm += [f"timestamp: {now_iso()}", "---"]
-    content = "\n".join(fm) + "\n" + (note.strip() + "\n" if note.strip() else "")
+        pairs.append(("command", command))
+    pairs.append(("timestamp", now_iso()))
+    content = dump_frontmatter(pairs) + (note.strip() + "\n" if note.strip() else "")
     filename = f"{_utc_compact()}-{_short_id()}.md"
     if dry_run:
         return {"action": "feedback", "dry_run": True, "file": filename}
@@ -127,10 +128,10 @@ def render_improvement_proposal(ev: dict, enrichment: Optional[str] = None) -> s
         f"{ev['feedback_total']} feedback entries, {ev['sessions']} sessions, "
         f"{len(ev['low_rated_agents'])} low-rated, {len(ev['friction_commands'])} friction-commands"
     )
-    fm = "\n".join(
-        ["---", "kind: improvement", f"generated_at: {now_iso()}",
-         f"evidence_summary: {evidence_summary}", "---"]
-    )
+    fm = dump_frontmatter(
+        [("kind", "improvement"), ("generated_at", now_iso()),
+         ("evidence_summary", evidence_summary)]
+    ).rstrip("\n")
     lines = [
         "# Improvement proposal",
         "",

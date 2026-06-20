@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .executor import apply, preflight, reverse_full
+from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths, Op, OpType
 from .loader import load_artifact
 from .manifest import Manifest, load_manifest, new_install_id, now_iso
@@ -96,13 +97,9 @@ def render_snapshot_entry(repo: Path) -> str:
         author = f"{author} <{email}>"
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "unknown"
     changed = _git(repo, "diff", "--stat") or _git(repo, "status", "--short") or "(no changes)"
-    fm = [
-        "---",
-        f"timestamp: {now_iso()}",
-        f"author: {author}",
-        f"branch: {branch}",
-        "---",
-    ]
+    fm = dump_frontmatter(
+        [("timestamp", now_iso()), ("author", author), ("branch", branch)]
+    ).rstrip("\n").split("\n")
     body = [
         "## Changed",
         "```",
