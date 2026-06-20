@@ -71,6 +71,14 @@ CLAUDE_MERGE_MAP = [
 
 _PRIORITY_ORDER = {"high": 0, "normal": 1, "low": 2}
 
+# A generalist's body carries this marker; the renderer replaces it with the
+# live specialist directory derived from the roster (P3-T2).
+OFFICE_DIRECTORY_MARKER = "<!-- cohort:office-directory -->"
+
+
+class MarkerError(Exception):
+    """Raised when the office-directory marker is missing/misplaced/duplicated."""
+
 
 def _norm_tool(name: str) -> Optional[str]:
     key = name.lower().replace("-", "").replace("_", "")
@@ -118,7 +126,33 @@ class StagedFile:
 # --- per-kind renderers -----------------------------------------------------
 
 
-def render_agent(ir: IRArtifact) -> StagedFile:
+def render_office_directory(specialists: list[IRArtifact]) -> str:
+    """Render the specialist directory, ordered by (department, name) codepoint."""
+    lines = []
+    for ir in sorted(specialists, key=lambda i: (i.fields.get("department", ""), i.name)):
+        label = ir.display_name or ir.name
+        lines.append(f"- **{label}** ({ir.fields.get('department', '')}) — {ir.description}")
+    return "\n".join(lines)
+
+
+def _resolve_marker(ir: IRArtifact, body: str, directory: Optional[str]) -> str:
+    """Resolve / validate the office-directory marker for this agent (P3-T2)."""
+    count = body.count(OFFICE_DIRECTORY_MARKER)
+    is_generalist = ir.fields.get("topology") == "generalist"
+    if is_generalist:
+        if count == 0:
+            raise MarkerError(f"{ir.name}: generalist is missing the office-directory marker")
+        if count > 1:
+            raise MarkerError(f"{ir.name}: multiple office-directory markers")
+        return body.replace(OFFICE_DIRECTORY_MARKER, directory or "")
+    if count:
+        raise MarkerError(
+            f"{ir.name}: office-directory marker is only allowed in a generalist agent"
+        )
+    return body
+
+
+def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     tools = ", ".join(claude_tools(ir))
     fm = _frontmatter(
         [("name", ir.name), ("description", ir.description), ("tools", tools)]
@@ -127,8 +161,8 @@ def render_agent(ir: IRArtifact) -> StagedFile:
     department = ir.fields.get("department", "")
     topology = ir.fields.get("topology", "specialist")
     header = f"> **{label}** — {department} · {topology} (advisory office agent)"
-    body = f"{header}\n\n{ir.body.strip()}"
-    return StagedFile(f"agents/{ir.name}.md", _assemble(fm, body).encode("utf-8"))
+    body = _resolve_marker(ir, ir.body.strip(), directory)
+    return StagedFile(f"agents/{ir.name}.md", _assemble(fm, f"{header}\n\n{body}").encode("utf-8"))
 
 
 def render_skill(ir: IRArtifact) -> StagedFile:
@@ -161,7 +195,6 @@ def _argument_hint(ir: IRArtifact) -> str:
 
 # kinds this renderer produces as 1:1 files (hook/memory handled by the merge layer)
 ONE_TO_ONE_RENDERERS = {
-    "agent": render_agent,
     "skill": render_skill,
     "command": render_command,
 }
@@ -219,6 +252,10 @@ class ClaudeRenderer:
     def matches(self, ir: IRArtifact) -> bool:
         return ir.targets_ide(self.ide)
 
-    def render_one_to_one(self, ir: IRArtifact) -> Optional[StagedFile]:
+    def render_one_to_one(
+        self, ir: IRArtifact, directory: Optional[str] = None
+    ) -> Optional[StagedFile]:
+        if ir.kind == "agent":
+            return render_agent(ir, directory)
         fn = ONE_TO_ONE_RENDERERS.get(ir.kind)
         return fn(ir) if fn is not None else None
