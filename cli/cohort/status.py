@@ -66,9 +66,11 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
         wiring = _wiring_state(repo)
         if wiring["state"] != "present":
             wiring["restore"] = RESTORE_HINT
+        global_names = set(roster)
         result["project"] = {
             "repo": str(repo),
             "specialists": specialists,
+            "shadowed": [s for s in specialists if s in global_names],  # mask a global agent (R4)
             "staleness": staleness,
             "wiring": wiring,
         }
