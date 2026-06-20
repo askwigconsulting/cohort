@@ -73,7 +73,11 @@ def _symlink_points_to(dest: Path, src: str) -> bool:
 # --- Classification (preflight) --------------------------------------------
 
 
-def classify(op: Op, recorded_copy_hashes: dict[str, str]) -> OpStatus:
+def classify(
+    op: Op,
+    recorded_copy_hashes: dict[str, str],
+    prior_merge: Optional[dict[str, Op]] = None,
+) -> OpStatus:
     """Classify one op against current filesystem state (force-agnostic)."""
     dest = Path(op.dest)
     if op.op == OpType.MKDIR.value:
@@ -99,22 +103,35 @@ def classify(op: Op, recorded_copy_hashes: dict[str, str]) -> OpStatus:
         return OpStatus.CLOBBER
     if op.op == OpType.MERGE.value:
         # Merging into a user-owned file is never a clobber; it's satisfied only
-        # when re-merging would change nothing.
-        return OpStatus.SATISFIED if _merge_is_noop(op) else OpStatus.APPLY
+        # when re-merging changes nothing AND reports no divergence to warn about.
+        plan = _plan_merge(op, (prior_merge or {}).get(op.dest))
+        return OpStatus.SATISFIED if (not plan["changed"] and plan["skipped"] == 0) else OpStatus.APPLY
     raise ValueError(f"unknown op type: {op.op!r}")
 
 
-def _merge_is_noop(op: Op) -> bool:
+def _plan_merge(op: Op, prior: Optional[Op]) -> dict:
+    """Plan a merge op against the current file + the prior recorded identity."""
     dest = Path(op.dest)
+    created = not dest.exists()
     if op.strategy == "block":
         text = dest.read_text(encoding="utf-8") if dest.exists() else ""
-        inner = Path(op.src).read_text(encoding="utf-8")
-        return dest.exists() and merge.upsert_block(text, inner) == text
+        desired = Path(op.src).read_text(encoding="utf-8")
+        plan = merge.plan_block_merge(text, desired, prior.block_hash if prior else None)
+        plan["created"] = created
+        return plan
     # json
     fragment = json.loads(Path(op.src).read_text(encoding="utf-8"))
     existing = json.loads(dest.read_text(encoding="utf-8")) if dest.exists() else {}
-    new_obj, _added = merge.merge_hooks(existing, fragment)
-    return dest.exists() and new_obj == existing
+    new_obj, owned, skipped = merge.merge_hooks(
+        existing, fragment, prior.tags if prior else None
+    )
+    return {
+        "new_obj": new_obj,
+        "changed": new_obj != existing,
+        "skipped": skipped,
+        "tags": owned,
+        "created": created,
+    }
 
 
 def _recorded_copy_hashes(manifest: Optional[Manifest]) -> dict[str, str]:
@@ -125,6 +142,13 @@ def _recorded_copy_hashes(manifest: Optional[Manifest]) -> dict[str, str]:
         for o in manifest.ops
         if o.op == OpType.COPY.value and o.tree_hash is not None
     }
+
+
+def _prior_merge_ops(manifest: Optional[Manifest]) -> dict[str, Op]:
+    """The merge op previously recorded per dest (its tags / block_hash)."""
+    if manifest is None:
+        return {}
+    return {o.dest: o for o in manifest.ops if o.op == OpType.MERGE.value}
 
 
 @dataclass
@@ -138,10 +162,11 @@ def preflight(
 ) -> Preflight:
     """Read-only classification of an entire plan. No filesystem mutation."""
     recorded = _recorded_copy_hashes(manifest)
+    prior_merge = _prior_merge_ops(manifest)
     classified: list[ClassifiedOp] = []
     clobbers: list[ClassifiedOp] = []
     for op in plan:
-        status = classify(op, recorded)
+        status = classify(op, recorded, prior_merge)
         c = ClassifiedOp(op=op, status=status)
         if status == OpStatus.CLOBBER and not force:
             clobbers.append(c)
@@ -178,16 +203,17 @@ def apply(
     manifest written so far remains valid for a subsequent uninstall.
     """
     recorded = _recorded_copy_hashes(manifest)
+    prior_merge = _prior_merge_ops(manifest)  # snapshot before we mutate the manifest
     outcomes: list[OpOutcome] = []
     for op in plan:
+        if op.op == OpType.MERGE.value:
+            outcomes.append(_apply_merge(op, paths, manifest, prior_merge.get(op.dest)))
+            continue
         status = classify(op, recorded)
         if status == OpStatus.SATISFIED:
             outcomes.append(OpOutcome(op=op, status="skipped"))
             continue
         dest = Path(op.dest)
-        if op.op == OpType.MERGE.value:
-            outcomes.append(_apply_merge(op, paths, manifest))
-            continue
         if status == OpStatus.CLOBBER:
             if not force:
                 raise ClobberRefused([ClassifiedOp(op=op, status=status)])
@@ -197,30 +223,42 @@ def apply(
     return outcomes
 
 
-def _apply_merge(op: Op, paths: CohortPaths, manifest: Manifest) -> OpOutcome:
+def _apply_merge(
+    op: Op, paths: CohortPaths, manifest: Manifest, prior: Optional[Op]
+) -> OpOutcome:
+    """Apply a merge op, honoring divergence on re-merge (decision K).
+
+    A canonical entry the user has edited/removed is left untouched (never
+    re-added/overwritten); the recorded op carries the identity reverse needs.
+    The per-dest merge op is *replaced* in the manifest, not appended.
+    """
+    plan = _plan_merge(op, prior)
     dest = Path(op.dest)
-    created = not dest.exists()
+    # `created` is sticky: if Cohort created the file at first install, that holds
+    # across recompiles even though the file now exists.
+    created = prior.created if prior is not None else plan["created"]
     if op.strategy == "block":
-        text = dest.read_text(encoding="utf-8") if dest.exists() else ""
-        inner = Path(op.src).read_text(encoding="utf-8")
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(merge.upsert_block(text, inner), encoding="utf-8")
+        if plan["changed"]:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(plan["new_text"], encoding="utf-8")
         recorded_op = Op(
             op=op.op, ide=op.ide, dest=op.dest, strategy="block",
-            created=created, block_hash=merge.block_hash(inner),
+            created=created, block_hash=plan["block_hash"],
         )
     else:  # json
-        fragment = json.loads(Path(op.src).read_text(encoding="utf-8"))
-        existing = json.loads(dest.read_text(encoding="utf-8")) if dest.exists() else {}
-        new_obj, added = merge.merge_hooks(existing, fragment)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(merge.dumps_json(new_obj), encoding="utf-8")
+        if plan["changed"]:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(merge.dumps_json(plan["new_obj"]), encoding="utf-8")
         recorded_op = Op(
-            op=op.op, ide=op.ide, dest=op.dest, strategy="json", created=created, tags=added
+            op=op.op, ide=op.ide, dest=op.dest, strategy="json",
+            created=created, tags=plan["tags"],
         )
+    # Replace any prior merge op for this dest so the manifest holds exactly one.
+    manifest.ops = [o for o in manifest.ops if not (o.op == OpType.MERGE.value and o.dest == op.dest)]
     manifest.ops.append(recorded_op)
     manifest.persist(paths.manifest)
-    return OpOutcome(op=recorded_op, status="applied")
+    status = "applied" if plan["changed"] else "skipped"
+    return OpOutcome(op=recorded_op, status=status, diverged=plan["skipped"])
 
 
 def _inject_backup(op: Op, paths: CohortPaths, manifest: Manifest, dest: Path) -> Op:

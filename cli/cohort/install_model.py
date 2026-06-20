@@ -96,6 +96,7 @@ class OpOutcome:
 
     op: Op
     status: str  # applied | skipped | backup | removed | restored | dir_removed
+    diverged: int = 0  # merge entries left untouched because the user edited them
 
 
 @dataclass

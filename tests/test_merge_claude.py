@@ -86,18 +86,43 @@ def test_block_insert_into_empty_creates_just_block():
 def test_json_merge_appends_and_preserves_user_keys():
     existing = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": []}]}, "theme": "dark"}
     fragment = {"hooks": {"PreToolUse": [{"matcher": "Write", "hooks": []}]}}
-    new, added = merge.merge_hooks(existing, fragment)
+    new, owned, skipped = merge.merge_hooks(existing, fragment)
     assert new["theme"] == "dark"
     assert len(new["hooks"]["PreToolUse"]) == 2  # appended, not replaced
-    assert len(added) == 1
+    assert len(owned) == 1 and skipped == 0
 
 
 def test_json_merge_is_idempotent():
-    existing = {"hooks": {"SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "x"}]}]}}
-    fragment = {"hooks": {"SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "x"}]}]}}
-    new, added = merge.merge_hooks(existing, fragment)
-    assert new == existing
-    assert added == []
+    entry = {"matcher": "", "hooks": [{"type": "command", "command": "x"}]}
+    existing = {"hooks": {"SessionStart": [entry]}}
+    new, owned, skipped = merge.merge_hooks(existing, {"hooks": {"SessionStart": [entry]}})
+    assert new == existing  # no duplication
+    assert skipped == 0 and len(owned) == 1
+
+
+def test_json_remerge_after_user_edit_skips_not_duplicates():
+    # Cohort placed an entry; the user edited it; re-merge must NOT re-add it.
+    placed = {"matcher": "", "hooks": [{"type": "command", "command": "cohort"}]}
+    prior_tags = [{"event": "SessionStart", "entry_hash": merge.entry_hash(placed)}]
+    edited = {"matcher": "", "hooks": [{"type": "command", "command": "USER EDIT"}]}
+    existing = {"hooks": {"SessionStart": [edited]}}
+    fragment = {"hooks": {"SessionStart": [placed]}}
+    new, _owned, skipped = merge.merge_hooks(existing, fragment, prior_tags)
+    assert len(new["hooks"]["SessionStart"]) == 1  # no duplicate
+    assert new["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "USER EDIT"
+    assert skipped == 1
+
+
+def test_json_remerge_updates_changed_canonical_entry():
+    old = {"matcher": "", "hooks": [{"type": "command", "command": "v1"}]}
+    new_entry = {"matcher": "", "hooks": [{"type": "command", "command": "v2"}]}
+    prior_tags = [{"event": "SessionStart", "entry_hash": merge.entry_hash(old)}]
+    existing = {"hooks": {"SessionStart": [old]}}  # our prior entry, untouched
+    fragment = {"hooks": {"SessionStart": [new_entry]}}  # canonical changed
+    new, _owned, skipped = merge.merge_hooks(existing, fragment, prior_tags)
+    assert len(new["hooks"]["SessionStart"]) == 1  # replaced, not duplicated
+    assert new["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "v2"
+    assert skipped == 0
 
 
 def test_json_remove_tagged_skips_altered_entry():
@@ -198,6 +223,35 @@ def test_user_divergence_inside_block_is_skipped(home_with_user_files):
     assert proc.returncode == 0
     # block preserved (their edit not destroyed)
     assert "MINE" in claude_md.read_text()
+
+
+def test_recompile_after_user_edit_does_not_duplicate(home_with_user_files):
+    """Re-merge honors divergence: a user-edited Cohort entry is not re-added."""
+    recompile(home_with_user_files)
+    settings_path = home_with_user_files / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text())
+    assert len(settings["hooks"]["SessionStart"]) == 1
+    # user edits Cohort's SessionStart entry
+    settings["hooks"]["SessionStart"][0]["hooks"][0]["command"] = "EDITED BY USER"
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
+
+    proc = recompile(home_with_user_files)
+    assert proc.returncode == 0
+    after = json.loads(settings_path.read_text())
+    # no duplicate accumulated; the user's edit stands
+    assert len(after["hooks"]["SessionStart"]) == 1
+    assert after["hooks"]["SessionStart"][0]["hooks"][0]["command"] == "EDITED BY USER"
+
+
+def test_recompile_after_block_edit_does_not_overwrite(home_with_user_files):
+    recompile(home_with_user_files)
+    claude_md = home_with_user_files / ".claude" / "CLAUDE.md"
+    edited = claude_md.read_text().replace(
+        "@cohort/CLAUDE.cohort.md", "@cohort/CLAUDE.cohort.md\nHAND EDIT"
+    )
+    claude_md.write_text(edited, encoding="utf-8")
+    assert recompile(home_with_user_files).returncode == 0
+    assert "HAND EDIT" in claude_md.read_text()  # user edit inside block preserved
 
 
 def test_user_divergence_in_settings_entry_is_skipped(home_with_user_files):

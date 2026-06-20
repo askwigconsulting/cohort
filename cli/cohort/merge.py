@@ -72,28 +72,91 @@ def entry_hash(entry: Any) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def merge_hooks(existing: dict, fragment: dict) -> tuple[dict, list[dict]]:
-    """Append Cohort's hook entries into ``existing`` settings.
+def merge_hooks(
+    existing: dict, fragment: dict, prior_tags: Optional[list[dict]] = None
+) -> tuple[dict, list[dict], int]:
+    """Merge Cohort's hook entries into ``existing`` settings (re-merge safe).
 
-    ``fragment`` is ``{"hooks": {<Event>: [entry, ...]}}``. Returns the new
-    settings object and the tags (``[{event, entry_hash}]``) Cohort added.
-    Entries already present (by hash) are not re-added (idempotent). User keys
-    and entries are preserved; Cohort only appends.
+    ``fragment`` is ``{"hooks": {<Event>: [entry, ...]}}``. ``prior_tags`` are the
+    ``[{event, entry_hash}]`` Cohort recorded last time, which let re-merge tell
+    *our* entries from the user's by content hash (decision K — no in-file
+    marker). Returns ``(new_settings, owned_tags, skipped)`` where:
+
+    - **owned_tags** are every Cohort entry currently in the file (for reverse).
+    - **skipped** counts canonical entries we declined to re-add because the user
+      edited or removed the entry we had placed there (divergence → never
+      duplicate, never overwrite the user's version).
+
+    Idempotent: re-merging an unchanged roster yields ``new == existing``.
     """
+    prior_tags = prior_tags or []
+    prior_by_event: dict[str, set] = {}
+    for t in prior_tags:
+        prior_by_event.setdefault(t["event"], set()).add(t["entry_hash"])
+
     new = copy.deepcopy(existing)
     hooks = new.setdefault("hooks", {})
-    added: list[dict] = []
-    for event, entries in fragment.get("hooks", {}).items():
+    owned: list[dict] = []
+    skipped = 0
+    for event, canon_entries in fragment.get("hooks", {}).items():
         arr = hooks.setdefault(event, [])
-        present = {entry_hash(e) for e in arr}
-        for entry in entries:
-            h = entry_hash(entry)
-            if h in present:
+        prior_set = prior_by_event.get(event, set())
+        canon_hashes = [entry_hash(e) for e in canon_entries]
+        canon_set = set(canon_hashes)
+        existing_set = {entry_hash(e) for e in arr}
+
+        # 1. Drop our prior entries that canonical no longer includes (order kept).
+        kept = [e for e in arr if not (entry_hash(e) in prior_set and entry_hash(e) not in canon_set)]
+        kept_set = {entry_hash(e) for e in kept}
+
+        # 2. Prior entries no longer present unchanged → user edited/removed them.
+        diverged = {h for h in prior_set if h not in existing_set}
+
+        # 3. Add canonical entries not already present; suppress diverged ones.
+        for entry, h in zip(canon_entries, canon_hashes):
+            if h in kept_set:
+                owned.append({"event": event, "entry_hash": h})
                 continue
-            arr.append(copy.deepcopy(entry))
-            present.add(h)
-            added.append({"event": event, "entry_hash": h})
-    return new, added
+            if h in diverged:
+                skipped += 1  # the user took over this entry → don't re-add
+                continue
+            kept.append(copy.deepcopy(entry))
+            kept_set.add(h)
+            owned.append({"event": event, "entry_hash": h})
+        hooks[event] = kept
+
+    for event in list(hooks.keys()):
+        if not hooks[event]:
+            del hooks[event]
+    if "hooks" in new and not new["hooks"]:
+        del new["hooks"]
+    return new, owned, skipped
+
+
+def plan_block_merge(
+    text: str, desired_inner: str, prior_block_hash: Optional[str]
+) -> dict:
+    """Plan a managed-block merge (re-merge safe).
+
+    Returns ``{new_text, changed, skipped, block_hash}``. A block whose content
+    no longer matches what Cohort recorded — and isn't already the desired
+    content — is treated as a user edit: left untouched (``skipped=1``), never
+    overwritten. A block that matches the prior hash (or has no prior, i.e. our
+    delimited namespace) is updated to the desired content.
+    """
+    desired_hash = block_hash(desired_inner)
+    current = extract_block(text)
+    if current is None:
+        return {"new_text": upsert_block(text, desired_inner), "changed": True,
+                "skipped": 0, "block_hash": desired_hash}
+    current_hash = block_hash(current)
+    if current_hash == desired_hash:
+        return {"new_text": text, "changed": False, "skipped": 0, "block_hash": desired_hash}
+    if prior_block_hash is None or current_hash == prior_block_hash:
+        return {"new_text": upsert_block(text, desired_inner), "changed": True,
+                "skipped": 0, "block_hash": desired_hash}
+    # divergence: user edited inside our block → leave it, keep the prior identity
+    return {"new_text": text, "changed": False, "skipped": 1, "block_hash": prior_block_hash}
 
 
 def remove_tagged(existing: dict, tags: list[dict]) -> tuple[dict, int, int]:

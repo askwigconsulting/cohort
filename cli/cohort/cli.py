@@ -201,6 +201,7 @@ def install(
         typer.echo(_json.dumps(report.to_dict(), indent=2))
     else:
         _print_install_human(report)
+        _warn_divergence(report)
         if report.staging_missing:
             typer.echo(
                 f"note: no compiled artifacts for {', '.join(report.staging_missing)}; "
@@ -328,7 +329,18 @@ def recompile(
         typer.echo(_json.dumps(report.to_dict(), indent=2))
     else:
         _print_install_human(report)
+        _warn_divergence(report)
     raise typer.Exit(code=0)
+
+
+def _warn_divergence(report: InstallReport) -> None:
+    if report.diverged:
+        typer.echo(
+            f"warning: left {report.diverged} user-edited merge entr"
+            f"{'y' if report.diverged == 1 else 'ies'} untouched "
+            f"(divergence — edit canonical, not the compiled file).",
+            err=True,
+        )
 
 
 @app.command()

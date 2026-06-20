@@ -188,6 +188,7 @@ class InstallReport:
     install_id: Optional[str]
     dry_run: bool
     staging_missing: list[str] = field(default_factory=list)
+    diverged: int = 0  # merge entries left untouched (user-edited) — skip+warn
 
     @property
     def summary(self) -> dict[str, int]:
@@ -206,6 +207,7 @@ class InstallReport:
             "ops": [r.to_dict() for r in self.records],
             "summary": self.summary,
             "staging_missing": list(self.staging_missing),
+            "diverged": self.diverged,
         }
 
 
@@ -306,6 +308,7 @@ def do_install(
         install_id=manifest.install_id,
         dry_run=False,
         staging_missing=staging_missing,
+        diverged=sum(o.diverged for o in outcomes),
     )
 
 
