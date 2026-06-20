@@ -25,6 +25,7 @@ class OpType(str, Enum):
     COPY = "copy"
     BACKUP = "backup"
     MERGE = "merge"
+    SCAFFOLD = "scaffold"  # create a team-owned file from a template, only if absent
 
 
 class OpStatus(str, Enum):
@@ -56,10 +57,12 @@ class Op:
     strategy: Optional[str] = None  # "block" | "json"
     block_hash: Optional[str] = None  # managed-block: hash of the block we wrote
     tags: Optional[list] = None  # key-merge: [{event, entry_hash}] Cohort added
+    # scaffold/team-owned content (P4): reverse keeps preserve=True ops unless --purge.
+    preserve: Optional[bool] = None
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"op": self.op, "ide": self.ide, "dest": self.dest}
-        for key in ("src", "backup", "created", "tree_hash", "strategy", "block_hash", "tags"):
+        for key in ("src", "backup", "created", "tree_hash", "strategy", "block_hash", "tags", "preserve"):
             value = getattr(self, key)
             if value is not None:
                 out[key] = value
@@ -78,6 +81,7 @@ class Op:
             strategy=data.get("strategy"),
             block_hash=data.get("block_hash"),
             tags=data.get("tags"),
+            preserve=data.get("preserve"),
         )
 
 
@@ -101,12 +105,27 @@ class OpOutcome:
 
 @dataclass
 class CohortPaths:
-    """Resolves the well-known Cohort paths under an injected home directory.
+    """Resolves the well-known Cohort paths under a base directory.
 
-    The home is injectable so the whole engine is testable against a temp ``$HOME``.
+    ``base`` is ``$HOME`` for the global install (``~/.cohort``) and the repo root
+    for a project install (``<repo>/.cohort``) — the parameterized base (P4 [B])
+    that lets the same executor machinery run at either scope. The field is named
+    ``home`` for back-compat with the global call sites.
     """
 
     home: Path
+
+    @classmethod
+    def for_global(cls, home: Path) -> "CohortPaths":
+        return cls(home=home)
+
+    @classmethod
+    def for_project(cls, repo: Path) -> "CohortPaths":
+        return cls(home=repo)
+
+    @property
+    def base(self) -> Path:
+        return self.home
 
     @property
     def cohort_home(self) -> Path:

@@ -147,6 +147,11 @@ def plan_block_merge(
     desired_hash = block_hash(desired_inner)
     current = extract_block(text)
     if current is None:
+        # No block. Insert on first install; but if we recorded one before, the
+        # user deleted it — treat removal as divergence (don't silently re-add),
+        # consistent with the hook key-merge.
+        if prior_block_hash is not None:
+            return {"new_text": text, "changed": False, "skipped": 1, "block_hash": prior_block_hash}
         return {"new_text": upsert_block(text, desired_inner), "changed": True,
                 "skipped": 0, "block_hash": desired_hash}
     current_hash = block_hash(current)
