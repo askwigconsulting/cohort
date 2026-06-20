@@ -75,22 +75,36 @@ def compile_ide(source: Path, ide: str) -> CompileResult:
     result = CompileResult(ide=ide)
     if renderer is None:
         return result  # no renderer yet (codex/cursor → Phase 7)
+    matched = []
+    for ir in _load_irs(source):
+        if renderer.matches(ir):
+            matched.append(ir)
+        else:
+            result.skipped.append(ir.name)
+
+    # Roster pass: derive the generalist's office directory from the specialist
+    # agents once, so the marker injection isn't a per-agent hack (P3-T2 / C).
+    specialists = [
+        ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
+    ]
+    directory = claude_adapter.render_office_directory(specialists)
+
     hook_irs = []
     memory_irs = []
-    for ir in _load_irs(source):
-        if not renderer.matches(ir):
-            result.skipped.append(ir.name)
-            continue
-        if ir.kind == "hook":
-            hook_irs.append(ir)
-        elif ir.kind == "memory":
-            memory_irs.append(ir)
-        elif ir.kind == "context":
-            result.skipped.append(ir.name)  # deferred to Phase 4
-        else:
-            staged = renderer.render_one_to_one(ir)
-            if staged is not None:
-                result.staged.append(staged)
+    try:
+        for ir in matched:
+            if ir.kind == "hook":
+                hook_irs.append(ir)
+            elif ir.kind == "memory":
+                memory_irs.append(ir)
+            elif ir.kind == "context":
+                result.skipped.append(ir.name)  # deferred to Phase 4
+            else:
+                staged = renderer.render_one_to_one(ir, directory)
+                if staged is not None:
+                    result.staged.append(staged)
+    except claude_adapter.MarkerError as exc:
+        raise CompileError(str(exc)) from exc
     if ide == "claude":
         _stage_claude_aggregates(result, hook_irs, memory_irs)
     return result
