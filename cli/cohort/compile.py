@@ -14,7 +14,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from .adapters.claude import ClaudeRenderer, StagedFile
+import json
+
+from .adapters import claude as claude_adapter
+from .adapters.claude import (
+    CLAUDE_MERGE_MAP,
+    CORPUS_REL,
+    HOOKS_FRAGMENT_REL,
+    IMPORT_BLOCK_REL,
+    IMPORT_LINE,
+    MERGE_SUBDIR,
+    ClaudeRenderer,
+    StagedFile,
+)
 from .executor import path_hash
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
@@ -23,9 +35,6 @@ from .schema import discover_artifacts, validate_frontmatter
 
 # Renderers by IDE. Codex/Cursor land in Phase 7.
 RENDERERS = {"claude": ClaudeRenderer()}
-
-# Staging files under this subdir are merge payloads, not 1:1 mirror files.
-MERGE_SUBDIR = ".merge"
 
 
 class CompileError(Exception):
@@ -66,15 +75,39 @@ def compile_ide(source: Path, ide: str) -> CompileResult:
     result = CompileResult(ide=ide)
     if renderer is None:
         return result  # no renderer yet (codex/cursor → Phase 7)
+    hook_irs = []
+    memory_irs = []
     for ir in _load_irs(source):
         if not renderer.matches(ir):
             result.skipped.append(ir.name)
             continue
-        staged = renderer.render_one_to_one(ir)
-        if staged is not None:
-            result.staged.append(staged)
-        # hook/memory/context handled by the merge layer (T3) / deferred (Phase 4)
+        if ir.kind == "hook":
+            hook_irs.append(ir)
+        elif ir.kind == "memory":
+            memory_irs.append(ir)
+        elif ir.kind == "context":
+            result.skipped.append(ir.name)  # deferred to Phase 4
+        else:
+            staged = renderer.render_one_to_one(ir)
+            if staged is not None:
+                result.staged.append(staged)
+    if ide == "claude":
+        _stage_claude_aggregates(result, hook_irs, memory_irs)
     return result
+
+
+def _stage_claude_aggregates(result, hook_irs, memory_irs) -> None:
+    """Stage the corpus (1:1) + the merge payloads (.merge) for aggregating kinds."""
+    if memory_irs:
+        corpus = claude_adapter.render_memory_corpus(memory_irs)
+        result.staged.append(StagedFile(CORPUS_REL, corpus.encode("utf-8")))
+        result.staged.append(
+            StagedFile(IMPORT_BLOCK_REL, (IMPORT_LINE + "\n").encode("utf-8"))
+        )
+    if hook_irs:
+        fragment = claude_adapter.render_hooks_fragment(hook_irs)
+        payload = json.dumps(fragment, indent=2) + "\n"
+        result.staged.append(StagedFile(HOOKS_FRAGMENT_REL, payload.encode("utf-8")))
 
 
 def write_staging(paths: CohortPaths, result: CompileResult) -> None:
@@ -133,4 +166,23 @@ def scan_staging_ops(paths: CohortPaths, ide: str, mode: str) -> list[Op]:
     mkdir_ops = [
         Op(OpType.MKDIR.value, ide, str(d)) for d in sorted(dirs, key=lambda p: len(p.parts))
     ]
-    return mkdir_ops + file_ops
+    merge_ops = _claude_merge_ops(staging, dest_root, ide) if ide == "claude" else []
+    return mkdir_ops + file_ops + merge_ops
+
+
+def _claude_merge_ops(staging: Path, dest_root: Path, ide: str) -> list[Op]:
+    """Merge ops for staged .merge payloads (hook→settings.json, memory→CLAUDE.md)."""
+    ops: list[Op] = []
+    for rel, dest_name, strategy in CLAUDE_MERGE_MAP:
+        payload = staging / rel
+        if payload.exists():
+            ops.append(
+                Op(
+                    OpType.MERGE.value,
+                    ide,
+                    str(dest_root / dest_name),
+                    src=str(payload),
+                    strategy=strategy,
+                )
+            )
+    return ops

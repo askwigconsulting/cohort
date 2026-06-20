@@ -348,6 +348,8 @@ def _simulate_reverse(
             free = (not (dest.exists() or dest.is_symlink())) or dest in removed
             ok = free and Path(op.backup or "").exists()
             records.append(OpRecord(op, "restored" if ok else "skipped"))
+        elif op.op == OpType.MERGE.value:
+            records.append(OpRecord(op, "removed" if _merge_reversible(op) else "skipped"))
 
     if full:
         # Full teardown deletes these outside the op model before rmdir'ing state/.
@@ -365,6 +367,23 @@ def _simulate_reverse(
         else:
             records.append(OpRecord(op, "skipped"))
     return records
+
+
+def _merge_reversible(op: Op) -> bool:
+    """Read-only check: would a reverse of this merge op remove anything?"""
+    import json as _j
+
+    from . import merge as _m
+
+    dest = Path(op.dest)
+    if not dest.exists():
+        return False
+    if op.strategy == "block":
+        inner = _m.extract_block(dest.read_text(encoding="utf-8"))
+        return inner is not None and _m.block_hash(inner) == op.block_hash
+    existing = _j.loads(dest.read_text(encoding="utf-8"))
+    _new, removed, _skipped = _m.remove_tagged(existing, op.tags or [])
+    return removed > 0
 
 
 def do_uninstall(

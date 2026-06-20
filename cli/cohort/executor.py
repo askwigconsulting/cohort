@@ -14,12 +14,14 @@ Guarantees:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from . import merge
 from .install_model import (
     ClassifiedOp,
     CohortPaths,
@@ -95,7 +97,24 @@ def classify(op: Op, recorded_copy_hashes: dict[str, str]) -> OpStatus:
         if recorded is not None and not dest.is_symlink() and path_hash(dest) == recorded:
             return OpStatus.APPLY  # our stale copy → overwrite, no backup
         return OpStatus.CLOBBER
+    if op.op == OpType.MERGE.value:
+        # Merging into a user-owned file is never a clobber; it's satisfied only
+        # when re-merging would change nothing.
+        return OpStatus.SATISFIED if _merge_is_noop(op) else OpStatus.APPLY
     raise ValueError(f"unknown op type: {op.op!r}")
+
+
+def _merge_is_noop(op: Op) -> bool:
+    dest = Path(op.dest)
+    if op.strategy == "block":
+        text = dest.read_text(encoding="utf-8") if dest.exists() else ""
+        inner = Path(op.src).read_text(encoding="utf-8")
+        return dest.exists() and merge.upsert_block(text, inner) == text
+    # json
+    fragment = json.loads(Path(op.src).read_text(encoding="utf-8"))
+    existing = json.loads(dest.read_text(encoding="utf-8")) if dest.exists() else {}
+    new_obj, _added = merge.merge_hooks(existing, fragment)
+    return dest.exists() and new_obj == existing
 
 
 def _recorded_copy_hashes(manifest: Optional[Manifest]) -> dict[str, str]:
@@ -166,6 +185,9 @@ def apply(
             outcomes.append(OpOutcome(op=op, status="skipped"))
             continue
         dest = Path(op.dest)
+        if op.op == OpType.MERGE.value:
+            outcomes.append(_apply_merge(op, paths, manifest))
+            continue
         if status == OpStatus.CLOBBER:
             if not force:
                 raise ClobberRefused([ClassifiedOp(op=op, status=status)])
@@ -173,6 +195,32 @@ def apply(
             outcomes.append(OpOutcome(op=backup_op, status="backup"))
         outcomes.append(_place(op, paths, manifest, recorded))
     return outcomes
+
+
+def _apply_merge(op: Op, paths: CohortPaths, manifest: Manifest) -> OpOutcome:
+    dest = Path(op.dest)
+    created = not dest.exists()
+    if op.strategy == "block":
+        text = dest.read_text(encoding="utf-8") if dest.exists() else ""
+        inner = Path(op.src).read_text(encoding="utf-8")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(merge.upsert_block(text, inner), encoding="utf-8")
+        recorded_op = Op(
+            op=op.op, ide=op.ide, dest=op.dest, strategy="block",
+            created=created, block_hash=merge.block_hash(inner),
+        )
+    else:  # json
+        fragment = json.loads(Path(op.src).read_text(encoding="utf-8"))
+        existing = json.loads(dest.read_text(encoding="utf-8")) if dest.exists() else {}
+        new_obj, added = merge.merge_hooks(existing, fragment)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(merge.dumps_json(new_obj), encoding="utf-8")
+        recorded_op = Op(
+            op=op.op, ide=op.ide, dest=op.dest, strategy="json", created=created, tags=added
+        )
+    manifest.ops.append(recorded_op)
+    manifest.persist(paths.manifest)
+    return OpOutcome(op=recorded_op, status="applied")
 
 
 def _inject_backup(op: Op, paths: CohortPaths, manifest: Manifest, dest: Path) -> Op:
@@ -256,6 +304,37 @@ def _reverse_place_ops(ops: list[Op], result: ReverseResult) -> None:
                 result.skipped += 1
         elif op.op == OpType.BACKUP.value:
             _restore_backup(op, dest, result)
+        elif op.op == OpType.MERGE.value:
+            _reverse_merge(op, dest, result)
+
+
+def _reverse_merge(op: Op, dest: Path, result: ReverseResult) -> None:
+    """Remove Cohort's block / tagged entries, verifying ownership first (B)."""
+    if not dest.exists():
+        result.skipped += 1
+        return
+    if op.strategy == "block":
+        text = dest.read_text(encoding="utf-8")
+        inner = merge.extract_block(text)
+        if inner is None or merge.block_hash(inner) != op.block_hash:
+            result.skipped += 1  # block gone or user edited inside it
+            return
+        new_text = merge.remove_block(text)
+        if op.created and new_text.strip() == "":
+            dest.unlink()
+        else:
+            dest.write_text(new_text, encoding="utf-8")
+        result.outcomes.append(OpOutcome(op=op, status="removed"))
+    else:  # json
+        existing = json.loads(dest.read_text(encoding="utf-8"))
+        new_obj, removed, skipped = merge.remove_tagged(existing, op.tags or [])
+        result.skipped += skipped
+        if removed:
+            if op.created and not new_obj:
+                dest.unlink()
+            else:
+                dest.write_text(merge.dumps_json(new_obj), encoding="utf-8")
+            result.outcomes.append(OpOutcome(op=op, status="removed"))
 
 
 def _restore_backup(op: Op, dest: Path, result: ReverseResult) -> None:
@@ -300,9 +379,26 @@ def reverse_full(manifest: Manifest, paths: CohortPaths) -> ReverseResult:
         paths.backups.rmdir()
     if paths.manifest.exists():
         paths.manifest.unlink()
+    # Derived staging is a non-op artifact (written by compile, not a recorded
+    # mkdir), so it is torn down here so bare uninstall leaves no ~/.cohort.
+    if paths.compiled.exists():
+        shutil.rmtree(paths.compiled)
 
     _reverse_created_dirs(manifest.ops, result)
+    # Safety sweep: compile pre-creates ~/.cohort (via the staging dir) before
+    # install records its mkdir, so the home may not be a recorded created dir.
+    # It is unambiguously Cohort's namespace — rmdir it (and state/) if now empty.
+    _sweep_empty_dir(paths.state, result)
+    _sweep_empty_dir(paths.cohort_home, result)
     return result
+
+
+def _sweep_empty_dir(d: Path, result: ReverseResult) -> None:
+    if d.is_dir() and not d.is_symlink() and not any(d.iterdir()):
+        d.rmdir()
+        result.outcomes.append(
+            OpOutcome(op=Op(OpType.MKDIR.value, "global", str(d), created=True), status="dir_removed")
+        )
 
 
 def reverse_slice(manifest: Manifest, paths: CohortPaths, ide: str) -> ReverseResult:

@@ -56,6 +56,22 @@ HOOK_EVENT_MAP = {
 }
 
 
+# Staging layout for aggregating kinds.
+MERGE_SUBDIR = ".merge"
+CORPUS_REL = "cohort/CLAUDE.cohort.md"  # 1:1 mirror → ~/.claude/cohort/CLAUDE.cohort.md
+IMPORT_BLOCK_REL = f"{MERGE_SUBDIR}/CLAUDE.import-block.txt"
+HOOKS_FRAGMENT_REL = f"{MERGE_SUBDIR}/settings.hooks.json"
+# The @import the managed block writes into ~/.claude/CLAUDE.md (relative to it).
+IMPORT_LINE = "@cohort/CLAUDE.cohort.md"
+# merge op mapping: staged payload → (dest filename under ~/.claude, strategy)
+CLAUDE_MERGE_MAP = [
+    (IMPORT_BLOCK_REL, "CLAUDE.md", "block"),
+    (HOOKS_FRAGMENT_REL, "settings.json", "json"),
+]
+
+_PRIORITY_ORDER = {"high": 0, "normal": 1, "low": 2}
+
+
 def _norm_tool(name: str) -> Optional[str]:
     key = name.lower().replace("-", "").replace("_", "")
     return _TOOL_MAP.get(key)
@@ -149,6 +165,50 @@ ONE_TO_ONE_RENDERERS = {
     "skill": render_skill,
     "command": render_command,
 }
+
+
+# --- aggregating kinds (hook → settings.json, memory → CLAUDE.md) ----------
+
+
+def render_hook_entry(ir: IRArtifact) -> tuple[str, dict]:
+    """Map a canonical hook IR to (Claude event, settings.json hook entry)."""
+    claude_event, default_matcher = HOOK_EVENT_MAP[ir.fields["event"]]
+    matcher = ir.fields.get("matcher", default_matcher)
+    entry = {
+        "matcher": matcher,
+        "hooks": [{"type": "command", "command": ir.fields["action"]}],
+    }
+    return claude_event, entry
+
+
+def render_hooks_fragment(hook_irs: list[IRArtifact]) -> dict:
+    """Build the staged ``settings.json`` hooks fragment Cohort key-merges.
+
+    Multiple canonical hooks may collapse onto one Claude event; they accumulate
+    in that event's array (append-on-collision, R8). Sorted by name for byte
+    determinism.
+    """
+    hooks: dict[str, list] = {}
+    for ir in sorted(hook_irs, key=lambda i: i.name):
+        event, entry = render_hook_entry(ir)
+        hooks.setdefault(event, []).append(entry)
+    return {"hooks": hooks}
+
+
+def render_memory_corpus(memory_irs: list[IRArtifact]) -> str:
+    """Render the Cohort-owned memory corpus (imported by CLAUDE.md via @import)."""
+    items = sorted(
+        memory_irs,
+        key=lambda ir: (_PRIORITY_ORDER.get(ir.fields.get("priority", "normal"), 1), ir.name),
+    )
+    parts = [
+        "# Cohort office memories",
+        "",
+        "<!-- Compiled from canonical memories; edit canonical and recompile. -->",
+    ]
+    for ir in items:
+        parts.extend(["", f"## {ir.display_name or ir.name}", "", ir.body.strip()])
+    return "\n".join(parts).strip("\n") + "\n"
 
 
 class ClaudeRenderer:
