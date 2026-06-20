@@ -146,7 +146,14 @@ def do_add_specialist(
 
 def _render_proposal(name: str, body: str) -> str:
     fm = "\n".join(
-        ["---", f"name: {name}", "target: global", f"requested_at: {now_iso()}", "---"]
+        [
+            "---",
+            "kind: promotion",  # unified proposals format (P8 [R7])
+            f"name: {name}",
+            "target: global",
+            f"requested_at: {now_iso()}",
+            "---",
+        ]
     )
     return f"{fm}\n{body.strip()}\n"
 
