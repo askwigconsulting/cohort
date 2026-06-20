@@ -12,29 +12,22 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
-import json
-
-from .adapters import claude as claude_adapter
-from .adapters.claude import (
-    CLAUDE_MERGE_MAP,
-    CORPUS_REL,
-    HOOKS_FRAGMENT_REL,
-    IMPORT_BLOCK_REL,
-    IMPORT_LINE,
-    MERGE_SUBDIR,
-    ClaudeRenderer,
-    StagedFile,
-)
+from .adapters.claude import MERGE_SUBDIR, ClaudeRenderer, MarkerError, StagedFile
+from .adapters.codex import CodexRenderer
+from .adapters.cursor import CursorRenderer
 from .executor import path_hash
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
 from .loader import load_artifact
 from .schema import discover_artifacts, validate_frontmatter
 
-# Renderers by IDE. Codex/Cursor land in Phase 7.
-RENDERERS = {"claude": ClaudeRenderer()}
+# Renderers by IDE — each is a descriptor the pipeline drives off (P7-R1).
+RENDERERS: dict = {
+    "claude": ClaudeRenderer(),
+    "codex": CodexRenderer(),
+    "cursor": CursorRenderer(),
+}
 
 
 class CompileError(Exception):
@@ -70,58 +63,23 @@ def _load_irs(source: Path):
 
 
 def compile_ide(source: Path, ide: str) -> CompileResult:
-    """Render every targeting canonical artifact into staged files for ``ide``."""
-    renderer = RENDERERS.get(ide)
+    """Render every targeting canonical artifact into staged files for ``ide``.
+
+    Generic over the renderer descriptor (P7-R1): ``renderer.compile(irs)`` owns
+    the IDE-specific 1:1 + aggregate staging; this function just loads/validates
+    the IR and wraps render errors.
+    """
     result = CompileResult(ide=ide)
+    renderer = RENDERERS.get(ide)
     if renderer is None:
-        return result  # no renderer yet (codex/cursor → Phase 7)
-    matched = []
-    for ir in _load_irs(source):
-        if renderer.matches(ir):
-            matched.append(ir)
-        else:
-            result.skipped.append(ir.name)
-
-    # Roster pass: derive the generalist's office directory from the specialist
-    # agents once, so the marker injection isn't a per-agent hack (P3-T2 / C).
-    specialists = [
-        ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
-    ]
-    directory = claude_adapter.render_office_directory(specialists)
-
-    hook_irs = []
-    memory_irs = []
+        return result  # no renderer for this IDE
     try:
-        for ir in matched:
-            if ir.kind == "hook":
-                hook_irs.append(ir)
-            elif ir.kind == "memory":
-                memory_irs.append(ir)
-            elif ir.kind == "context":
-                result.skipped.append(ir.name)  # deferred to Phase 4
-            else:
-                staged = renderer.render_one_to_one(ir, directory)
-                if staged is not None:
-                    result.staged.append(staged)
-    except claude_adapter.MarkerError as exc:
+        staged, skipped = renderer.compile(_load_irs(source))
+    except MarkerError as exc:
         raise CompileError(str(exc)) from exc
-    if ide == "claude":
-        _stage_claude_aggregates(result, hook_irs, memory_irs)
+    result.staged = staged
+    result.skipped = skipped
     return result
-
-
-def _stage_claude_aggregates(result, hook_irs, memory_irs) -> None:
-    """Stage the corpus (1:1) + the merge payloads (.merge) for aggregating kinds."""
-    if memory_irs:
-        corpus = claude_adapter.render_memory_corpus(memory_irs)
-        result.staged.append(StagedFile(CORPUS_REL, corpus.encode("utf-8")))
-        result.staged.append(
-            StagedFile(IMPORT_BLOCK_REL, (IMPORT_LINE + "\n").encode("utf-8"))
-        )
-    if hook_irs:
-        fragment = claude_adapter.render_hooks_fragment(hook_irs)
-        payload = json.dumps(fragment, indent=2) + "\n"
-        result.staged.append(StagedFile(HOOKS_FRAGMENT_REL, payload.encode("utf-8")))
 
 
 def write_staging(paths: CohortPaths, result: CompileResult) -> None:
@@ -156,10 +114,11 @@ def scan_staging_ops(paths: CohortPaths, ide: str, mode: str) -> list[Op]:
     Files under the ``.merge`` subdir are payloads consumed by merge ops (T3),
     not mirrored. mkdir ops cover the dest dirs (user-owned, usually satisfied).
     """
+    renderer = RENDERERS.get(ide)
     staging = paths.compiled_ide(ide)
-    if not staging.exists():
+    if renderer is None or not staging.exists():
         return []
-    dest_root = paths.home / f".{ide}"
+    dest_root = renderer.dest_root(paths.base)
     files = [
         p
         for p in sorted(staging.rglob("*"))
@@ -180,23 +139,22 @@ def scan_staging_ops(paths: CohortPaths, ide: str, mode: str) -> list[Op]:
     mkdir_ops = [
         Op(OpType.MKDIR.value, ide, str(d)) for d in sorted(dirs, key=lambda p: len(p.parts))
     ]
-    merge_ops = _claude_merge_ops(staging, dest_root, ide) if ide == "claude" else []
-    return mkdir_ops + file_ops + merge_ops
+    return mkdir_ops + file_ops + _merge_ops(renderer, staging, dest_root, ide)
 
 
-def _claude_merge_ops(staging: Path, dest_root: Path, ide: str) -> list[Op]:
-    """Merge ops for staged .merge payloads (hook→settings.json, memory→CLAUDE.md)."""
+def _merge_ops(renderer, staging: Path, dest_root: Path, ide: str) -> list[Op]:
+    """Merge ops for the renderer's declared merge targets whose payload was staged."""
     ops: list[Op] = []
-    for rel, dest_name, strategy in CLAUDE_MERGE_MAP:
-        payload = staging / rel
+    for mt in getattr(renderer, "merge_targets", ()):
+        payload = staging / mt.payload_rel
         if payload.exists():
             ops.append(
                 Op(
                     OpType.MERGE.value,
                     ide,
-                    str(dest_root / dest_name),
+                    str(dest_root / mt.dest_name),
                     src=str(payload),
-                    strategy=strategy,
+                    strategy=mt.strategy,
                 )
             )
     return ops

@@ -18,9 +18,11 @@ merge layer in Phase 2-T3.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from ..ir import IRArtifact
+from .base import MergeTarget
 
 # --- tool mapping (verified) -----------------------------------------------
 
@@ -245,9 +247,18 @@ def render_memory_corpus(memory_irs: list[IRArtifact]) -> str:
 
 
 class ClaudeRenderer:
-    """Renders IR → Claude-native staged files."""
+    """Renders IR → Claude-native staged files (the reference renderer)."""
 
     ide = "claude"
+    dest_subdir = ".claude"
+    supported_kinds = frozenset({"agent", "skill", "command", "hook", "memory"})
+    merge_targets = (
+        MergeTarget(IMPORT_BLOCK_REL, "CLAUDE.md", "block"),
+        MergeTarget(HOOKS_FRAGMENT_REL, "settings.json", "json"),
+    )
+
+    def dest_root(self, base: Path) -> Path:
+        return base / self.dest_subdir
 
     def matches(self, ir: IRArtifact) -> bool:
         return ir.targets_ide(self.ide)
@@ -259,3 +270,42 @@ class ClaudeRenderer:
             return render_agent(ir, directory)
         fn = ONE_TO_ONE_RENDERERS.get(ir.kind)
         return fn(ir) if fn is not None else None
+
+    def compile(self, irs: list[IRArtifact]) -> tuple[list[StagedFile], list[str]]:
+        """IR → staged Claude files (1:1 + corpus + merge payloads); + skipped names."""
+        matched = [ir for ir in irs if self.matches(ir)]
+        specialists = [
+            ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
+        ]
+        directory = render_office_directory(specialists)
+
+        staged: list[StagedFile] = []
+        skipped: list[str] = []
+        hook_irs: list[IRArtifact] = []
+        memory_irs: list[IRArtifact] = []
+        for ir in irs:
+            if not self.matches(ir):
+                skipped.append(ir.name)
+            elif ir.kind == "hook":
+                hook_irs.append(ir)
+            elif ir.kind == "memory":
+                memory_irs.append(ir)
+            elif ir.kind == "context":
+                skipped.append(ir.name)  # deferred to Phase 4
+            else:
+                sf = self.render_one_to_one(ir, directory)
+                if sf is not None:
+                    staged.append(sf)
+
+        if memory_irs:
+            corpus = render_memory_corpus(memory_irs)
+            staged.append(StagedFile(CORPUS_REL, corpus.encode("utf-8")))
+            staged.append(StagedFile(IMPORT_BLOCK_REL, (IMPORT_LINE + "\n").encode("utf-8")))
+        if hook_irs:
+            import json as _json
+
+            fragment = render_hooks_fragment(hook_irs)
+            staged.append(
+                StagedFile(HOOKS_FRAGMENT_REL, (_json.dumps(fragment, indent=2) + "\n").encode("utf-8"))
+            )
+        return staged, skipped

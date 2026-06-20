@@ -1,0 +1,7 @@
+# Declared, reviewed parity gaps for the Codex adapter.
+# The parity check passes on these and fails on any *undeclared* gap, and also
+# fails if a declared gap is *stale* (the kind now renders).
+
+[[gaps]]
+kind = "command"
+reason = "Codex deprecates custom prompts (~/.codex/prompts) in favor of skills; commands are not rendered as a native Codex artifact. Re-evaluate if Codex reinstates first-class commands."
