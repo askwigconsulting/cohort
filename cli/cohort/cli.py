@@ -346,7 +346,7 @@ def _warn_divergence(report: InstallReport) -> None:
         typer.echo(
             f"warning: left {report.diverged} user-edited merge entr"
             f"{'y' if report.diverged == 1 else 'ies'} untouched "
-            f"(divergence — edit canonical, not the compiled file).",
+            f"(divergence). Run `cohort recompile --force` to restore Cohort's entries.",
             err=True,
         )
 
@@ -399,6 +399,7 @@ def _emit(report: dict, json_output: bool, human) -> None:
 def init(
     ctx: typer.Context,
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    force: bool = typer.Option(False, "--force", help="Restore Cohort blocks the user removed/edited."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan; change nothing."),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -409,7 +410,7 @@ def init(
     except SourceUnresolved as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
-    report = do_init(find_repo_root(Path.cwd()), source_path, effective_dry_run)
+    report = do_init(find_repo_root(Path.cwd()), source_path, effective_dry_run, force)
 
     def human(r: dict) -> None:
         for op in r["ops"]:
@@ -418,6 +419,12 @@ def init(
         typer.echo(f"init: applied {s['applied']} · skipped {s['skipped']}")
 
     _emit(report, json_output, human)
+    if report.get("diverged"):
+        typer.echo(
+            "warning: a Cohort-managed block (e.g. the Claude @import wiring) was "
+            "edited or removed; left as-is. Run `cohort init --force` to restore it.",
+            err=True,
+        )
     raise typer.Exit(code=0)
 
 
@@ -442,19 +449,24 @@ def snapshot(
 @context_app.command("refresh")
 def context_refresh(
     ctx: typer.Context,
+    force: bool = typer.Option(False, "--force", help="Restore a user-removed/edited index block."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Regenerate the managed Recent-sessions index in project_context.md."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
-    report = do_context_refresh(find_repo_root(Path.cwd()), effective_dry_run)
+    report = do_context_refresh(find_repo_root(Path.cwd()), effective_dry_run, force)
     if "error" in report:
         typer.echo(f"error: {report['error']}", err=True)
         raise typer.Exit(code=1)
     _emit(report, json_output, lambda r: typer.echo(
         f"context refresh: {'changed' if r.get('changed') else 'no change'}"))
     if report.get("diverged"):
-        typer.echo("warning: managed index block was user-edited; left untouched.", err=True)
+        typer.echo(
+            "warning: the managed Recent-sessions block was edited or removed; left "
+            "as-is. Run `cohort context refresh --force` to restore it.",
+            err=True,
+        )
     raise typer.Exit(code=0)
 
 

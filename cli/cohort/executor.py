@@ -77,8 +77,13 @@ def classify(
     op: Op,
     recorded_copy_hashes: dict[str, str],
     prior_merge: Optional[dict[str, Op]] = None,
+    force: bool = False,
 ) -> OpStatus:
-    """Classify one op against current filesystem state (force-agnostic)."""
+    """Classify one op against current filesystem state.
+
+    ``force`` only affects merge ops (it re-asserts a diverged/removed block or
+    entry — the restore path); clobber/copy classification stays force-agnostic.
+    """
     dest = Path(op.dest)
     if op.op == OpType.MKDIR.value:
         if dest.is_dir() and not dest.is_symlink():
@@ -104,7 +109,7 @@ def classify(
     if op.op == OpType.MERGE.value:
         # Merging into a user-owned file is never a clobber; it's satisfied only
         # when re-merging changes nothing AND reports no divergence to warn about.
-        plan = _plan_merge(op, (prior_merge or {}).get(op.dest))
+        plan = _plan_merge(op, (prior_merge or {}).get(op.dest), force)
         return OpStatus.SATISFIED if (not plan["changed"] and plan["skipped"] == 0) else OpStatus.APPLY
     if op.op == OpType.SCAFFOLD.value:
         # Create-if-absent: a team-owned file is never overwritten or clobbered.
@@ -112,21 +117,21 @@ def classify(
     raise ValueError(f"unknown op type: {op.op!r}")
 
 
-def _plan_merge(op: Op, prior: Optional[Op]) -> dict:
+def _plan_merge(op: Op, prior: Optional[Op], force: bool = False) -> dict:
     """Plan a merge op against the current file + the prior recorded identity."""
     dest = Path(op.dest)
     created = not dest.exists()
     if op.strategy == "block":
         text = dest.read_text(encoding="utf-8") if dest.exists() else ""
         desired = Path(op.src).read_text(encoding="utf-8")
-        plan = merge.plan_block_merge(text, desired, prior.block_hash if prior else None)
+        plan = merge.plan_block_merge(text, desired, prior.block_hash if prior else None, force)
         plan["created"] = created
         return plan
     # json
     fragment = json.loads(Path(op.src).read_text(encoding="utf-8"))
     existing = json.loads(dest.read_text(encoding="utf-8")) if dest.exists() else {}
     new_obj, owned, skipped = merge.merge_hooks(
-        existing, fragment, prior.tags if prior else None
+        existing, fragment, prior.tags if prior else None, force
     )
     return {
         "new_obj": new_obj,
@@ -169,7 +174,7 @@ def preflight(
     classified: list[ClassifiedOp] = []
     clobbers: list[ClassifiedOp] = []
     for op in plan:
-        status = classify(op, recorded, prior_merge)
+        status = classify(op, recorded, prior_merge, force)
         c = ClassifiedOp(op=op, status=status)
         if status == OpStatus.CLOBBER and not force:
             clobbers.append(c)
@@ -210,7 +215,7 @@ def apply(
     outcomes: list[OpOutcome] = []
     for op in plan:
         if op.op == OpType.MERGE.value:
-            outcomes.append(_apply_merge(op, paths, manifest, prior_merge.get(op.dest)))
+            outcomes.append(_apply_merge(op, paths, manifest, prior_merge.get(op.dest), force))
             continue
         status = classify(op, recorded)
         if status == OpStatus.SATISFIED:
@@ -227,15 +232,16 @@ def apply(
 
 
 def _apply_merge(
-    op: Op, paths: CohortPaths, manifest: Manifest, prior: Optional[Op]
+    op: Op, paths: CohortPaths, manifest: Manifest, prior: Optional[Op], force: bool = False
 ) -> OpOutcome:
     """Apply a merge op, honoring divergence on re-merge (decision K).
 
     A canonical entry the user has edited/removed is left untouched (never
-    re-added/overwritten); the recorded op carries the identity reverse needs.
-    The per-dest merge op is *replaced* in the manifest, not appended.
+    re-added/overwritten) unless ``force`` re-asserts it; the recorded op carries
+    the identity reverse needs. The per-dest merge op is *replaced* in the
+    manifest, not appended.
     """
-    plan = _plan_merge(op, prior)
+    plan = _plan_merge(op, prior, force)
     dest = Path(op.dest)
     # `created` is sticky: if Cohort created the file at first install, that holds
     # across recompiles even though the file now exists.

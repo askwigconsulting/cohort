@@ -195,6 +195,42 @@ def test_refresh_skips_user_edited_managed_block(repo, home):
     proc = run_cli("context", "refresh", repo=repo, home=home)
     assert "USER EDIT INSIDE" in ctx.read_text()  # divergence: not overwritten
     assert "warning" in proc.stderr.lower()
+    assert "--force" in proc.stderr  # the warning names the restore path
+
+
+def test_refresh_force_restores_removed_block(repo, home):
+    init(repo, home)
+    run_cli("snapshot", repo=repo, home=home)
+    run_cli("context", "refresh", repo=repo, home=home)
+    ctx = repo / ".cohort" / "project_context.md"
+    # user removes the managed block entirely
+    from cohort.merge import BLOCK_END
+    text = ctx.read_text()
+    start = text.index(BLOCK_BEGIN)
+    end = text.index(BLOCK_END) + len(BLOCK_END)
+    ctx.write_text(text[:start] + text[end:], encoding="utf-8")
+    assert BLOCK_BEGIN not in ctx.read_text()
+    # plain refresh respects the removal (won't re-add)
+    run_cli("context", "refresh", repo=repo, home=home)
+    assert BLOCK_BEGIN not in ctx.read_text()
+    # --force restores it
+    assert run_cli("context", "refresh", "--force", repo=repo, home=home).returncode == 0
+    assert BLOCK_BEGIN in ctx.read_text()
+
+
+def test_init_force_restores_removed_import_wiring(repo, home):
+    init(repo, home)
+    claude_md = repo / ".claude" / "CLAUDE.md"
+    claude_md.write_text("# just my stuff\n", encoding="utf-8")  # user wiped the @import block
+    # plain re-init respects the removal + warns toward --force
+    proc = init(repo, home)
+    assert "@import" not in claude_md.read_text()
+    assert "--force" in proc.stderr
+    # --force restores the wiring without nuking user content
+    assert init(repo, home, "--force").returncode == 0
+    restored = claude_md.read_text()
+    assert "@import ../.cohort/project_context.md" in restored
+    assert "just my stuff" in restored
 
 
 # === P4-T3: snapshot, conflict-free sessions ================================

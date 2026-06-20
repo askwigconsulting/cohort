@@ -177,13 +177,13 @@ def _summary(outcomes) -> dict[str, int]:
 # --- commands ---------------------------------------------------------------
 
 
-def do_init(repo: Path, source: Path, dry_run: bool) -> dict[str, Any]:
+def do_init(repo: Path, source: Path, dry_run: bool, force: bool = False) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
     existing = load_manifest(paths.manifest)
     if dry_run:
         with tempfile.TemporaryDirectory() as tmp:
             plan = _build_init_plan(paths, repo, source, Path(tmp))
-            pf = preflight(plan, existing, force=False)
+            pf = preflight(plan, existing, force=force)
         statuses = ["skipped" if c.status.value == "satisfied" else "applied" for c in pf.classified]
         return {
             "action": "init", "dry_run": True,
@@ -193,16 +193,17 @@ def do_init(repo: Path, source: Path, dry_run: bool) -> dict[str, Any]:
         }
     plan = _build_init_plan(paths, repo, source, paths.compiled / "project")
     manifest = existing or _new_manifest()
-    outcomes = apply(plan, paths, manifest, force=False)
+    outcomes = apply(plan, paths, manifest, force=force)
     manifest.persist(paths.manifest)
     return {
         "action": "init", "dry_run": False,
         "ops": [{"op": o.op.op, "dest": o.op.dest, "status": o.status} for o in outcomes],
         "summary": _summary(outcomes),
+        "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
     }
 
 
-def do_context_refresh(repo: Path, dry_run: bool) -> dict[str, Any]:
+def do_context_refresh(repo: Path, dry_run: bool, force: bool = False) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
     manifest = load_manifest(paths.manifest)
     if manifest is None:
@@ -214,10 +215,10 @@ def do_context_refresh(repo: Path, dry_run: bool) -> dict[str, Any]:
     merge_op = Op(OpType.MERGE.value, PROJECT_IDE, str(project_context),
                   src=src, strategy="block", preserve=True)
     if dry_run:
-        pf = preflight([merge_op], manifest, force=False)
+        pf = preflight([merge_op], manifest, force=force)
         changed = pf.classified[0].status.value != "satisfied"
         return {"action": "context-refresh", "dry_run": True, "changed": changed}
-    outcomes = apply([merge_op], paths, manifest, force=False)
+    outcomes = apply([merge_op], paths, manifest, force=force)
     manifest.persist(paths.manifest)
     return {
         "action": "context-refresh", "dry_run": False,

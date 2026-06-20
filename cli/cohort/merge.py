@@ -73,7 +73,10 @@ def entry_hash(entry: Any) -> str:
 
 
 def merge_hooks(
-    existing: dict, fragment: dict, prior_tags: Optional[list[dict]] = None
+    existing: dict,
+    fragment: dict,
+    prior_tags: Optional[list[dict]] = None,
+    force: bool = False,
 ) -> tuple[dict, list[dict], int]:
     """Merge Cohort's hook entries into ``existing`` settings (re-merge safe).
 
@@ -117,7 +120,7 @@ def merge_hooks(
             if h in kept_set:
                 owned.append({"event": event, "entry_hash": h})
                 continue
-            if h in diverged:
+            if h in diverged and not force:
                 skipped += 1  # the user took over this entry → don't re-add
                 continue
             kept.append(copy.deepcopy(entry))
@@ -134,7 +137,7 @@ def merge_hooks(
 
 
 def plan_block_merge(
-    text: str, desired_inner: str, prior_block_hash: Optional[str]
+    text: str, desired_inner: str, prior_block_hash: Optional[str], force: bool = False
 ) -> dict:
     """Plan a managed-block merge (re-merge safe).
 
@@ -142,9 +145,14 @@ def plan_block_merge(
     no longer matches what Cohort recorded — and isn't already the desired
     content — is treated as a user edit: left untouched (``skipped=1``), never
     overwritten. A block that matches the prior hash (or has no prior, i.e. our
-    delimited namespace) is updated to the desired content.
+    delimited namespace) is updated to the desired content. ``force`` re-asserts
+    Cohort's block regardless of divergence (the explicit restore path).
     """
     desired_hash = block_hash(desired_inner)
+    if force:
+        new_text = upsert_block(text, desired_inner)
+        return {"new_text": new_text, "changed": new_text != text, "skipped": 0,
+                "block_hash": desired_hash}
     current = extract_block(text)
     if current is None:
         # No block. Insert on first install; but if we recorded one before, the
