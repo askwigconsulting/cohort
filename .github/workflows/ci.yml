@@ -16,8 +16,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install package
-        run: pip install -e .
+      - name: Install package (with dev extras: pytest)
+        run: pip install -e ".[dev]"
       - name: shellcheck (CI-required; locally skip-when-absent)
         run: |
           sudo apt-get update -qq && sudo apt-get install -y shellcheck
