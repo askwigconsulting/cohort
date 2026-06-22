@@ -14,8 +14,8 @@
 # COHORT_BIN.
 set -eu
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo=${COHORT_SOURCE:-$(CDPATH= cd -- "$script_dir/.." && pwd)}
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo=${COHORT_SOURCE:-$(CDPATH='' cd -- "$script_dir/.." && pwd)}
 venv=${COHORT_VENV:-"$repo/.venv"}
 python=${COHORT_PYTHON:-python3}
 
