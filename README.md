@@ -1,5 +1,7 @@
 # Cohort
 
+[![CI](https://github.com/askwigconsulting/cohort/actions/workflows/ci.yml/badge.svg)](https://github.com/askwigconsulting/cohort/actions/workflows/ci.yml)
+
 A portable, self-improving, multi-IDE **agentic office** — a virtual organization of
 company-function specialist agents (HR, Legal, Compliance, Security, Finance, IT, Comms,
 Procurement, Privacy, Program, cloud architects, and a Chief-of-Staff orchestrator) you drop into any
