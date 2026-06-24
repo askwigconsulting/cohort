@@ -112,8 +112,19 @@ def test_yaml_safety_lint_catches_bad_and_passes_good(tmp_path):
 def test_readme_quickstart_matches_source_of_truth():
     readme = (COHORT_SRC / "README.md").read_text()
     block = re.search(r"```bash\n(.*?)```", readme, re.DOTALL).group(1)
-    cohort_lines = [ln.strip() for ln in block.splitlines() if ln.strip().startswith("cohort ")]
-    assert cohort_lines == QUICKSTART_STEPS  # drift between README and the e2e source fails here
+    lines = [ln.strip() for ln in block.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    # strip trailing inline comments so README lines may be annotated
+    cohort_lines = [ln.split(" #", 1)[0].strip() for ln in lines if ln.startswith("cohort ")]
+    assert cohort_lines == QUICKSTART_STEPS  # the journey can't drift from the e2e source
+
+    # …and the quickstart must actually make `cohort` runnable from a bare clone:
+    # a package-install step (pip install / bootstrap) has to precede the first
+    # `cohort` command. (Regression guard for the "cohort: command not found" gap.)
+    first_cohort = next(i for i, ln in enumerate(lines) if ln.startswith("cohort "))
+    setup = " ".join(lines[:first_cohort])
+    assert "pip install" in setup or "bootstrap.sh" in setup, (
+        "quickstart runs `cohort` before any step that installs the CLI"
+    )
 
 
 # === P9-T3/T4: full-system end-to-end across all three IDEs ==================
@@ -151,8 +162,8 @@ def test_full_system_e2e_all_three_ides(tmp_path):
     run = lambda *a: run_cli(*a, home=home, cwd=repo)
     verbs: list[str] = []
 
-    # install (all three offices) — verb: install
-    verbs.append("install")
+    # recompile = compile + install all three offices (the clone-and-go command)
+    verbs.append("recompile")
     assert run("recompile", "--ide", "claude,codex,cursor", "--source", str(source)).returncode == 0
     for ide, ext in [(".claude", ".md"), (".codex", ".toml"), (".cursor", ".md")]:
         assert len(list((home / ide / "agents").glob(f"*{ext}"))) == 15

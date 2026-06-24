@@ -25,7 +25,7 @@ endif
 .PHONY: install uninstall
 
 install:
-	$(COHORT) install $(IDE_ARG) $(COPY_ARG) $(FORCE_ARG)
+	$(COHORT) recompile $(IDE_ARG) $(COPY_ARG) $(FORCE_ARG)
 
 uninstall:
 	$(COHORT) uninstall

@@ -34,6 +34,8 @@ else
     "$venv_python" -m pip install -e "$repo" >/dev/null
 fi
 
-# 3. Run the installer, forwarding --source and the caller's flags.
+# 3. Compile + install, forwarding --source and the caller's flags. (recompile,
+#    not install: a fresh machine has nothing staged yet, so install alone would
+#    place the home but no agents.)
 cohort_bin=${COHORT_BIN:-"$venv/bin/cohort"}
-exec "$cohort_bin" install --source "$repo" "$@"
+exec "$cohort_bin" recompile --source "$repo" "$@"

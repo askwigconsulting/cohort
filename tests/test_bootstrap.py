@@ -83,7 +83,7 @@ def test_bootstrap_forwards_dry_run_and_skips_pip_when_importable(fake_venv):
     proc = run_bootstrap("--ide", "claude", "--dry-run", env_extra=env)
     assert proc.returncode == 0, proc.stderr
     trace = fake_venv["cohort_trace"].read_text()
-    assert f"install --source {REPO_ROOT} --ide claude --dry-run" in trace
+    assert f"recompile --source {REPO_ROOT} --ide claude --dry-run" in trace
     # importable → no pip install churn (N5)
     assert not fake_venv["pip_trace"].exists()
 
@@ -135,7 +135,7 @@ def test_make_install_forwards_ide(fake_cohort):
         capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "install --ide claude,cursor" in fake_cohort["trace"].read_text()
+    assert "recompile --ide claude,cursor" in fake_cohort["trace"].read_text()
 
 
 def test_make_uninstall_invokes_cli(fake_cohort):

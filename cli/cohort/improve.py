@@ -230,15 +230,21 @@ def do_submit_proposals(
         if dry_run or not available:
             continue
         staged = source / "proposals" / p.name  # review staging area — NEVER canonical/
-        run(["git", "-C", str(source), "checkout", "-b", branch])
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        staged.write_bytes(p.read_bytes())
-        run(["git", "-C", str(source), "add", str(staged)])
-        run(["git", "-C", str(source), "commit", "-m", f"Proposal ({kind}): {p.stem}"])
-        run(["git", "-C", str(source), "push", "origin", branch])
-        run(["gh", "pr", "create", "--draft", "--head", branch,
-             "--title", f"Cohort proposal ({kind}): {p.stem}", "--body-file", str(staged)])
-        run(["git", "-C", str(source), "checkout", "-"])
+        try:
+            run(["git", "-C", str(source), "checkout", "-b", branch])
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            staged.write_bytes(p.read_bytes())
+            run(["git", "-C", str(source), "add", str(staged)])
+            run(["git", "-C", str(source), "commit", "-m", f"Proposal ({kind}): {p.stem}"])
+            run(["git", "-C", str(source), "push", "origin", branch])
+            run(["gh", "pr", "create", "--draft", "--head", branch,
+                 "--title", f"Cohort proposal ({kind}): {p.stem}", "--body-file", str(staged)])
+            run(["git", "-C", str(source), "checkout", "-"])
+        except Exception:  # noqa: BLE001 - git/gh failure (no push access, not a GitHub remote, …)
+            # Degrade cleanly: leave the proposal as a file for manual PR creation,
+            # don't stamp it, and stop. Never a half-done or crashed state.
+            degraded = True
+            break
         _stamp(p, submitted_at=now_iso(), branch=branch)
         submitted.append(p.name)
 

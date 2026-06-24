@@ -25,8 +25,10 @@ and Cursor** layouts at install time.
 Clone the harness, then walk the new-team journey — each line is a real command:
 
 ```bash
-git clone <your-cohort-remote> cohort && cd cohort
-cohort install --ide claude,codex,cursor
+git clone https://github.com/askwigconsulting/cohort cohort && cd cohort
+python3 -m venv .venv && . .venv/bin/activate   # isolated environment
+pip install -e .                                 # puts the `cohort` CLI on PATH
+cohort recompile --ide claude,codex,cursor       # compile the roster + place it into each IDE
 cohort init
 cohort add-specialist --name data-modeler --display-name DataModeler --department Data --description 'Schema and data modeling.'
 cohort snapshot
@@ -36,12 +38,14 @@ cohort propose-improvement
 cohort submit-proposals
 ```
 
-`install` places the office roster into each selected IDE; `init` scaffolds the per-repo shared context
+`recompile` compiles the office roster from canonical and places it into each selected IDE (it's
+compile-then-install; plain `install` only places already-compiled output); `init` scaffolds the per-repo shared context
 (`<repo>/.cohort/`) and wires it into project memory; `add-specialist` adds a repo-local advisor;
 `snapshot`/`weekly-report` capture and roll up sessions; `feedback` → `propose-improvement` →
 `submit-proposals` is the human-gated self-improvement loop (proposals become **draft PRs** — you
-review and merge). This command sequence is the project's executable quickstart: it is run verbatim by
-the full-system end-to-end test, so the docs cannot drift from what the tool does.
+review and merge). The `cohort …` command sequence above is asserted equal to the steps the
+full-system end-to-end test executes, so the *journey* can't drift from the tool; the `git clone` /
+venv / `pip install -e .` setup lines put the `cohort` CLI on your PATH first.
 
 ## Scope model
 

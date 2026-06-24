@@ -239,3 +239,20 @@ def test_promotion_proposal_carries_kind(repo, home, source):
     run_cli("promote", "data-modeler", home=home, cwd=repo)
     text = (repo / ".cohort" / "proposals" / "data-modeler.md").read_text()
     assert "kind: promotion" in text  # R7 retrofit
+
+
+def test_submit_degrades_on_git_gh_failure(repo, home, source):
+    # gh "available" but the actual push/PR fails (no push access, not a GitHub
+    # remote, …) → degrade cleanly, never crash or half-submit.
+    _stage_proposals(repo, home, source)
+
+    def failing(cmd):
+        raise RuntimeError("simulated git/gh failure")
+
+    result = improve.do_submit_proposals(repo, source, dry_run=False, run=failing, gh_ok=True)
+    assert result["degraded"] is True
+    assert result["submitted"] == []
+    # proposals remain as files, unstamped → recoverable for manual PR creation
+    assert not any(
+        "submitted_at" in p.read_text() for p in (repo / ".cohort" / "proposals").glob("*.md")
+    )
