@@ -7,6 +7,7 @@ name = "cohort"
 version = "0.1.0"
 description = "A portable, multi-IDE agentic office harness — canonical artifacts compiled per IDE."
 requires-python = ">=3.10"
+license = { text = "MIT" }
 dependencies = [
     # Pin typer with an explicit click so a fresh-machine resolve is deterministic
     # (some slim envs ship a typer without click); see Phase 9 CI.

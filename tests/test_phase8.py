@@ -256,3 +256,118 @@ def test_submit_degrades_on_git_gh_failure(repo, home, source):
     assert not any(
         "submitted_at" in p.read_text() for p in (repo / ".cohort" / "proposals").glob("*.md")
     )
+
+
+# === P8 hardening (office self-review) =======================================
+
+
+def _git_source(tmp_path) -> Path:
+    """A *git* source repo (so the current-branch read works)."""
+    src = make_git_repo(tmp_path / "gitsrc")
+    shutil.copytree(COHORT_SRC / "canonical", src / "canonical")
+    subprocess.run(["git", "add", "-A"], cwd=src, check=True)
+    subprocess.run(["git", "commit", "-qm", "canon"], cwd=src, check=True)
+    return src
+
+
+def _current(src: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(src), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_stamp_uses_safe_emitter(repo, home, source):
+    """_stamp re-emits frontmatter through the serializer — an adversarial existing
+    value can't corrupt the block, and the stamp parses cleanly (P9 [R-audit])."""
+    from cohort.loader import load_artifact_text
+
+    pdir = repo / ".cohort" / "proposals"
+    pdir.mkdir(parents=True, exist_ok=True)
+    # an existing value that would break a hand-spliced block
+    p = pdir / "adversarial.md"
+    p.write_text(
+        improve.dump_frontmatter([("kind", "improvement"), ("note", "Foo: Bar [x]")]) + "body\n",
+        encoding="utf-8",
+    )
+    improve._stamp(p, submitted_at="2026-06-23T00:00:00+00:00", branch="cohort/proposal-adversarial")
+    parsed = load_artifact_text(p.read_text(), name_stem=p.stem)
+    assert parsed.load_error is None
+    assert parsed.frontmatter["note"] == "Foo: Bar [x]"  # preserved, not corrupted
+    assert parsed.frontmatter["submitted_at"] == "2026-06-23T00:00:00+00:00"
+    assert parsed.frontmatter["branch"] == "cohort/proposal-adversarial"
+
+
+def test_stamp_raises_on_unparseable_proposal(repo):
+    pdir = repo / ".cohort" / "proposals"
+    pdir.mkdir(parents=True, exist_ok=True)
+    bad = pdir / "nodelim.md"
+    bad.write_text("no frontmatter here\n", encoding="utf-8")  # no closing '---'
+    with pytest.raises(improve.ProposeError):
+        improve._stamp(bad, submitted_at="x")  # clean error, not an uncaught ValueError
+
+
+def test_submit_skips_unsafe_filename(repo, home, source):
+    pdir = repo / ".cohort" / "proposals"
+    pdir.mkdir(parents=True, exist_ok=True)
+    # a filename whose stem would inject as an argv flag if passed to git/gh
+    evil = pdir / "-rf.md"
+    evil.write_text("---\nkind: improvement\n---\nx\n", encoding="utf-8")
+    runner = RecordingRunner()
+    result = improve.do_submit_proposals(repo, source, dry_run=False, run=runner, gh_ok=True)
+    assert "-rf.md" in result["skipped"]
+    # the unsafe stem never reached git/gh argv
+    assert not any("-rf" in " ".join(c) for c in runner.calls)
+
+
+def test_submit_restores_original_branch_on_success(tmp_path, home):
+    src = _git_source(tmp_path)
+    repo = make_git_repo(tmp_path / "repo2")
+    run_cli("init", "--source", str(src), home=home, cwd=repo)
+    run_cli("add-specialist", "--name", "dm", "--display-name", "DM",
+            "--department", "D", "--description", "x", home=home, cwd=repo)
+    run_cli("promote", "dm", home=home, cwd=repo)
+    start = _current(src)
+    runner = RecordingRunner()
+    improve.do_submit_proposals(repo, src, dry_run=False, run=runner, gh_ok=True)
+    # the working tree is returned to where it started (not stranded on the proposal branch)
+    restore = [c for c in runner.calls if c[:4] == ["git", "-C", str(src), "checkout"]
+               and c[-1] == start]
+    assert restore, f"expected a restore to {start!r}; calls were {runner.calls}"
+
+
+def test_submit_restores_branch_on_failure(tmp_path, home):
+    src = _git_source(tmp_path)
+    repo = make_git_repo(tmp_path / "repo3")
+    run_cli("init", "--source", str(src), home=home, cwd=repo)
+    run_cli("add-specialist", "--name", "dm", "--display-name", "DM",
+            "--department", "D", "--description", "x", home=home, cwd=repo)
+    run_cli("promote", "dm", home=home, cwd=repo)
+    start = _current(src)
+    seen: list[list] = []
+
+    def fail_on_push(cmd):
+        seen.append(list(cmd))
+        if "push" in cmd:
+            raise RuntimeError("no push access")
+        return None
+
+    result = improve.do_submit_proposals(repo, src, dry_run=False, run=fail_on_push, gh_ok=True)
+    assert result["degraded"] is True
+    # even on failure, the restore was attempted (working tree not left on the branch)
+    assert any(c[:4] == ["git", "-C", str(src), "checkout"] and c[-1] == start for c in seen)
+
+
+def test_submit_targets_explicit_repo(tmp_path, home):
+    src = _git_source(tmp_path)
+    repo = make_git_repo(tmp_path / "repo4")
+    run_cli("init", "--source", str(src), home=home, cwd=repo)
+    run_cli("add-specialist", "--name", "dm", "--display-name", "DM",
+            "--department", "D", "--description", "x", home=home, cwd=repo)
+    run_cli("promote", "dm", home=home, cwd=repo)
+    runner = RecordingRunner()
+    improve.do_submit_proposals(
+        repo, src, dry_run=False, run=runner, gh_ok=True, target_repo="me/myfork"
+    )
+    pr = [c for c in runner.calls if "pr" in c and "create" in c]
+    assert pr and all("--repo" in c and "me/myfork" in c for c in pr)
