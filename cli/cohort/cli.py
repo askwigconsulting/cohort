@@ -725,6 +725,12 @@ def propose_improvement(
 def submit_proposals(
     ctx: typer.Context,
     source: Optional[str] = typer.Option(None, "--source", help="Cohort source repo (PR target)."),
+    repo: Optional[str] = typer.Option(
+        None, "--repo",
+        help="GitHub repo (OWNER/NAME) to open the PR against, e.g. your fork. "
+        "If you cloned Cohort and lack push access to the upstream, fork it first "
+        "and pass your fork here.",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -735,7 +741,9 @@ def submit_proposals(
     except SourceUnresolved as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
-    report = do_submit_proposals(find_repo_root(Path.cwd()), source_path, effective_dry_run)
+    report = do_submit_proposals(
+        find_repo_root(Path.cwd()), source_path, effective_dry_run, target_repo=repo
+    )
 
     def human(r: dict) -> None:
         if r.get("degraded"):

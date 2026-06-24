@@ -20,6 +20,7 @@ that defaults to the deterministic summary (the real Steward enriches in-IDE).
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from collections import Counter
@@ -188,12 +189,35 @@ def _gh_available(source: Path) -> bool:
     return r.returncode == 0
 
 
+# Proposal filenames are generated (timestamp+id, or a validated slug); this
+# guards the value before it reaches `git`/`gh` argv (no leading '-', no metachars).
+_SAFE_STEM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def _stamp(path: Path, **kv: str) -> None:
-    """Insert frontmatter keys before the closing '---' (idempotency marker)."""
-    lines = path.read_text(encoding="utf-8").split("\n")
-    close = lines.index("---", 1)
-    inject = [f"{k}: {v}" for k, v in kv.items()]
-    path.write_text("\n".join(lines[:close] + inject + lines[close:]), encoding="utf-8")
+    """Add idempotency-marker keys to a proposal's frontmatter via the safe emitter.
+
+    Parses the existing frontmatter and re-emits through ``dump_frontmatter`` (not
+    hand-spliced), so an unsafe key/value cannot corrupt the block (P9 [R-audit]).
+    """
+    loaded = load_artifact(path)
+    if loaded.load_error is not None:
+        raise ProposeError(f"cannot stamp {path.name}: {loaded.load_error.message}")
+    fm = dict(loaded.frontmatter or {})
+    fm.update(kv)
+    path.write_text(dump_frontmatter(list(fm.items())) + (loaded.body or ""), encoding="utf-8")
+
+
+def _current_branch(source: Path) -> Optional[str]:
+    """The source repo's current branch (best-effort, read-only)."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(source), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.stdout.strip() or None if r.returncode == 0 else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def do_submit_proposals(
@@ -202,12 +226,16 @@ def do_submit_proposals(
     dry_run: bool,
     run: Optional[Runner] = None,
     gh_ok: Optional[bool] = None,
+    target_repo: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Turn proposals/ entries into draft PRs against the source repo.
+    """Turn proposals/ entries into draft PRs against the source repo (or
+    ``target_repo``, e.g. your fork).
 
     Only ever: create/push a feature branch ``cohort/proposal-<id>`` and run
     ``gh pr create --draft``. Never merges; never pushes the default branch;
-    never writes canonical/. Idempotent via the ``submitted_at`` stamp.
+    never writes canonical/. Idempotent via the ``submitted_at`` stamp. On any
+    git/gh failure it degrades cleanly *and restores the original branch* so the
+    user's working tree is never left stranded.
     """
     run = run or _default_run
     paths = CohortPaths.for_project(repo)
@@ -225,11 +253,15 @@ def do_submit_proposals(
         if fm.get("submitted_at"):
             skipped.append(p.name)  # idempotent: already submitted
             continue
+        if not _SAFE_STEM.match(p.stem):
+            skipped.append(p.name)  # unsafe filename → never feed to git/gh argv
+            continue
         kind = fm.get("kind", "promotion")  # back-compat default
         branch = f"cohort/proposal-{p.stem}"
         if dry_run or not available:
             continue
         staged = source / "proposals" / p.name  # review staging area — NEVER canonical/
+        original = _current_branch(source)
         try:
             run(["git", "-C", str(source), "checkout", "-b", branch])
             staged.parent.mkdir(parents=True, exist_ok=True)
@@ -237,14 +269,23 @@ def do_submit_proposals(
             run(["git", "-C", str(source), "add", str(staged)])
             run(["git", "-C", str(source), "commit", "-m", f"Proposal ({kind}): {p.stem}"])
             run(["git", "-C", str(source), "push", "origin", branch])
-            run(["gh", "pr", "create", "--draft", "--head", branch,
-                 "--title", f"Cohort proposal ({kind}): {p.stem}", "--body-file", str(staged)])
-            run(["git", "-C", str(source), "checkout", "-"])
+            pr_cmd = ["gh", "pr", "create", "--draft", "--head", branch,
+                      "--title", f"Cohort proposal ({kind}): {p.stem}", "--body-file", str(staged)]
+            if target_repo:
+                pr_cmd += ["--repo", target_repo]
+            run(pr_cmd)
         except Exception:  # noqa: BLE001 - git/gh failure (no push access, not a GitHub remote, …)
-            # Degrade cleanly: leave the proposal as a file for manual PR creation,
-            # don't stamp it, and stop. Never a half-done or crashed state.
             degraded = True
-            break
+        finally:
+            # Always restore the working tree to where it started — never strand
+            # the user on the proposal branch.
+            if original:
+                try:
+                    run(["git", "-C", str(source), "checkout", original])
+                except Exception:  # noqa: BLE001
+                    pass
+        if degraded:
+            break  # leave the proposal as a file (unstamped) for manual PR creation
         _stamp(p, submitted_at=now_iso(), branch=branch)
         submitted.append(p.name)
 
