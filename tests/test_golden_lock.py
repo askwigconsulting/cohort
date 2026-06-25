@@ -33,7 +33,7 @@ def test_codex_cursor_goldens_are_byte_locked(ide):
     assert golden_base.exists(), f"no locked goldens for {ide}"
     produced = {sf.staged_rel: sf.content for sf in compile_ide(REPO, ide).staged}
     locked = {
-        str(p.relative_to(golden_base)): p.read_bytes()
+        p.relative_to(golden_base).as_posix(): p.read_bytes()  # posix sep to match staged_rel
         for p in golden_base.rglob("*")
         if p.is_file()
     }

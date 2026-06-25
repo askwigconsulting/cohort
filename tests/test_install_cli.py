@@ -33,6 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def run_cli(*args, home, env_extra=None):
     env = dict(os.environ)
     env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)  # Windows: Path.home() reads USERPROFILE, not HOME
     env.pop("COHORT_SOURCE", None)
     if env_extra:
         env.update(env_extra)
@@ -66,7 +67,10 @@ def test_install_claude_on_clean(home):
     assert str(home / ".cohort" / "canonical") in dests
     # per-IDE op set is empty: every recorded op is global
     assert all(o["ide"] == "global" for o in m["ops"])
-    assert (home / ".cohort" / "canonical").is_symlink()
+    if os.name == "nt":
+        assert not (home / ".cohort" / "canonical").is_symlink()  # copy-mode default on Windows
+    else:
+        assert (home / ".cohort" / "canonical").is_symlink()
 
 
 def test_install_all_records_three(home):
@@ -122,7 +126,7 @@ def test_additive_copy_does_not_reflip_shared_canonical(home):
     assert (home / ".cohort" / "canonical").is_dir()
     assert not (home / ".cohort" / "canonical").is_symlink()
     m = read_manifest(home)
-    canon = next(o for o in m["ops"] if o["dest"].endswith("/canonical"))
+    canon = next(o for o in m["ops"] if Path(o["dest"]).name == "canonical")  # sep-agnostic
     assert canon["op"] == "copy"  # per-op type, not manifest mode, governs
 
 
@@ -180,7 +184,7 @@ def test_install_json_shape(home):
     )
     data = json.loads(proc.stdout)
     assert data["action"] == "install"
-    assert data["mode"] == "link"
+    assert data["mode"] == ("copy" if os.name == "nt" else "link")  # copy-mode default on Windows
     assert data["ides"] == ["claude"]
     assert set(data["summary"]) == {"applied", "skipped", "backed_up"}
 
@@ -226,7 +230,10 @@ def test_foreign_file_blocks_then_force_then_restore(home):
         "install", "--ide", "claude", "--source", str(REPO_ROOT), "--force", home=home
     )
     assert forced.returncode == 0
-    assert (home / ".cohort" / "canonical").is_symlink()
+    if os.name == "nt":
+        assert not (home / ".cohort" / "canonical").is_symlink()  # copy-mode default on Windows
+    else:
+        assert (home / ".cohort" / "canonical").is_symlink()
 
     run_cli("uninstall", home=home)
     assert foreign.read_text() == "MINE\n"  # restored
@@ -240,6 +247,20 @@ def test_log_lines_carry_required_fields(home):
     for line in log_lines:
         keys = {p.split("=", 1)[0] for p in line.split(" ")}
         assert all(f in keys for f in required), line
+
+
+# --- unit: platform-aware placement mode -----------------------------------
+
+
+def test_resolve_mode_defaults_to_copy_on_windows(monkeypatch):
+    import cohort.install_model as im
+
+    monkeypatch.setattr(im.os, "name", "nt")
+    assert im.resolve_mode(False) == "copy"  # Windows → copy (no symlink privilege needed)
+    assert im.resolve_mode(True) == "copy"
+    monkeypatch.setattr(im.os, "name", "posix")
+    assert im.resolve_mode(False) == "link"  # POSIX → symlink by default
+    assert im.resolve_mode(True) == "copy"  # --copy still forces copy everywhere
 
 
 # --- unit: selection & source ----------------------------------------------

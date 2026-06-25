@@ -31,7 +31,7 @@ from .improve import (
     do_propose_improvement,
     do_submit_proposals,
 )
-from .install_model import CohortPaths
+from .install_model import CohortPaths, resolve_mode
 from .logconf import emit_log
 from .project import (
     do_context_refresh,
@@ -61,6 +61,21 @@ app = typer.Typer(
 )
 
 
+def _force_utf8_io() -> None:
+    """Force UTF-8 on stdout/stderr so Cohort's Unicode output (→, …, —) never
+    crashes on a legacy Windows console (whose default cp1252 can't encode it).
+
+    No-op where the stream can't be reconfigured (e.g. a pytest-captured stream).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -71,6 +86,7 @@ def main(
     ),
 ) -> None:
     """Global options shared by every command."""
+    _force_utf8_io()
     ctx.obj = {"dry_run": dry_run}
 
 
@@ -192,7 +208,13 @@ def install(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
 
-    mode = "copy" if copy else "link"
+    mode = resolve_mode(copy)
+    if mode == "copy" and not copy:
+        typer.echo(
+            "note: Windows detected — placing copies instead of symlinks "
+            "(symlinks need Developer Mode/admin).",
+            err=True,
+        )
     start = time.perf_counter()
     try:
         report = do_install(
@@ -332,7 +354,13 @@ def recompile(
         for result in results:
             write_staging(paths, result)
 
-    mode = "copy" if copy else "link"
+    mode = resolve_mode(copy)
+    if mode == "copy" and not copy:
+        typer.echo(
+            "note: Windows detected — placing copies instead of symlinks "
+            "(symlinks need Developer Mode/admin).",
+            err=True,
+        )
     start = time.perf_counter()
     try:
         report = do_install(

@@ -34,4 +34,4 @@ def test_discovery_resolves_memory_under_memories(tmp_path):
     )
     found = discover_artifacts(tmp_path)
     assert target in found
-    assert str(found[0]).endswith("memories/house-style.md")
+    assert found[0].as_posix().endswith("memories/house-style.md")  # posix sep (Windows uses \)

@@ -99,6 +99,22 @@ structural and testable.
 - Cursor: per-file subagents `.cursor/agents/*.md` (`readonly`); `.cursor/rules/*.mdc`;
   `hooks.json` JSON.
 
+## Platform support (Windows)
+
+The CLI is cross-platform (pathlib, `Path.home()`); three POSIX assumptions are handled
+explicitly so native Windows works:
+
+- **Placement mode.** Symlinks are the POSIX default but need Developer Mode/admin on
+  Windows, so `resolve_mode()` (`install_model.py`) defaults to **copy** on `os.name == "nt"`.
+  Copy-mode is a full functional substitute — it never exercises a symlink code path.
+- **Directory fsync.** `manifest.persist()` keeps the file fsync but skips the POSIX
+  directory fsync on Windows (`os.open` on a directory fails there; it's a no-op concept).
+- **Installer.** `installer/bootstrap.ps1` is the PowerShell counterpart to `bootstrap.sh`
+  (Windows venv layout `\.venv\Scripts\`). `.gitattributes` forces LF checkout so the
+  byte-stable golden trees hold cross-platform. CI runs the suite on `windows-latest`.
+- **Reach.** The office is Claude Code subagents; the Claude **Desktop chat** app reads only
+  the compiled *skills*, not subagents — Windows users get the full office via Claude Code.
+
 ## The through-line
 
 The data-safety model that began as the installer's **clobber rule** (refuse to

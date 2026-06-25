@@ -15,6 +15,11 @@ python -m pytest        # full suite must pass
 cohort validate ./canonical
 ```
 
+On **Windows**, use `py -m venv .venv; .\.venv\Scripts\Activate.ps1`, and set
+`PYTHONUTF8=1` before running the suite (`$env:PYTHONUTF8="1"`) so file/subprocess
+text I/O defaults to UTF-8 instead of the console codepage. CI sets this for you.
+Symlink-mechanics tests are skipped on Windows (Cohort uses copy-mode there).
+
 ## Ground rules
 
 - **Tests alongside code.** Test behaviour, not implementation. New CLI surface
