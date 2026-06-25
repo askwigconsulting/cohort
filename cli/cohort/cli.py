@@ -61,6 +61,21 @@ app = typer.Typer(
 )
 
 
+def _force_utf8_io() -> None:
+    """Force UTF-8 on stdout/stderr so Cohort's Unicode output (→, …, —) never
+    crashes on a legacy Windows console (whose default cp1252 can't encode it).
+
+    No-op where the stream can't be reconfigured (e.g. a pytest-captured stream).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -71,6 +86,7 @@ def main(
     ),
 ) -> None:
     """Global options shared by every command."""
+    _force_utf8_io()
     ctx.obj = {"dry_run": dry_run}
 
 
