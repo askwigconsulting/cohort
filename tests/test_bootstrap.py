@@ -180,6 +180,60 @@ def test_bootstrap_shellcheck_clean():
 
 
 @pytest.mark.skipif(_powershell() is None, reason="PowerShell not available")
+def test_bootstrap_ps1_installs_when_not_importable_and_forwards(tmp_path):
+    """Behavioral: drive bootstrap.ps1 with a fake venv (COHORT_* overrides) and a
+    not-importable probe → it must run pip install (the fresh-machine path) and
+    forward --source + the caller's flags. Regression guard for the PowerShell 7.4+
+    terminating-error abort on the probe (the parse test can't catch control flow)."""
+    ps = _powershell()
+    is_win = os.name == "nt"
+    venv = tmp_path / "venv"
+    bindir = venv / ("Scripts" if is_win else "bin")  # mirrors bootstrap.ps1's $binDir
+    bindir.mkdir(parents=True)  # venv exists → script skips creation
+    pip_trace = tmp_path / "pip.txt"
+    cohort_trace = tmp_path / "cohort.txt"
+
+    if is_win:
+        _write_exec(
+            bindir / "python.cmd",
+            "@echo off\r\n"
+            'if "%~1"=="-c" exit /b 1\r\n'            # import cohort → not importable
+            'if "%~1"=="-m" echo %*>>"%PIP_TRACE%"\r\n'
+            'if "%~1"=="-m" exit /b 0\r\n'
+            "exit /b 0\r\n",
+        )
+        _write_exec(bindir / "cohort.cmd", '@echo off\r\necho %*>>"%COHORT_TRACE%"\r\nexit /b 0\r\n')
+        cohort_bin = bindir / "cohort.cmd"
+    else:
+        _write_exec(
+            bindir / "python",
+            "#!/bin/sh\n"
+            'if [ "$1" = "-c" ]; then exit 1; fi\n'   # import cohort → not importable
+            'if [ "$1" = "-m" ]; then echo "$@" >> "$PIP_TRACE"; exit 0; fi\n'
+            "exit 0\n",
+        )
+        _write_exec(bindir / "cohort", '#!/bin/sh\necho "$@" >> "$COHORT_TRACE"\nexit 0\n')
+        cohort_bin = bindir / "cohort"
+
+    env = dict(os.environ)
+    env.update({
+        "COHORT_SOURCE": str(REPO_ROOT),
+        "COHORT_VENV": str(venv),
+        "COHORT_BIN": str(cohort_bin),
+        "PIP_TRACE": str(pip_trace),
+        "COHORT_TRACE": str(cohort_trace),
+    })
+    proc = subprocess.run(
+        [ps, "-NoProfile", "-NonInteractive", "-File", str(BOOTSTRAP_PS1), "--ide", "claude"],
+        capture_output=True, text=True, env=env,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "pip install -e" in pip_trace.read_text()  # fresh-machine path actually ran
+    forwarded = cohort_trace.read_text()
+    assert "recompile" in forwarded and "--source" in forwarded and "--ide claude" in forwarded
+
+
+@pytest.mark.skipif(_powershell() is None, reason="PowerShell not available")
 def test_bootstrap_ps1_parses_clean():
     """The Windows bootstrap has no PowerShell syntax errors (the .ps1 analog of
     `sh -n` for bootstrap.sh)."""

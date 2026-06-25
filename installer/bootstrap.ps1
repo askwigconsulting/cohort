@@ -15,6 +15,12 @@ Override points (mainly for tests): COHORT_SOURCE, COHORT_VENV, COHORT_PYTHON,
 COHORT_BIN.
 #>
 $ErrorActionPreference = 'Stop'
+# Native commands signal via $LASTEXITCODE, which we check explicitly below. Don't
+# let a non-zero exit raise a terminating error — the `import cohort` probe's
+# expected failure on a fresh machine would otherwise abort the script before the
+# pip install. (This feature is on by default in PowerShell 7.4+; the variable is
+# harmless on Windows PowerShell 5.1, which lacks it.)
+$PSNativeCommandUseErrorActionPreference = $false
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repo   = if ($env:COHORT_SOURCE) { $env:COHORT_SOURCE } else { (Resolve-Path (Join-Path $scriptDir '..')).Path }
