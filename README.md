@@ -54,14 +54,19 @@ The office is built on **Claude Code's native subagents** (`~/.claude/agents/`),
 `irm https://claude.ai/install.ps1 | iex`). Note: the **Claude Desktop chat app does not read
 subagents** — it only sees Cohort's compiled *skills*. To get the full office, use Claude Code.
 
+A stock Windows PowerShell blocks local scripts (`Activate.ps1`, `bootstrap.ps1`) by default, so
+allow them once for your user first:
+
 ```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned   # one-time, per user
 git clone https://github.com/askwigconsulting/cohort cohort; cd cohort
 py -m venv .venv; .\.venv\Scripts\Activate.ps1   # isolated environment
 pip install -e .                                  # puts the `cohort` CLI on PATH
 cohort recompile --ide claude                     # compile the roster + place it into Claude Code
 ```
 
-Or run the one-shot bootstrap: `.\installer\bootstrap.ps1 --ide claude`. On Windows, Cohort places
+Or run the one-shot bootstrap: `powershell -ExecutionPolicy Bypass -File .\installer\bootstrap.ps1 --ide claude`
+(the `-ExecutionPolicy Bypass` avoids the script-blocking prompt). On Windows, Cohort places
 **copies** instead of symlinks by default (symlinks need Developer Mode/admin), so no elevation is
 required. The remaining journey (`cohort init`, `snapshot`, the feedback loop, …) is identical to the
 sequence above.

@@ -190,7 +190,7 @@ def test_recompile_install_then_idempotent_then_uninstall(home):
     assert first.returncode == 0, first.stderr
     placed = home / ".claude" / "agents" / "security-engineer.md"
     if os.name == "nt":
-        assert not placed.is_symlink()  # Windows defaults to copy-mode
+        assert placed.is_file() and not placed.is_symlink()  # Windows defaults to copy-mode
     else:
         assert placed.is_symlink()
     assert placed.read_bytes() == (GOLDEN / "agents" / "security-engineer.md").read_bytes()

@@ -81,8 +81,6 @@ class Manifest:
             dir_fd = os.open(str(path.parent), os.O_RDONLY)
             try:
                 os.fsync(dir_fd)
-            except OSError:
-                pass
             finally:
                 os.close(dir_fd)
 

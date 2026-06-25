@@ -68,7 +68,8 @@ def test_install_claude_on_clean(home):
     # per-IDE op set is empty: every recorded op is global
     assert all(o["ide"] == "global" for o in m["ops"])
     if os.name == "nt":
-        assert not (home / ".cohort" / "canonical").is_symlink()  # copy-mode default on Windows
+        assert (home / ".cohort" / "canonical").is_dir()  # copy-mode default on Windows
+        assert not (home / ".cohort" / "canonical").is_symlink()
     else:
         assert (home / ".cohort" / "canonical").is_symlink()
 
@@ -206,6 +207,19 @@ def test_uninstall_json_shape(home):
     assert "backed_up" not in data["summary"]
 
 
+def test_cli_output_survives_legacy_cp1252_console(home):
+    """Emulate a legacy Windows console (cp1252 stdio, UTF-8 mode OFF): the plan
+    output prints '→', which without _force_utf8_io raises UnicodeEncodeError. This
+    proves the fix directly — independent of the PYTHONUTF8=1 the rest of the suite
+    runs under (which would otherwise mask the fix's absence)."""
+    proc = run_cli(
+        "recompile", "--ide", "claude", "--source", str(REPO_ROOT), "--dry-run",
+        home=home, env_extra={"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "applied:" in proc.stdout  # human output completed past the '→' op lines
+
+
 # --- integration: round-trip + foreign-file --------------------------------
 
 
@@ -231,7 +245,8 @@ def test_foreign_file_blocks_then_force_then_restore(home):
     )
     assert forced.returncode == 0
     if os.name == "nt":
-        assert not (home / ".cohort" / "canonical").is_symlink()  # copy-mode default on Windows
+        assert (home / ".cohort" / "canonical").is_dir()  # copy-mode default on Windows
+        assert not (home / ".cohort" / "canonical").is_symlink()
     else:
         assert (home / ".cohort" / "canonical").is_symlink()
 
