@@ -15,6 +15,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+    env:
+      # Python UTF-8 mode: make open()/read_text()/subprocess text decoding default
+      # to UTF-8 so the suite isn't at the mercy of the Windows console codepage
+      # (cp1252). The CLI itself is independently UTF-8-safe (cli._force_utf8_io).
+      PYTHONUTF8: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -126,7 +126,7 @@ def test_additive_copy_does_not_reflip_shared_canonical(home):
     assert (home / ".cohort" / "canonical").is_dir()
     assert not (home / ".cohort" / "canonical").is_symlink()
     m = read_manifest(home)
-    canon = next(o for o in m["ops"] if o["dest"].endswith("/canonical"))
+    canon = next(o for o in m["ops"] if Path(o["dest"]).name == "canonical")  # sep-agnostic
     assert canon["op"] == "copy"  # per-op type, not manifest mode, governs
 
 
@@ -184,7 +184,7 @@ def test_install_json_shape(home):
     )
     data = json.loads(proc.stdout)
     assert data["action"] == "install"
-    assert data["mode"] == "link"
+    assert data["mode"] == ("copy" if os.name == "nt" else "link")  # copy-mode default on Windows
     assert data["ides"] == ["claude"]
     assert set(data["summary"]) == {"applied", "skipped", "backed_up"}
 

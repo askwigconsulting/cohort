@@ -29,12 +29,14 @@ def _symlinks_creatable() -> bool:
         return False
 
 
-# For tests that directly create symlinks or assert symlink mechanics. Skips on a
-# host where symlinks aren't creatable (Windows without Developer Mode) rather
-# than failing — copy-mode is Cohort's default there and is covered elsewhere.
+# For tests that directly create symlinks or assert POSIX symlink mechanics.
+# Cohort never emits LINK ops on Windows (copy-mode is the default there), and the
+# symlink semantics these assert (readlink normalization, reverse removal) differ
+# on Windows even when a symlink *can* be created — so skip on nt outright, and on
+# any POSIX host that can't create one.
 requires_symlinks = pytest.mark.skipif(
-    not _symlinks_creatable(),
-    reason="symlinks not creatable on this host (Windows without Developer Mode)",
+    os.name == "nt" or not _symlinks_creatable(),
+    reason="symlink mechanics are POSIX-only (Cohort uses copy-mode on Windows)",
 )
 
 
