@@ -35,6 +35,7 @@ def load_ir(relpath: str):
 def run_cli(*args, home, env_extra=None):
     env = dict(os.environ)
     env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)  # Windows: Path.home() reads USERPROFILE, not HOME
     env.pop("COHORT_SOURCE", None)
     if env_extra:
         env.update(env_extra)
@@ -188,7 +189,10 @@ def test_recompile_install_then_idempotent_then_uninstall(home):
     first = run_cli("recompile", "--ide", "claude", "--source", str(PHASE2_SRC), home=home)
     assert first.returncode == 0, first.stderr
     placed = home / ".claude" / "agents" / "security-engineer.md"
-    assert placed.is_symlink()
+    if os.name == "nt":
+        assert not placed.is_symlink()  # Windows defaults to copy-mode
+    else:
+        assert placed.is_symlink()
     assert placed.read_bytes() == (GOLDEN / "agents" / "security-engineer.md").read_bytes()
 
     second = run_cli("recompile", "--ide", "claude", "--source", str(PHASE2_SRC), home=home)

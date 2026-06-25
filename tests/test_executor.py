@@ -19,6 +19,7 @@ from cohort.executor import (
 )
 from cohort.install_model import GLOBAL_IDE, CohortPaths, Op, OpStatus, OpType
 from cohort.manifest import Manifest, load_manifest
+from conftest import requires_symlinks
 
 
 def make_manifest(mode: str = "link") -> Manifest:
@@ -49,6 +50,7 @@ def paths_for(home):
 # --- behavioral: apply on clean --------------------------------------------
 
 
+@requires_symlinks
 def test_clean_apply_creates_dirs_and_links_in_order(home, src):
     paths = paths_for(home)
     plan = [
@@ -67,6 +69,7 @@ def test_clean_apply_creates_dirs_and_links_in_order(home, src):
     assert m.ops[0].created is True and m.ops[1].created is True
 
 
+@requires_symlinks
 def test_reapply_is_all_skipped(home, src):
     paths = paths_for(home)
     plan = [
@@ -80,6 +83,7 @@ def test_reapply_is_all_skipped(home, src):
     assert m2.ops == []  # nothing re-recorded
 
 
+@requires_symlinks
 def test_correct_symlink_is_noop_not_backed_up(home, src):
     paths = paths_for(home)
     dest = home / "link"
@@ -107,6 +111,7 @@ def test_foreign_file_refused_without_force(home, src):
     assert dest.read_text(encoding="utf-8") == "MINE\n"
 
 
+@requires_symlinks
 def test_force_backs_up_then_links_and_maps_backup(home, src):
     paths = paths_for(home)
     paths.state.mkdir(parents=True)  # so backups/ + manifest can be written
@@ -209,6 +214,7 @@ def test_mkdir_onto_file_is_clobber(home):
 # --- behavioral: reverse LIFO + rmdir-if-empty -----------------------------
 
 
+@requires_symlinks
 def test_reverse_lifo_removes_link_before_created_dir(home, src):
     paths = paths_for(home)
     paths.state.mkdir(parents=True)
@@ -236,6 +242,7 @@ def test_reverse_keeps_created_dir_left_nonempty_by_user(home, src):
     assert (home / "d" / "user.txt").exists()
 
 
+@requires_symlinks
 def test_reverse_skips_diverged_symlink(home, src):
     """Ownership check (B): a dest replaced by the user is not deleted."""
     paths = paths_for(home)
@@ -255,6 +262,7 @@ def test_reverse_skips_diverged_symlink(home, src):
 # --- behavioral: ide-filtered reverse --------------------------------------
 
 
+@requires_symlinks
 def test_slice_reverse_touches_only_that_ide(home, src):
     paths = paths_for(home)
     paths.state.mkdir(parents=True)
@@ -277,6 +285,7 @@ def test_slice_reverse_touches_only_that_ide(home, src):
 # --- integration: full round-trip ------------------------------------------
 
 
+@requires_symlinks
 def test_full_round_trip_is_byte_identical(home, src):
     paths = paths_for(home)
     before = path_hash(home)
@@ -310,6 +319,7 @@ def test_manifest_round_trips_with_ide_and_created(tmp_path):
     assert loaded.ops[1].ide == "claude"
 
 
+@requires_symlinks
 def test_tree_hash_does_not_follow_symlinks(home, src):
     import os
 
@@ -321,6 +331,7 @@ def test_tree_hash_does_not_follow_symlinks(home, src):
     assert path_hash(link) == h1
 
 
+@requires_symlinks
 def test_symlink_target_comparison(home, src):
     import os
 

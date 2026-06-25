@@ -75,11 +75,16 @@ class Manifest:
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
-        dir_fd = os.open(str(path.parent), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
+        # Directory fsync is a POSIX durability step; it's a no-op concept on
+        # Windows (os.open on a directory fails there), so skip it on nt.
+        if os.name != "nt":
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(dir_fd)
 
 
 def load_manifest(path: Path) -> Optional[Manifest]:

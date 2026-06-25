@@ -38,6 +38,7 @@ def make_git_repo(path: Path) -> Path:
 def run_cli(*args, repo: Path, home: Path):
     env = dict(os.environ)
     env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)  # Windows: Path.home() reads USERPROFILE, not HOME
     env.pop("COHORT_SOURCE", None)
     return subprocess.run(
         [sys.executable, "-m", "cohort", *args], cwd=repo, capture_output=True, text=True, env=env

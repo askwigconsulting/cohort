@@ -1,0 +1,5 @@
+# Normalize all text to LF on checkout, on every platform. Cohort renders
+# byte-stable artifacts and asserts them against golden trees; a CRLF checkout on
+# Windows would change those bytes and break the golden/parity tests. POSIX shell
+# scripts also require LF.
+* text=auto eol=lf

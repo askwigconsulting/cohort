@@ -31,7 +31,7 @@ from .improve import (
     do_propose_improvement,
     do_submit_proposals,
 )
-from .install_model import CohortPaths
+from .install_model import CohortPaths, resolve_mode
 from .logconf import emit_log
 from .project import (
     do_context_refresh,
@@ -192,7 +192,13 @@ def install(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
 
-    mode = "copy" if copy else "link"
+    mode = resolve_mode(copy)
+    if mode == "copy" and not copy:
+        typer.echo(
+            "note: Windows detected — placing copies instead of symlinks "
+            "(symlinks need Developer Mode/admin).",
+            err=True,
+        )
     start = time.perf_counter()
     try:
         report = do_install(
@@ -332,7 +338,13 @@ def recompile(
         for result in results:
             write_staging(paths, result)
 
-    mode = "copy" if copy else "link"
+    mode = resolve_mode(copy)
+    if mode == "copy" and not copy:
+        typer.echo(
+            "note: Windows detected — placing copies instead of symlinks "
+            "(symlinks need Developer Mode/admin).",
+            err=True,
+        )
     start = time.perf_counter()
     try:
         report = do_install(

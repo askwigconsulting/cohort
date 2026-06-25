@@ -47,6 +47,25 @@ review and merge). The `cohort …` command sequence above is asserted equal to 
 full-system end-to-end test executes, so the *journey* can't drift from the tool; the `git clone` /
 venv / `pip install -e .` setup lines put the `cohort` CLI on your PATH first.
 
+### Windows (PowerShell)
+
+The office is built on **Claude Code's native subagents** (`~/.claude/agents/`), which the
+**Claude Code** CLI reads — install it first (`winget install Anthropic.ClaudeCode`, or
+`irm https://claude.ai/install.ps1 | iex`). Note: the **Claude Desktop chat app does not read
+subagents** — it only sees Cohort's compiled *skills*. To get the full office, use Claude Code.
+
+```powershell
+git clone https://github.com/askwigconsulting/cohort cohort; cd cohort
+py -m venv .venv; .\.venv\Scripts\Activate.ps1   # isolated environment
+pip install -e .                                  # puts the `cohort` CLI on PATH
+cohort recompile --ide claude                     # compile the roster + place it into Claude Code
+```
+
+Or run the one-shot bootstrap: `.\installer\bootstrap.ps1 --ide claude`. On Windows, Cohort places
+**copies** instead of symlinks by default (symlinks need Developer Mode/admin), so no elevation is
+required. The remaining journey (`cohort init`, `snapshot`, the feedback loop, …) is identical to the
+sequence above.
+
 ## Scope model
 
 | | Global (office roster) | Project (this repo) |

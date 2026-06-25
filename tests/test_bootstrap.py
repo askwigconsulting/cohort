@@ -19,8 +19,19 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP = REPO_ROOT / "installer" / "bootstrap.sh"
+BOOTSTRAP_PS1 = REPO_ROOT / "installer" / "bootstrap.ps1"
 MAKEFILE = REPO_ROOT / "installer" / "Makefile"
 REAL_VENV = REPO_ROOT / ".venv"
+
+
+def _powershell() -> str | None:
+    return shutil.which("pwsh") or shutil.which("powershell")
+
+
+# These exercise the POSIX installer; skip where the interpreter/tool is absent
+# (e.g. Windows CI has neither `sh` on PATH guaranteed nor GNU `make`).
+requires_sh = pytest.mark.skipif(shutil.which("sh") is None, reason="POSIX sh not available")
+requires_make = pytest.mark.skipif(shutil.which("make") is None, reason="GNU make not available")
 
 
 def _write_exec(path: Path, body: str) -> None:
@@ -71,6 +82,7 @@ def run_bootstrap(*args, env_extra):
 # --- behavioral -------------------------------------------------------------
 
 
+@requires_sh
 def test_bootstrap_forwards_dry_run_and_skips_pip_when_importable(fake_venv):
     env = {
         "COHORT_SOURCE": str(REPO_ROOT),
@@ -88,6 +100,7 @@ def test_bootstrap_forwards_dry_run_and_skips_pip_when_importable(fake_venv):
     assert not fake_venv["pip_trace"].exists()
 
 
+@requires_sh
 def test_bootstrap_installs_when_not_importable(fake_venv):
     env = {
         "COHORT_SOURCE": str(REPO_ROOT),
@@ -103,6 +116,7 @@ def test_bootstrap_installs_when_not_importable(fake_venv):
     assert "pip install -e" in fake_venv["pip_trace"].read_text()
 
 
+@requires_sh
 def test_bootstrap_propagates_cli_exit_code(fake_venv):
     env = {
         "COHORT_SOURCE": str(REPO_ROOT),
@@ -128,6 +142,7 @@ def fake_cohort(tmp_path):
     return {"bin": binf, "trace": trace}
 
 
+@requires_make
 def test_make_install_forwards_ide(fake_cohort):
     proc = subprocess.run(
         ["make", "-C", str(REPO_ROOT / "installer"), "install",
@@ -138,6 +153,7 @@ def test_make_install_forwards_ide(fake_cohort):
     assert "recompile --ide claude,cursor" in fake_cohort["trace"].read_text()
 
 
+@requires_make
 def test_make_uninstall_invokes_cli(fake_cohort):
     proc = subprocess.run(
         ["make", "-C", str(REPO_ROOT / "installer"), "uninstall",
@@ -151,6 +167,7 @@ def test_make_uninstall_invokes_cli(fake_cohort):
 # --- script hygiene ---------------------------------------------------------
 
 
+@requires_sh
 def test_bootstrap_is_posix_sh_clean():
     proc = subprocess.run(["sh", "-n", str(BOOTSTRAP)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
@@ -162,9 +179,28 @@ def test_bootstrap_shellcheck_clean():
     assert proc.returncode == 0, proc.stdout
 
 
+@pytest.mark.skipif(_powershell() is None, reason="PowerShell not available")
+def test_bootstrap_ps1_parses_clean():
+    """The Windows bootstrap has no PowerShell syntax errors (the .ps1 analog of
+    `sh -n` for bootstrap.sh)."""
+    ps = _powershell()
+    script = (
+        "$errs=$null; "
+        f"[System.Management.Automation.Language.Parser]::ParseFile('{BOOTSTRAP_PS1}',"
+        "[ref]$null,[ref]$errs) | Out-Null; "
+        "if ($errs.Count -gt 0) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 } exit 0"
+    )
+    proc = subprocess.run(
+        [ps, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
 # --- integration: real venv -------------------------------------------------
 
 
+@requires_sh
 @pytest.mark.skipif(not REAL_VENV.exists(), reason="real .venv not present")
 def test_bootstrap_real_venv_round_trip(tmp_path):
     home = tmp_path / "home"

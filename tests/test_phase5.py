@@ -24,6 +24,7 @@ GOLDEN_REPORTS = COHORT_SRC / "tests" / "golden" / "reports"
 def run_cli(*args, home, cwd=None, env_extra=None):
     env = dict(os.environ)
     env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)  # Windows: Path.home() reads USERPROFILE, not HOME
     env.pop("COHORT_SOURCE", None)
     if env_extra:
         env.update(env_extra)

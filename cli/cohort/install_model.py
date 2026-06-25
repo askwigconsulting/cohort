@@ -8,6 +8,7 @@ producer — the executor injects it when ``--force`` displaces a foreign file.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -17,6 +18,17 @@ from typing import Any, Optional
 IDES = ("claude", "codex", "cursor")
 IDE_VALUES = (*IDES, "all")
 GLOBAL_IDE = "global"
+
+
+def resolve_mode(copy: bool) -> str:
+    """Pick the placement mode: ``copy`` or ``link`` (symlinks).
+
+    Symlinks are the default on POSIX, but on Windows they require Developer Mode
+    or admin, so copy-mode is the safe default there. ``--copy`` forces copy
+    everywhere; copy-mode is a full functional substitute (it never exercises any
+    symlink code path).
+    """
+    return "copy" if (copy or os.name == "nt") else "link"
 
 
 class OpType(str, Enum):
