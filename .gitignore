@@ -16,3 +16,9 @@ venv/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+
+# Cohort dogfooding artifacts — running Cohort against its own repo writes these
+# (project context, sessions, reports, the placed office). They are local state,
+# not source; canonical lives under canonical/. Force-add if ever intentional.
+/.cohort/
+/.claude/
