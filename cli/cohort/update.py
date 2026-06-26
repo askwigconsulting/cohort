@@ -98,7 +98,10 @@ def update_status(source: Path, home: Path) -> dict:
     if rc != 0 or not head:
         return unavailable
 
-    rc, _ = _git(source, "fetch", "--quiet", remote, timeout=_FETCH_TIMEOUT)
+    # ``--`` terminates option parsing: a config-supplied remote that looks like
+    # an option (e.g. ``--upload-pack=<cmd>``) must be treated as a remote name,
+    # never a git flag — otherwise a tampered global cohort.toml yields RCE.
+    rc, _ = _git(source, "fetch", "--quiet", "--", remote, timeout=_FETCH_TIMEOUT)
     if rc != 0:
         return unavailable  # offline / auth-required / no such remote
 
