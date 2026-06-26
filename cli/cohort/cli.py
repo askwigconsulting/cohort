@@ -32,6 +32,7 @@ from .improve import (
     do_submit_proposals,
 )
 from .install_model import CohortPaths, resolve_mode
+from .update import do_update_check
 from .logconf import emit_log
 from .project import (
     do_context_refresh,
@@ -793,6 +794,18 @@ def submit_proposals(
 def staleness_check_cmd() -> None:
     """Internal: the session_start staleness hook target. Always exits 0."""
     message = staleness_check(Path.cwd())
+    if message:
+        typer.echo(message, err=True)
+    raise typer.Exit(code=0)
+
+
+@app.command("update-check", hidden=True)
+def update_check_cmd() -> None:
+    """Internal: the session_start update-advisory hook target. Always exits 0."""
+    try:
+        message = do_update_check(Path.home())
+    except Exception:  # noqa: BLE001 - an advisory must never break a session
+        message = None
     if message:
         typer.echo(message, err=True)
     raise typer.Exit(code=0)
