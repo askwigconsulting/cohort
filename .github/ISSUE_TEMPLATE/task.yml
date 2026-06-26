@@ -1,0 +1,48 @@
+name: Task / Feature
+description: A unit of work — a feature, phase, or improvement to build.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Cohort's design rule is **canonical is law**: files under `canonical/` are the source of truth; everything else is compiled. Keep that in mind when scoping.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What needs to exist and why. One or two paragraphs.
+      placeholder: e.g. Add a Cursor hook-event renderer so canonical hooks reach Cursor.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria / Done when
+      description: Observable, testable conditions. Behavioural, not implementation.
+      placeholder: |
+        - [ ] `cohort recompile --ide cursor` emits the hook with stable bytes
+        - [ ] Covered by a behavioural test
+        - [ ] Parity: rendered, or declared in `adapters/cursor/parity-gaps.toml`
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Design notes / invariants touched
+      description: Relevant decisions (e.g. [J]–[O] in docs/DESIGN.md), invariants, or risks.
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - compile/renderer
+        - executor/placement
+        - CLI/commands
+        - self-improvement loop (Steward)
+        - infra/CI
+        - docs
+        - other
+    validations:
+      required: false
