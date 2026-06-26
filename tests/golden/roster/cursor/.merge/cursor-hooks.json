@@ -5,6 +5,10 @@
       {
         "type": "command",
         "command": "cohort staleness-check"
+      },
+      {
+        "type": "command",
+        "command": "cohort update-check"
       }
     ]
   }
