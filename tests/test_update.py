@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -159,11 +160,80 @@ def test_update_check_command_always_exits_0(tmp_path):
     assert proc.returncode == 0
 
 
-def test_update_check_hook_compiles_into_session_start():
-    """The new hook reaches every IDE's session_start fragment (no golden locks
-    the Claude path, so assert it directly from the real canonical)."""
+def _session_start_commands(hooks_json: bytes) -> list[str]:
+    """Every command string under the ``SessionStart`` array of a compiled hooks
+    file, flattening both Claude's ``{matcher, hooks:[{command}]}`` shape and the
+    Codex/Cursor flat ``{type, command}`` shape."""
+    hooks = json.loads(hooks_json).get("hooks", {})
+    # Claude keys it "SessionStart"; Codex/Cursor key it "sessionStart".
+    arr = next((v for k, v in hooks.items() if k.lower() == "sessionstart"), [])
+    cmds: list[str] = []
+    for entry in arr:
+        if "command" in entry:
+            cmds.append(entry["command"])
+        for hook in entry.get("hooks", []):
+            if "command" in hook:
+                cmds.append(hook["command"])
+    return cmds
+
+
+def test_update_check_routes_into_session_start():
+    """The hook must land as a *SessionStart* entry (not merely appear somewhere
+    in the blob) and be appended alongside staleness-check, not replace it."""
     from cohort.compile import compile_ide
 
     for ide in ("claude", "codex", "cursor"):
-        blob = b"".join(sf.content for sf in compile_ide(REPO_ROOT, ide).staged)
-        assert b"cohort update-check" in blob, ide
+        hooks = next(
+            sf for sf in compile_ide(REPO_ROOT, ide).staged
+            if sf.staged_rel.endswith(("settings.hooks.json", "-hooks.json"))
+        )
+        cmds = _session_start_commands(hooks.content)
+        assert "cohort update-check" in cmds, f"{ide}: not routed to SessionStart"
+        assert "cohort staleness-check" in cmds, f"{ide}: must coexist with staleness"
+
+
+def test_resolve_upstream_falls_back_when_tomllib_absent(tmp_path, monkeypatch):
+    """Python 3.10 ships no ``tomllib``; the lazy import raises ImportError and the
+    config read must degrade to defaults rather than break the session-start hook."""
+    _, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    (home / ".cohort").mkdir(parents=True)
+    (home / ".cohort" / "cohort.toml").write_text(
+        '[update]\nupstream_remote = "up"\nupstream_branch = "release"\n', encoding="utf-8"
+    )
+    monkeypatch.setitem(sys.modules, "tomllib", None)  # `import tomllib` → ImportError
+    # Config override is unreadable → falls back to origin + the clone's default branch.
+    assert resolve_upstream(src, home) == ("origin", "main")
+
+
+def test_marker_write_failure_does_not_burn_daily_slot(tmp_path, monkeypatch):
+    """A best-effort throttle: if the marker write fails (e.g. read-only state dir)
+    the advisory still fires and the failed write does NOT consume the day's check."""
+    up, src = _make_upstream_and_clone(tmp_path)
+    _commit(up, "a.txt", "1\n")
+    home = tmp_path / "home"
+    monkeypatch.setenv("COHORT_SOURCE", str(src))
+    # Occupy the state dir's path with a file so mkdir/write inside _mark_checked fail.
+    (home / ".cohort").mkdir(parents=True)
+    (home / ".cohort" / "state").write_text("not a dir", encoding="utf-8")
+    day = datetime(2026, 6, 26, tzinfo=timezone.utc)
+    assert "behind" in (do_update_check(home, now=day) or "")
+    assert "behind" in (do_update_check(home, now=day) or "")  # slot not burned → retries
+
+
+def test_uncountable_revlist_is_unavailable(tmp_path, monkeypatch):
+    """When ``rev-list --count`` yields nothing (the shallow-clone case the guard
+    calls out), update_status returns unavailable instead of ``int("")``-crashing."""
+    import cohort.update as u
+
+    up, src = _make_upstream_and_clone(tmp_path)
+    _commit(up, "a.txt", "1\n")
+    real_git = u._git
+
+    def fake_git(source, *args, **kwargs):
+        if args[:2] == ("rev-list", "--count"):
+            return 0, ""  # shallow history → range can't be counted → empty stdout
+        return real_git(source, *args, **kwargs)
+
+    monkeypatch.setattr(u, "_git", fake_git)
+    assert update_status(src, tmp_path / "home")["available"] is False
