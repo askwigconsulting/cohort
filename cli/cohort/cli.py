@@ -804,10 +804,10 @@ def update_check_cmd() -> None:
     """Internal: the session_start update-advisory hook target. Always exits 0."""
     try:
         message = do_update_check(Path.home())
+        if message:
+            typer.echo(message, err=True)
     except Exception:  # noqa: BLE001 - an advisory must never break a session
-        message = None
-    if message:
-        typer.echo(message, err=True)
+        pass
     raise typer.Exit(code=0)
 
 
