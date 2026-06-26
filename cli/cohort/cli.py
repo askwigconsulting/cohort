@@ -32,7 +32,7 @@ from .improve import (
     do_submit_proposals,
 )
 from .install_model import CohortPaths, resolve_mode
-from .update import do_update_check
+from .update import UpdateResult, do_update, do_update_check
 from .logconf import emit_log
 from .project import (
     do_context_refresh,
@@ -394,6 +394,77 @@ def _warn_divergence(report: InstallReport) -> None:
             f"(divergence). Run `cohort recompile --force` to restore Cohort's entries.",
             err=True,
         )
+
+
+_UPDATE_FAILED = ("unavailable", "diverged", "dirty", "pull_failed", "pip_failed", "recompile_refused")
+
+
+def _print_update_human(result: UpdateResult) -> None:
+    if result.status == "up_to_date":
+        typer.echo(f"Cohort is up to date with {result.upstream}.")
+        return
+    if result.status in _UPDATE_FAILED:
+        typer.echo(f"error: {result.detail}", err=True)
+        if result.status == "recompile_refused":  # the git pull *did* land
+            typer.echo(f"(the clone advanced to {result.target}.)", err=True)
+        return
+    plural = "s" if result.behind != 1 else ""
+    head = "Would update" if result.status == "dry_run" else "Updated"
+    typer.echo(
+        f"{head} Cohort: {result.behind} commit{plural} behind {result.upstream} "
+        f"({result.current} → {result.target})."
+    )
+    if result.commits:
+        typer.echo("Incoming commits:")
+        for line in result.commits[:15]:
+            typer.echo(f"  {line}")
+        if len(result.commits) > 15:
+            typer.echo(f"  … and {len(result.commits) - 15} more")
+    if result.changed_files:
+        typer.echo(f"Changed files: {len(result.changed_files)}")
+    if result.status == "dry_run":
+        typer.echo("Dry run — nothing changed. Re-run `cohort update` to apply.")
+        return
+    if result.pip_reinstalled:
+        typer.echo("Reinstalled the cohort package (pyproject.toml changed).")
+    if result.recompiled_ides:
+        typer.echo(f"Recompiled: {', '.join(result.recompiled_ides)}")
+    else:
+        typer.echo("No installed IDEs to recompile (run `cohort install`).")
+
+
+@app.command()
+def update(
+    ctx: typer.Context,
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview the update; change nothing."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Update Cohort to the latest upstream and recompile installed IDEs (ff-only)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+    start = time.perf_counter()
+    result = do_update(source_path, Path.home(), dry_run=effective_dry_run)
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    emit_log(
+        component="update",
+        action="update",
+        scope="global",
+        ide="-",
+        artifact=str(source_path),
+        status=result.status,
+        duration_ms=elapsed_ms,
+    )
+    if json_output:
+        typer.echo(_json.dumps(result.to_dict(), indent=2))
+    else:
+        _print_update_human(result)
+    raise typer.Exit(code=0 if result.ok else 1)
 
 
 @app.command()
