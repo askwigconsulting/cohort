@@ -1,0 +1,40 @@
+name: Bug report
+description: Something behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The incorrect behaviour, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. `cohort recompile --ide claude --source .`
+        2. ...
+        3. Observed: ...  Expected: ...
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Python version, IDE target (Claude/Codex/Cursor), and `cohort --version`.
+      placeholder: |
+        - OS: Fedora 44 / Windows 11
+        - Python: 3.12
+        - IDE: claude
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Error text or failing-test output. Don't paste secrets.
+      render: shell
+    validations:
+      required: false
