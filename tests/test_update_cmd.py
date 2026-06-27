@@ -172,13 +172,21 @@ def test_recompile_refused_returns_guidance_not_force(tmp_path, monkeypatch):
 
 def test_update_end_to_end_pulls_and_recompiles(tmp_path):
     """The full happy path: a real install on disk, a behind clone, then do_update
-    fast-forwards and recompiles the manifest's IDE in one call."""
+    fast-forwards and recompiles the manifest's IDE in one call. The upstream is a
+    fresh ``main`` repo seeded with the real canonical/ tree (not a clone of this
+    repo) so it's independent of however CI checked this checkout out."""
+    import shutil
+
     from cohort.install import do_install
 
     up = tmp_path / "up"
-    _git(tmp_path, "clone", "-q", str(REPO_ROOT), str(up))
+    up.mkdir()
+    _git(up, "init", "-q", "-b", "main")
     _git(up, "config", "user.email", "t@e.st")
     _git(up, "config", "user.name", "T")
+    shutil.copytree(REPO_ROOT / "canonical", up / "canonical")
+    _git(up, "add", "-A")
+    _git(up, "commit", "-qm", "seed canonical")
     src = tmp_path / "src"
     _git(tmp_path, "clone", "-q", str(up), str(src))
     _git(src, "config", "user.email", "t@e.st")
