@@ -24,13 +24,15 @@ import re
 import shutil
 import subprocess
 from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths
-from .loader import load_artifact
+from .loader import load_artifact, load_artifact_text
 from .project import _short_id, _stage, _utc_compact, now_iso
+from .update import resolve_upstream
 
 RATINGS = ("up", "down")
 
@@ -48,6 +50,112 @@ def _require_project(repo: Path) -> CohortPaths:
     if not paths.cohort_home.exists():
         raise FeedbackError("not a Cohort project; run `cohort init` first")
     return paths
+
+
+# --- Phase 3: upstream-candidate heuristic + project-marker sanitize ---------
+#
+# "Cohort learns from its consumers": a proposal that is generally useful (no
+# project-specific identifiers, canonical-shaped) is flagged as an upstream
+# candidate. The flag is advisory — a human confirms by running
+# `submit-proposals --upstream`, which filters to candidates, derives the upstream
+# repo identity, and runs a second sanitize pass before any upstream PR.
+
+# User-home absolute paths carry usernames → project/operator-identifying. We do
+# NOT treat .cohort/.claude refs as markers: they exist in every install and are
+# Cohort-internal, not project-identifying.
+_LOCAL_PATH = re.compile(r"/(?:home|Users|root)/[^\s)]+|[A-Za-z]:\\Users\\[^\s)]+")
+
+# owner/repo from an SSH (git@host:owner/repo.git) or HTTPS (https://host/owner/repo.git) URL.
+_SLUG = re.compile(r"[:/]([^/:\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+@dataclass(frozen=True)
+class ProjectMarkers:
+    """Identifiers that mark content as project-specific (must not leak upstream).
+
+    ``slug`` is the project repo's ``owner/repo`` (from its git remote); ``specialists``
+    are the project-scope specialist agent names (``<repo>/.cohort/agents/*.md``).
+    The bare repo *directory* name is deliberately excluded — too collision-prone to
+    be a reliable marker.
+    """
+
+    slug: Optional[str]
+    specialists: tuple
+
+
+def _derive_slug(url: str) -> Optional[str]:
+    """``owner/repo`` from a GitHub SSH or HTTPS remote URL, else None."""
+    m = _SLUG.search(url.strip())
+    return f"{m.group(1)}/{m.group(2)}" if m else None
+
+
+def _remote_slug(path: Path, remote: str = "origin") -> Optional[str]:
+    """The ``owner/repo`` of ``path``'s ``remote`` (best-effort, read-only)."""
+    r = subprocess.run(
+        ["git", "-C", str(path), "remote", "get-url", remote],
+        capture_output=True, text=True,
+    )
+    return _derive_slug(r.stdout) if r.returncode == 0 else None
+
+
+def _project_specialists(repo: Path) -> tuple:
+    """Names of the project-scope specialist agents, if any."""
+    agents_dir = CohortPaths.for_project(repo).cohort_home / "agents"
+    if not agents_dir.exists():
+        return ()
+    return tuple(sorted(p.stem for p in agents_dir.glob("*.md")))
+
+
+def project_markers(repo: Path) -> ProjectMarkers:
+    """Collect the project-identifying markers for ``repo``."""
+    return ProjectMarkers(slug=_remote_slug(repo), specialists=_project_specialists(repo))
+
+
+def score_generality(frontmatter: dict, body: str, markers: ProjectMarkers) -> tuple:
+    """Is this proposal generally useful to upstream Cohort? Returns
+    ``(is_candidate, rationale)``. A candidate is canonical-shaped (``kind:
+    improvement``) and references no project slug, specialist, or user-home path.
+
+    Specialist names are matched whole-word; a specialist whose name collides with a
+    common word biases toward *not* upstreaming — the safe direction (never leak)."""
+    kind = (frontmatter or {}).get("kind", "")
+    if kind != "improvement":
+        return False, f"kind is {kind or 'unset'!r}, not a canonical-shaped improvement"
+    hits = []
+    if markers.slug and markers.slug in body:
+        hits.append(f"project repo {markers.slug}")
+    for name in markers.specialists:
+        if re.search(rf"\b{re.escape(name)}\b", body):
+            hits.append(f"project specialist {name!r}")
+    if _LOCAL_PATH.search(body):
+        hits.append("a user-home filesystem path")
+    if hits:
+        return False, "references " + "; ".join(hits)
+    return True, "generic improvement; no project repo, specialists, or user paths referenced"
+
+
+def sanitize_for_upstream(text: str, markers: ProjectMarkers) -> tuple:
+    """Defense-in-depth scrub before an upstream PR: replace any residual project
+    slug/specialist/user-home-path with a placeholder. Returns ``(clean, removed)``.
+    Candidates are pre-filtered to be clean, so this mainly catches enrichment-
+    injected paths."""
+    removed = []
+    out = text
+    if markers.slug and markers.slug in out:
+        out = out.replace(markers.slug, "[project repo]")
+        removed.append(markers.slug)
+    for name in markers.specialists:
+        new = re.sub(rf"\b{re.escape(name)}\b", "[project specialist]", out)
+        if new != out:
+            removed.append(name)
+            out = new
+
+    def _redact(match: re.Match) -> str:
+        removed.append(match.group(0))
+        return "[user path]"
+
+    out = _LOCAL_PATH.sub(_redact, out)
+    return out, removed
 
 
 # --- feedback ---------------------------------------------------------------
@@ -162,12 +270,24 @@ def do_propose_improvement(
     enrichment = enrich(evidence) if enrich is not None else None
     proposal = render_improvement_proposal(evidence, enrichment)
     filename = f"improvement-{_utc_compact()}-{_short_id()}.md"
+    # Classify generality up front so the human reviewing the proposal sees whether
+    # it's an upstream candidate (advisory; they confirm via submit-proposals --upstream).
+    markers = project_markers(repo)
+    parsed = load_artifact_text(proposal, name_stem=filename[:-3])
+    candidate, rationale = score_generality(parsed.frontmatter or {}, parsed.body or "", markers)
     if dry_run:
-        return {"action": "propose-improvement", "dry_run": True, "file": filename, "body": proposal}
+        return {
+            "action": "propose-improvement", "dry_run": True, "file": filename,
+            "upstream_candidate": candidate, "upstream_rationale": rationale, "body": proposal,
+        }
     dest = paths.cohort_home / "proposals" / filename
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(proposal, encoding="utf-8")
-    return {"action": "propose-improvement", "dry_run": False, "file": filename}
+    _stamp(dest, upstream_candidate=candidate, upstream_rationale=rationale)
+    return {
+        "action": "propose-improvement", "dry_run": False, "file": filename,
+        "upstream_candidate": candidate,
+    }
 
 
 # --- submit-proposals: the human gate (draft PR, never merge/main) ----------
@@ -194,7 +314,7 @@ def _gh_available(source: Path) -> bool:
 _SAFE_STEM = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
-def _stamp(path: Path, **kv: str) -> None:
+def _stamp(path: Path, **kv: Any) -> None:
     """Add idempotency-marker keys to a proposal's frontmatter via the safe emitter.
 
     Parses the existing frontmatter and re-emits through ``dump_frontmatter`` (not
@@ -227,9 +347,18 @@ def do_submit_proposals(
     run: Optional[Runner] = None,
     gh_ok: Optional[bool] = None,
     target_repo: Optional[str] = None,
+    home: Optional[Path] = None,
+    upstream: bool = False,
 ) -> dict[str, Any]:
     """Turn proposals/ entries into draft PRs against the source repo (or
     ``target_repo``, e.g. your fork).
+
+    With ``upstream=True`` (Phase 3): only proposals stamped ``upstream_candidate:
+    true`` are submitted, the PR targets the **upstream Cohort** repo (the
+    ``resolve_upstream`` remote from Phase 1 — push and PR target are the *same*
+    repo, so no fork-head mismatch), and each body gets a sanitize pass first. To
+    contribute from a fork without upstream push access, point ``[update]
+    upstream_remote`` at a fork remote you can push to.
 
     Only ever: create/push a feature branch ``cohort/proposal-<id>`` and run
     ``gh pr create --draft``. Never merges; never pushes the default branch;
@@ -244,6 +373,20 @@ def do_submit_proposals(
     if not proposals:
         return {"action": "submit-proposals", "submitted": [], "skipped": [], "degraded": False}
 
+    # Upstream mode resolves a coherent (push-remote, PR-target) pair up front, so a
+    # failure to identify the upstream short-circuits before any branch is created.
+    push_remote, pr_target, markers = "origin", target_repo, None
+    if upstream:
+        push_remote, _ = resolve_upstream(source, home or Path.home())
+        pr_target = _remote_slug(source, push_remote)
+        markers = project_markers(repo)
+        if pr_target is None and not dry_run:
+            return {
+                "action": "submit-proposals", "submitted": [], "skipped": [], "degraded": True,
+                "detail": f"could not resolve the upstream repo from remote {push_remote!r}; "
+                "set [update] upstream_remote in cohort.toml to a GitHub remote.",
+            }
+
     available = _gh_available(source) if gh_ok is None else gh_ok
     submitted, skipped = [], []
     degraded = not available and not dry_run
@@ -256,6 +399,9 @@ def do_submit_proposals(
         if not _SAFE_STEM.match(p.stem):
             skipped.append(p.name)  # unsafe filename → never feed to git/gh argv
             continue
+        if upstream and fm.get("upstream_candidate") is not True:
+            skipped.append(p.name)  # not a human-confirmed upstream candidate
+            continue
         kind = fm.get("kind", "promotion")  # back-compat default
         branch = f"cohort/proposal-{p.stem}"
         if dry_run or not available:
@@ -265,14 +411,19 @@ def do_submit_proposals(
         try:
             run(["git", "-C", str(source), "checkout", "-b", branch])
             staged.parent.mkdir(parents=True, exist_ok=True)
-            staged.write_bytes(p.read_bytes())
+            if upstream:
+                clean, _ = sanitize_for_upstream(p.read_text(encoding="utf-8"), markers)
+                staged.write_text(clean, encoding="utf-8")
+            else:
+                staged.write_bytes(p.read_bytes())
             run(["git", "-C", str(source), "add", str(staged)])
             run(["git", "-C", str(source), "commit", "-m", f"Proposal ({kind}): {p.stem}"])
-            run(["git", "-C", str(source), "push", "origin", branch])
+            run(["git", "-C", str(source), "push", push_remote, branch])
+            title = f"Cohort {'upstream ' if upstream else ''}proposal ({kind}): {p.stem}"
             pr_cmd = ["gh", "pr", "create", "--draft", "--head", branch,
-                      "--title", f"Cohort proposal ({kind}): {p.stem}", "--body-file", str(staged)]
-            if target_repo:
-                pr_cmd += ["--repo", target_repo]
+                      "--title", title, "--body-file", str(staged)]
+            if pr_target:
+                pr_cmd += ["--repo", pr_target]
             run(pr_cmd)
         except Exception:  # noqa: BLE001 - git/gh failure (no push access, not a GitHub remote, …)
             degraded = True
@@ -286,7 +437,10 @@ def do_submit_proposals(
                     pass
         if degraded:
             break  # leave the proposal as a file (unstamped) for manual PR creation
-        _stamp(p, submitted_at=now_iso(), branch=branch)
+        stamp = {"submitted_at": now_iso(), "branch": branch}
+        if upstream:
+            stamp["submitted_upstream"] = pr_target
+        _stamp(p, **stamp)
         submitted.append(p.name)
 
     return {
