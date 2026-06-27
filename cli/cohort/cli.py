@@ -396,7 +396,13 @@ def _warn_divergence(report: InstallReport) -> None:
         )
 
 
-_UPDATE_FAILED = ("unavailable", "diverged", "dirty", "pull_failed", "pip_failed", "recompile_refused")
+_UPDATE_FAILED = ("unavailable", "diverged", "dirty", "pull_failed", "pip_failed")
+
+
+def _printable(line: str) -> str:
+    """Drop control/escape bytes so an attacker-influenced upstream commit message
+    can't smuggle terminal escape sequences into our output."""
+    return "".join(c for c in line if c.isprintable())
 
 
 def _print_update_human(result: UpdateResult) -> None:
@@ -405,8 +411,14 @@ def _print_update_human(result: UpdateResult) -> None:
         return
     if result.status in _UPDATE_FAILED:
         typer.echo(f"error: {result.detail}", err=True)
-        if result.status == "recompile_refused":  # the git pull *did* land
-            typer.echo(f"(the clone advanced to {result.target}.)", err=True)
+        return
+    if result.status == "recompile_refused":
+        # The fast-forward (and any pip reinstall) already landed — only re-placing
+        # the IDE artifacts is pending. Lead with that so it doesn't read as a
+        # total failure, then surface the actionable guidance to stderr.
+        pip = " (package reinstalled)" if result.pip_reinstalled else ""
+        typer.echo(f"Updated Cohort to {result.target}{pip}.")
+        typer.echo(f"warning: {result.detail}", err=True)
         return
     plural = "s" if result.behind != 1 else ""
     head = "Would update" if result.status == "dry_run" else "Updated"
@@ -417,7 +429,7 @@ def _print_update_human(result: UpdateResult) -> None:
     if result.commits:
         typer.echo("Incoming commits:")
         for line in result.commits[:15]:
-            typer.echo(f"  {line}")
+            typer.echo(f"  {_printable(line)}")
         if len(result.commits) > 15:
             typer.echo(f"  … and {len(result.commits) - 15} more")
     if result.changed_files:

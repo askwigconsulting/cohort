@@ -170,6 +170,49 @@ def test_recompile_refused_returns_guidance_not_force(tmp_path, monkeypatch):
     assert ides == ["claude"] and refused and "overwrite" in refused
 
 
+def test_update_end_to_end_pulls_and_recompiles(tmp_path):
+    """The full happy path: a real install on disk, a behind clone, then do_update
+    fast-forwards and recompiles the manifest's IDE in one call."""
+    from cohort.install import do_install
+
+    up = tmp_path / "up"
+    _git(tmp_path, "clone", "-q", str(REPO_ROOT), str(up))
+    _git(up, "config", "user.email", "t@e.st")
+    _git(up, "config", "user.name", "T")
+    src = tmp_path / "src"
+    _git(tmp_path, "clone", "-q", str(up), str(src))
+    _git(src, "config", "user.email", "t@e.st")
+    _git(src, "config", "user.name", "T")
+    home = tmp_path / "home"
+    home.mkdir()
+    do_install(home=home, selection=["claude"], mode="copy", force=False, source=src, dry_run=False)
+    _commit(up, "DOCS_NOTE.md", "a harmless upstream change\n")  # not pyproject, not canonical
+
+    res = do_update(src, home, pip_run=_no_pip)
+    assert res.status == "updated"
+    assert res.recompiled_ides == ["claude"]
+    assert res.behind == 1 and res.pip_reinstalled is False
+    assert (home / ".claude" / "commands" / "update.md").exists()
+
+
+def test_recompile_compile_error_returns_guidance(tmp_path, monkeypatch):
+    """A malformed/hostile pulled tree fails closed (guidance), not a post-merge crash."""
+    import cohort.compile as comp
+    from cohort.compile import CompileError
+    from cohort.install import do_install
+
+    home = tmp_path / "home"
+    home.mkdir()
+    do_install(home=home, selection=["claude"], mode="copy", force=False, source=REPO_ROOT, dry_run=False)
+
+    def boom(*args, **kwargs):
+        raise CompileError("bad artifact")
+
+    monkeypatch.setattr(comp, "compile_ide", boom)
+    ides, refused = _recompile_installed(REPO_ROOT, home)
+    assert ides == ["claude"] and refused and "failed to compile" in refused
+
+
 def test_update_command_renders_for_claude_and_cursor_not_codex():
     from cohort.compile import compile_ide
 
@@ -195,6 +238,27 @@ def test_update_cli_dry_run_exits_0_with_preview(tmp_path):
         capture_output=True, text=True, env=env,
     )
     assert proc.returncode == 0 and "Would update" in proc.stdout
+
+
+def test_update_cli_json_dry_run_emits_clean_payload(tmp_path):
+    import json
+
+    up, src = _make_upstream_and_clone(tmp_path)
+    _commit(up, "a.txt", "1\n")
+    home = tmp_path / "home"
+    home.mkdir()
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env["COHORT_SOURCE"] = str(src)
+    proc = subprocess.run(
+        [sys.executable, "-m", "cohort", "update", "--dry-run", "--json"],
+        capture_output=True, text=True, env=env,
+    )
+    assert proc.returncode == 0
+    data = json.loads(proc.stdout)  # logs go to stderr → stdout is pure JSON
+    assert data["status"] == "dry_run" and data["behind"] == 1
+    assert data["recompiled_ides"] == [] and "target" in data
 
 
 def test_update_cli_dirty_tree_exits_1(tmp_path):

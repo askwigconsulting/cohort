@@ -242,8 +242,10 @@ def _is_dirty(source: Path) -> bool:
 
 
 def _incoming_commits(source: Path, upstream: str) -> list:
-    """One-line summaries of the commits ``HEAD..upstream`` would bring in."""
-    rc, out = _git(source, "log", "--oneline", "--no-merges", f"HEAD..{upstream}")
+    """One-line summaries of the commits ``HEAD..upstream`` would bring in. Includes
+    merges so the count matches ``behind`` from ``update_status``. ``upstream`` is
+    embedded mid-token (``HEAD..<ref>``) so it can never be read as a git option."""
+    rc, out = _git(source, "log", "--oneline", f"HEAD..{upstream}")
     return out.splitlines() if rc == 0 and out else []
 
 
@@ -266,7 +268,7 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
     during an update the user didn't opt into. A missing manifest (no install yet)
     recompiles nothing.
     """
-    from .compile import compile_ide, write_staging
+    from .compile import CompileError, compile_ide, write_staging
     from .executor import ClobberRefused
     from .install import do_install
     from .install_model import resolve_mode
@@ -278,10 +280,13 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
     if not ides:
         return [], None
     mode = manifest.mode if (manifest and manifest.mode) else resolve_mode(copy=False)
-    for ide in ides:
-        write_staging(paths, compile_ide(source, ide))
     try:
+        for ide in ides:
+            write_staging(paths, compile_ide(source, ide))
         do_install(home=home, selection=ides, mode=mode, force=False, source=source, dry_run=False)
+    except CompileError as exc:
+        # A malformed/hostile pulled tree must not crash post-merge: fail closed.
+        return ides, f"the updated canonical tree failed to compile: {exc}"
     except ClobberRefused as exc:
         return ides, str(exc)
     return ides, None
@@ -337,7 +342,9 @@ def do_update(
         )
 
     # Fast-forward only: refuses (rc != 0) rather than ever creating a merge commit.
-    rc, _ = _git(source, "merge", "--ff-only", upstream, timeout=_PULL_TIMEOUT)
+    # ``--`` keeps this call self-defending — an option-like upstream ref can never
+    # be read as a git flag here, independent of the fetch gate in update_status.
+    rc, _ = _git(source, "merge", "--ff-only", "--", upstream, timeout=_PULL_TIMEOUT)
     if rc != 0:
         return UpdateResult(
             status="pull_failed", upstream=upstream, behind=behind, current=current,
