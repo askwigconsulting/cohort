@@ -87,6 +87,28 @@ def test_score_generality_specialist_regex_metachars_are_escaped():
     assert ok is True
 
 
+def test_score_generality_flags_a_secret_token():
+    token = "ghp_" + "A" * 36
+    ok, why = score_generality({"kind": "improvement"}, f"pasted token {token}", M_NONE)
+    assert ok is False and "secret" in why
+
+
+def test_local_path_regex_does_not_match_var_home():
+    # /var/home/... is not a user-home path — the anchored regex must not flag it
+    ok, _ = score_generality({"kind": "improvement"}, "config under /var/home/svc/data", M_NONE)
+    assert ok is True
+
+
+def test_email_regex_is_bounded_against_redos():
+    # a pathological near-email must not catastrophically backtrack
+    import time
+
+    payload = ("a." * 20000) + "@"
+    start = time.perf_counter()
+    score_generality({"kind": "improvement"}, payload, M_NONE)
+    assert time.perf_counter() - start < 1.0  # linear, not quadratic
+
+
 def test_sanitize_removes_all_markers():
     text = "Improve data-modeler and see acme/widgets at /home/bob/x/y."
     clean, removed = sanitize_for_upstream(text, M_PROJ)
@@ -286,6 +308,38 @@ def test_non_upstream_submit_is_unchanged(repo, home, source):
     flat = [" ".join(c) for c in runner.calls]
     assert any("push -- origin" in c for c in flat)
     assert not any("--repo" in c for c in flat)  # no PR target in plain mode
+
+
+def test_submit_cleanup_on_failure_enables_retry(repo, home, source):
+    """A mid-flight submit failure cleans up the leftover branch + staged file so a
+    retry isn't wedged and a later `cohort update` isn't blocked by a dirty tree."""
+    _run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=repo)
+    _run_cli("propose-improvement", home=home, cwd=repo)
+    name = _proposal(repo).name
+
+    class FailingPush:
+        def __init__(self):
+            self.calls: list[list] = []
+
+        def __call__(self, cmd):
+            self.calls.append(list(cmd))
+            if "push" in cmd:
+                raise RuntimeError("no push access")
+            return None
+
+    runner = FailingPush()
+    result = improve.do_submit_proposals(
+        repo, source, dry_run=False, run=runner, gh_ok=True, home=home, upstream=True
+    )
+    assert result["degraded"] is True
+    flat = [" ".join(c) for c in runner.calls]
+    assert any("branch -D cohort/proposal-" in c for c in flat)  # leftover branch deleted
+    assert not (source / "proposals" / name).exists()  # staged file removed (no dirty-tree wedge)
+
+
+def test_feedback_rejects_overlong_field(repo, home):
+    r = _run_cli("feedback", "--rating", "up", "--agent", "x" * 5000, home=home, cwd=repo)
+    assert r.returncode == 1 and "too long" in (r.stderr + r.stdout)
 
 
 def test_cli_upstream_and_repo_are_mutually_exclusive(repo, home):

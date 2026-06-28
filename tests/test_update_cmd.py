@@ -221,6 +221,72 @@ def test_recompile_compile_error_returns_guidance(tmp_path, monkeypatch):
     assert ides == ["claude"] and refused and "failed to compile" in refused
 
 
+def test_update_pull_failed_when_merge_is_not_fast_forward(tmp_path, monkeypatch):
+    """The irreversible step is pinned: the merge must carry --ff-only, and a
+    non-ff at merge time yields pull_failed with HEAD unmoved (no merge commit)."""
+    import cohort.update as u
+
+    up, src = _make_upstream_and_clone(tmp_path)
+    _commit(up, "a.txt", "1\n")
+    before = _head(src)
+    real_git = u._git
+    seen = []
+
+    def fake_git(source, *args, **kwargs):
+        seen.append(args)
+        if args[:2] == ("merge", "--ff-only"):
+            return 1, ""  # simulate a non-fast-forward landing between check and merge
+        return real_git(source, *args, **kwargs)
+
+    monkeypatch.setattr(u, "_git", fake_git)
+    res = do_update(src, tmp_path / "home", pip_run=_no_pip)
+    assert res.status == "pull_failed" and _head(src) == before
+    assert any(a[:2] == ("merge", "--ff-only") for a in seen)  # flag is not silently dropped
+
+
+def test_recompile_installed_fails_closed_on_corrupt_manifest(tmp_path):
+    """A corrupt manifest must not crash the post-merge recompile — it degrades to
+    a refused_detail (do_update must never raise once the fast-forward applied)."""
+    from cohort.install_model import CohortPaths
+
+    home = tmp_path / "home"
+    mpath = CohortPaths(home).manifest
+    mpath.parent.mkdir(parents=True)
+    mpath.write_text("{ not valid json", encoding="utf-8")
+    ides, refused = _recompile_installed(REPO_ROOT, home)
+    assert ides == [] and refused and "recompile failed" in refused
+
+
+def test_update_recompile_refused_keeps_head_advanced(tmp_path, monkeypatch):
+    """When recompile refuses post-merge, the clone has still fast-forwarded and the
+    status reports recompile_refused (exit 1) rather than rolling back or crashing."""
+    import shutil
+
+    import cohort.install as inst
+    from cohort.executor import ClobberRefused
+    from cohort.install import do_install
+
+    up = tmp_path / "up"
+    up.mkdir()
+    _git(up, "init", "-q", "-b", "main")
+    _git(up, "config", "user.email", "t@e.st")
+    _git(up, "config", "user.name", "T")
+    shutil.copytree(REPO_ROOT / "canonical", up / "canonical")
+    _git(up, "add", "-A")
+    _git(up, "commit", "-qm", "seed")
+    src = tmp_path / "src"
+    _git(tmp_path, "clone", "-q", str(up), str(src))
+    home = tmp_path / "home"
+    home.mkdir()
+    do_install(home=home, selection=["claude"], mode="copy", force=False, source=src, dry_run=False)
+    _commit(up, "NOTE.md", "advance\n")
+
+    monkeypatch.setattr(inst, "do_install", lambda **kw: (_ for _ in ()).throw(ClobberRefused([])))
+    res = do_update(src, home, pip_run=_no_pip)
+    assert res.status == "recompile_refused"
+    assert _head(src) == _head(up)  # the fast-forward still applied; no rollback
+
+
 def test_update_command_renders_for_claude_and_cursor_not_codex():
     from cohort.compile import compile_ide
 
