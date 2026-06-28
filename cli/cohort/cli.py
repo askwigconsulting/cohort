@@ -829,7 +829,10 @@ def propose_improvement(
     if report.get("dry_run"):
         typer.echo(report["body"]) if not json_output else typer.echo(_json.dumps(report, indent=2))
     else:
-        _emit(report, json_output, lambda r: typer.echo(f"propose-improvement: proposals/{r['file']}"))
+        flag = "yes" if report.get("upstream_candidate") else "no"
+        _emit(report, json_output, lambda r: typer.echo(
+            f"propose-improvement: proposals/{r['file']} (upstream candidate: {flag})"
+        ))
     raise typer.Exit(code=0)
 
 
@@ -841,33 +844,55 @@ def submit_proposals(
         None, "--repo",
         help="GitHub repo (OWNER/NAME) to open the PR against, e.g. your fork. "
         "If you cloned Cohort and lack push access to the upstream, fork it first "
-        "and pass your fork here.",
+        "and pass your fork here. (Not used with --upstream.)",
+    ),
+    upstream: bool = typer.Option(
+        False, "--upstream",
+        help="Submit only upstream-candidate proposals to the upstream Cohort repo "
+        "(resolved from [update] upstream_remote), each sanitized of project markers.",
     ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Open a draft PR per proposal against the source repo (human reviews + merges)."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    if upstream and repo:
+        typer.echo(
+            "error: --upstream resolves the target from upstream_remote; --repo is not used with it. "
+            "To submit from a fork, set [update] upstream_remote to your fork remote.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     try:
         source_path = resolve_source(source)
     except SourceUnresolved as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
     report = do_submit_proposals(
-        find_repo_root(Path.cwd()), source_path, effective_dry_run, target_repo=repo
+        find_repo_root(Path.cwd()), source_path, effective_dry_run,
+        target_repo=repo, home=Path.home(), upstream=upstream,
     )
 
     def human(r: dict) -> None:
         if r.get("degraded"):
             typer.echo(
-                "note: gh/remote unavailable — proposals left as files in .cohort/proposals/ "
+                r.get("detail")
+                or "note: gh/remote unavailable — proposals left as files in .cohort/proposals/ "
                 "for manual PR creation.",
                 err=True,
             )
+        skipped_why = "not an upstream candidate / already submitted" if upstream else "already submitted"
         typer.echo(
-            f"submit-proposals: {'(dry-run) ' if r.get('dry_run') else ''}"
-            f"submitted {len(r['submitted'])} · skipped {len(r['skipped'])} (already submitted)"
+            f"submit-proposals:{' (upstream)' if upstream else ''} "
+            f"{'(dry-run) ' if r.get('dry_run') else ''}"
+            f"submitted {len(r['submitted'])} · skipped {len(r['skipped'])} ({skipped_why})"
         )
+        if r.get("redacted"):
+            typer.echo(
+                f"sanitized {len(r['redacted'])} project marker(s) before upstreaming; "
+                "review the rendered PR body before publishing.",
+                err=True,
+            )
 
     _emit(report, json_output, human)
     raise typer.Exit(code=0)
