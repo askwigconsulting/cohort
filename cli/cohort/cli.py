@@ -308,7 +308,7 @@ def compile(  # noqa: A001 - matches the user-facing command name
     paths = CohortPaths(Path.home())
     start = time.perf_counter()
     try:
-        results = [compile_ide(source_path, i) for i in selection]
+        results = [compile_ide(source_path, i, scope="global") for i in selection]
     except CompileError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -356,7 +356,7 @@ def recompile(
 
     paths = CohortPaths(Path.home())
     try:
-        results = [compile_ide(source_path, i) for i in selection]
+        results = [compile_ide(source_path, i, scope="global") for i in selection]
     except CompileError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
