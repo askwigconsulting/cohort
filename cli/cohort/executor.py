@@ -76,6 +76,7 @@ def _symlink_points_to(dest: Path, src: str) -> bool:
 def classify(
     op: Op,
     recorded_copy_hashes: dict[str, str],
+    recorded_links: Optional[dict[str, str]] = None,
     prior_merge: Optional[dict[str, Op]] = None,
     force: bool = False,
 ) -> OpStatus:
@@ -94,6 +95,16 @@ def classify(
     if op.op == OpType.LINK.value:
         if _symlink_points_to(dest, op.src or ""):
             return OpStatus.SATISFIED
+        if dest.is_symlink():
+            # A symlink the manifest records as ours is re-pointed in place (no
+            # backup) when it is dangling or still points at our prior target —
+            # e.g. the source clone moved/renamed. A symlink the user re-pointed
+            # to some other live target is treated as foreign (CLOBBER).
+            recorded_src = (recorded_links or {}).get(op.dest)
+            if recorded_src is not None and (
+                not dest.exists() or _symlink_points_to(dest, recorded_src)
+            ):
+                return OpStatus.APPLY
         if dest.is_symlink() or dest.exists():
             return OpStatus.CLOBBER
         return OpStatus.APPLY
@@ -159,6 +170,14 @@ def _prior_merge_ops(manifest: Optional[Manifest]) -> dict[str, Op]:
     return {o.dest: o for o in manifest.ops if o.op == OpType.MERGE.value}
 
 
+def _recorded_links(manifest: Optional[Manifest]) -> dict[str, str]:
+    """dest → previously recorded link target, for Cohort-owned LINK ops. Lets a
+    moved/renamed source self-heal (re-point) instead of refusing as a clobber."""
+    if manifest is None:
+        return {}
+    return {o.dest: (o.src or "") for o in manifest.ops if o.op == OpType.LINK.value}
+
+
 @dataclass
 class Preflight:
     classified: list[ClassifiedOp]
@@ -170,11 +189,12 @@ def preflight(
 ) -> Preflight:
     """Read-only classification of an entire plan. No filesystem mutation."""
     recorded = _recorded_copy_hashes(manifest)
+    recorded_links = _recorded_links(manifest)
     prior_merge = _prior_merge_ops(manifest)
     classified: list[ClassifiedOp] = []
     clobbers: list[ClassifiedOp] = []
     for op in plan:
-        status = classify(op, recorded, prior_merge, force)
+        status = classify(op, recorded, recorded_links, prior_merge, force)
         c = ClassifiedOp(op=op, status=status)
         if status == OpStatus.CLOBBER and not force:
             clobbers.append(c)
@@ -211,13 +231,14 @@ def apply(
     manifest written so far remains valid for a subsequent uninstall.
     """
     recorded = _recorded_copy_hashes(manifest)
+    recorded_links = _recorded_links(manifest)
     prior_merge = _prior_merge_ops(manifest)  # snapshot before we mutate the manifest
     outcomes: list[OpOutcome] = []
     for op in plan:
         if op.op == OpType.MERGE.value:
             outcomes.append(_apply_merge(op, paths, manifest, prior_merge.get(op.dest), force))
             continue
-        status = classify(op, recorded)
+        status = classify(op, recorded, recorded_links)
         if status == OpStatus.SATISFIED:
             outcomes.append(OpOutcome(op=op, status="skipped"))
             continue
@@ -286,7 +307,13 @@ def _place(op: Op, paths: CohortPaths, manifest: Manifest, recorded: dict[str, s
         dest.mkdir()
         recorded_op = Op(op=op.op, ide=op.ide, dest=op.dest, created=True)
     elif op.op == OpType.LINK.value:
+        if dest.is_symlink() or dest.exists():
+            _remove_path(dest)  # re-point our own (possibly dangling/stale) link in place
         os.symlink(op.src, dest)
+        # Keep exactly one LINK op per dest so a re-point doesn't accumulate stale
+        # entries (mirrors the MERGE dedup); the dest string is byte-identical between
+        # plan and manifest, which is what _recorded_links keys on.
+        manifest.ops = [o for o in manifest.ops if not (o.op == OpType.LINK.value and o.dest == op.dest)]
         recorded_op = Op(op=op.op, ide=op.ide, dest=op.dest, src=op.src)
     elif op.op == OpType.COPY.value:
         if dest.exists() or dest.is_symlink():
@@ -351,7 +378,11 @@ def _reverse_place_ops(ops: list[Op], result: ReverseResult, purge: bool = False
                 result.outcomes.append(OpOutcome(op=op, status="removed"))
             continue
         if op.op == OpType.LINK.value:
-            if _symlink_points_to(dest, op.src or ""):
+            # Remove our link if it still points at our target, or if it dangles
+            # (the source moved) — a dangling link we recorded is ours to clean up,
+            # never left to leak. A link re-pointed by the user to a live target is
+            # treated as foreign and skipped.
+            if _symlink_points_to(dest, op.src or "") or (dest.is_symlink() and not dest.exists()):
                 dest.unlink()
                 result.outcomes.append(OpOutcome(op=op, status="removed"))
             else:

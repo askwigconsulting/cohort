@@ -7,6 +7,9 @@ asserted in the CLI tests, not here.
 
 from __future__ import annotations
 
+import os
+import shutil
+
 import pytest
 
 from cohort.executor import (
@@ -341,3 +344,64 @@ def test_symlink_target_comparison(home, src):
     other = Op(OpType.LINK.value, GLOBAL_IDE, str(dest), src=str(src / "sub"))
     assert preflight([same], None, False).classified[0].status == OpStatus.SATISFIED
     assert preflight([other], None, False).classified[0].status == OpStatus.CLOBBER
+
+
+# --- moved/renamed source: Cohort-owned links self-heal (issue #34) ---------
+
+
+@requires_symlinks
+def test_moved_source_link_self_heals_without_force(home, src, tmp_path):
+    """A Cohort-owned link whose source moved (now dangling) re-points on the next
+    install from the new path — no --force, no clobber."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "canonical"
+    m = make_manifest()
+    apply([Op(OpType.LINK.value, GLOBAL_IDE, str(dest), src=str(src / "file.txt"))], paths, m, force=False)
+    assert dest.is_symlink() and dest.resolve() == (src / "file.txt")
+
+    new_src = tmp_path / "src2"
+    new_src.mkdir()
+    (new_src / "file.txt").write_text("hello\n", encoding="utf-8")
+    shutil.rmtree(src)  # the original clone moved/was deleted → link now dangles
+    assert dest.is_symlink() and not dest.exists()
+
+    plan = [Op(OpType.LINK.value, GLOBAL_IDE, str(dest), src=str(new_src / "file.txt"))]
+    assert preflight(plan, m, force=False).clobbers == []  # re-point, not a clobber
+    apply(plan, paths, m, force=False)
+    assert dest.is_symlink() and dest.exists() and dest.resolve() == (new_src / "file.txt")
+
+
+@requires_symlinks
+def test_user_repointed_link_is_still_a_clobber(home, src, tmp_path):
+    """A link the *user* re-pointed to their own live target is foreign — still a
+    clobber (backup/--force), never silently overwritten."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "canonical"
+    m = make_manifest()
+    apply([Op(OpType.LINK.value, GLOBAL_IDE, str(dest), src=str(src / "file.txt"))], paths, m, force=False)
+
+    other = tmp_path / "mine.txt"
+    other.write_text("mine\n", encoding="utf-8")
+    dest.unlink()
+    os.symlink(other, dest)  # user re-points it to a live, non-Cohort target
+
+    plan = [Op(OpType.LINK.value, GLOBAL_IDE, str(dest), src=str(src / "file.txt"))]
+    assert len(preflight(plan, m, force=False).clobbers) == 1
+
+
+@requires_symlinks
+def test_reverse_removes_dangling_owned_link(home, src):
+    """Uninstall removes a Cohort-owned link even after its source vanished — a
+    dangling link we recorded is ours to clean up, never leaked."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "canonical"
+    m = make_manifest()
+    apply([Op(OpType.LINK.value, GLOBAL_IDE, str(dest), src=str(src / "file.txt"))], paths, m, force=False)
+    shutil.rmtree(src)  # link dangles
+    assert dest.is_symlink() and not dest.exists()
+
+    result = reverse_full(m, paths)
+    assert not dest.is_symlink() and result.removed == 1  # removed, not skipped/leaked
