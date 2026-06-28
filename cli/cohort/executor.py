@@ -310,6 +310,10 @@ def _place(op: Op, paths: CohortPaths, manifest: Manifest, recorded: dict[str, s
         if dest.is_symlink() or dest.exists():
             _remove_path(dest)  # re-point our own (possibly dangling/stale) link in place
         os.symlink(op.src, dest)
+        # Keep exactly one LINK op per dest so a re-point doesn't accumulate stale
+        # entries (mirrors the MERGE dedup); the dest string is byte-identical between
+        # plan and manifest, which is what _recorded_links keys on.
+        manifest.ops = [o for o in manifest.ops if not (o.op == OpType.LINK.value and o.dest == op.dest)]
         recorded_op = Op(op=op.op, ide=op.ide, dest=op.dest, src=op.src)
     elif op.op == OpType.COPY.value:
         if dest.exists() or dest.is_symlink():
