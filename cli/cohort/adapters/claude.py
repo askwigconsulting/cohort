@@ -271,13 +271,34 @@ class ClaudeRenderer:
         fn = ONE_TO_ONE_RENDERERS.get(ir.kind)
         return fn(ir) if fn is not None else None
 
-    def compile(self, irs: list[IRArtifact]) -> tuple[list[StagedFile], list[str]]:
-        """IR → staged Claude files (1:1 + corpus + merge payloads); + skipped names."""
+    def compile(
+        self, irs: list[IRArtifact], project_tier: bool = False
+    ) -> tuple[list[StagedFile], list[str]]:
+        """IR → staged Claude files (1:1 + corpus + merge payloads); + skipped names.
+
+        ``project_tier`` is the tier switch. The global office (False) injects the
+        specialist directory into its generalist and wires the memory corpus into
+        ``CLAUDE.md``. The project tier (True) has neither: no office directory
+        (a project generalist is rejected), and no CLAUDE.md merge — that managed
+        block is owned by ``cohort init``, so project ``memory`` artifacts are
+        skipped rather than allowed to overwrite the init wiring.
+        """
         matched = [ir for ir in irs if self.matches(ir)]
-        specialists = [
-            ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
-        ]
-        directory = render_office_directory(specialists)
+        if project_tier:
+            generalists = [
+                ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "generalist"
+            ]
+            if generalists:
+                raise MarkerError(
+                    f"{generalists[0].name}: the project tier cannot declare a generalist "
+                    "(no office-directory injection at project scope)"
+                )
+            directory: Optional[str] = None
+        else:
+            specialists = [
+                ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
+            ]
+            directory = render_office_directory(specialists)
 
         staged: list[StagedFile] = []
         skipped: list[str] = []
@@ -289,7 +310,10 @@ class ClaudeRenderer:
             elif ir.kind == "hook":
                 hook_irs.append(ir)
             elif ir.kind == "memory":
-                memory_irs.append(ir)
+                if project_tier:
+                    skipped.append(ir.name)  # no CLAUDE.md merge at project tier
+                else:
+                    memory_irs.append(ir)
             elif ir.kind == "context":
                 skipped.append(ir.name)  # deferred to Phase 4
             else:

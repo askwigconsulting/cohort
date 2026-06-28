@@ -385,6 +385,39 @@ def _remove_stale_placed(stale: list[Op], manifest: Manifest, paths: CohortPaths
     return result.outcomes
 
 
+def do_install_project(repo: Path, mode: str = "link") -> dict[str, Any]:
+    """Compile ``<repo>/.cohort/canonical/`` at *project* scope and place it into
+    ``<repo>/.claude/`` via the project manifest — reversible, and isolated from the
+    global office (the executor's base is the repo, never ``$HOME``).
+
+    Claude-only for now (the project tier hardcodes claude, like ``add-specialist``).
+    ``project_tier=True`` disables office-directory injection (no project
+    generalist) and the CLAUDE.md memory merge — that managed block is owned by
+    ``cohort init`` (the ``@import`` of ``project_context.md``).
+    """
+    from .compile import compile_ide, scan_staging_ops, write_staging  # lazy: avoid import cycle
+
+    ppaths = CohortPaths.for_project(repo)
+    if not ppaths.manifest.exists():
+        raise UsageError("not a Cohort project; run `cohort init` first")
+    if not (ppaths.cohort_home / "canonical").exists():
+        return {"action": "project-recompile", "ide": "claude", "staged": [], "applied": 0}
+
+    ide = "claude"
+    result = compile_ide(ppaths.cohort_home, ide, scope="project", project_tier=True)
+    write_staging(ppaths, result)
+    plan = scan_staging_ops(ppaths, ide, mode)
+    manifest = load_manifest(ppaths.manifest)
+    outcomes = apply(plan, ppaths, manifest, force=False)
+    manifest.persist(ppaths.manifest)
+    return {
+        "action": "project-recompile",
+        "ide": ide,
+        "staged": [s.staged_rel for s in result.staged],
+        "applied": sum(1 for o in outcomes if o.status == "applied"),
+    }
+
+
 # --- uninstall --------------------------------------------------------------
 
 

@@ -71,12 +71,14 @@ def _load_irs(source: Path, scope: Optional[str] = None):
 
 def compile_ide(
     source: Path, ide: str, scope: Optional[str] = None,
-    only_agents: Optional[frozenset[str]] = None,
+    only_agents: Optional[frozenset[str]] = None, project_tier: bool = False,
 ) -> CompileResult:
     """Render every targeting canonical artifact of ``scope`` into staged files for
     ``ide``. The global install passes ``scope="global"`` (the leak guard — project
     artifacts never reach the global office); a project-tier compile passes
-    ``"project"``; ``None`` (default) compiles all scopes, for direct/test use.
+    ``"project"`` with ``project_tier=True`` (no office directory, no generalist,
+    no CLAUDE.md memory merge); ``None`` (default) compiles all scopes, for
+    direct/test use.
 
     ``only_agents`` restricts *agent* artifacts to the named subset (a tailored
     roster); every other kind still compiles. Filtering happens before the
@@ -96,7 +98,7 @@ def compile_ide(
         irs = [ir for ir in irs if not (ir.kind == "agent" and ir.name not in only_agents)]
         result.skipped.extend(sorted(excluded))
     try:
-        staged, skipped = renderer.compile(irs)
+        staged, skipped = renderer.compile(irs, project_tier=project_tier)
     except MarkerError as exc:
         raise CompileError(str(exc)) from exc
     result.staged = staged
