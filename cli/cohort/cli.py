@@ -887,6 +887,12 @@ def submit_proposals(
             f"{'(dry-run) ' if r.get('dry_run') else ''}"
             f"submitted {len(r['submitted'])} · skipped {len(r['skipped'])} ({skipped_why})"
         )
+        if r.get("redacted"):
+            typer.echo(
+                f"sanitized {len(r['redacted'])} project marker(s) before upstreaming; "
+                "review the rendered PR body before publishing.",
+                err=True,
+            )
 
     _emit(report, json_output, human)
     raise typer.Exit(code=0)

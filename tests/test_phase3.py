@@ -217,7 +217,7 @@ def test_submit_upstream_filters_to_candidates_and_targets_upstream(repo, home, 
     assert pr and all("--repo askwigconsulting/cohort" in c for c in pr)
     # coherence: the branch is pushed to the same repo the PR targets (resolved upstream remote)
     pushes = [c for c in flat if c.startswith("git") and " push " in c]
-    assert pushes and all("push origin cohort/proposal-" in c for c in pushes)
+    assert pushes and all("push -- origin cohort/proposal-" in c for c in pushes)
 
 
 def test_submit_upstream_skips_non_candidates(repo, home, source):
@@ -284,10 +284,91 @@ def test_non_upstream_submit_is_unchanged(repo, home, source):
     result = improve.do_submit_proposals(repo, source, dry_run=False, run=runner, gh_ok=True)
     assert len(result["submitted"]) == 1  # plain mode submits regardless of candidate flag
     flat = [" ".join(c) for c in runner.calls]
-    assert any("push origin" in c for c in flat)
+    assert any("push -- origin" in c for c in flat)
     assert not any("--repo" in c for c in flat)  # no PR target in plain mode
 
 
 def test_cli_upstream_and_repo_are_mutually_exclusive(repo, home):
     r = _run_cli("submit-proposals", "--upstream", "--repo", "me/fork", home=home, cwd=repo)
     assert r.returncode == 2 and "not used with" in (r.stderr + r.stdout)
+
+
+def test_propose_dry_run_classifies_without_writing(repo, home):
+    _run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=repo)
+    r = _run_cli("propose-improvement", "--dry-run", "--json", home=home, cwd=repo)
+    import json
+    report = json.loads(r.stdout)
+    assert report["upstream_candidate"] is True and "generic" in report["upstream_rationale"]
+    assert not list((repo / ".cohort" / "proposals").glob("*.md"))  # nothing written
+
+
+def test_submit_upstream_stamps_destination_and_is_idempotent(repo, home, source):
+    _run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=repo)
+    _run_cli("propose-improvement", home=home, cwd=repo)
+    improve.do_submit_proposals(repo, source, dry_run=False, run=RecordingRunner(),
+                                gh_ok=True, home=home, upstream=True)
+    fm = load_artifact(_proposal(repo)).frontmatter
+    assert fm["submitted_upstream"] == "askwigconsulting/cohort"
+    assert "submitted_at" not in fm  # upstream submit must not bar a later local submit
+    # re-run upstream → skipped (already submitted upstream), no duplicate PR
+    r2 = improve.do_submit_proposals(repo, source, dry_run=False, run=RecordingRunner(),
+                                     gh_ok=True, home=home, upstream=True)
+    assert r2["submitted"] == [] and len(r2["skipped"]) == 1
+
+
+def test_local_then_upstream_both_submit(repo, home, source):
+    """A proposal useful both ways can go local AND upstream — per-destination keys."""
+    _run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=repo)
+    _run_cli("propose-improvement", home=home, cwd=repo)
+    local = improve.do_submit_proposals(repo, source, dry_run=False, run=RecordingRunner(), gh_ok=True)
+    upstream = improve.do_submit_proposals(repo, source, dry_run=False, run=RecordingRunner(),
+                                           gh_ok=True, home=home, upstream=True)
+    assert len(local["submitted"]) == 1 and len(upstream["submitted"]) == 1
+    fm = load_artifact(_proposal(repo)).frontmatter
+    assert "submitted_at" in fm and fm.get("submitted_upstream") == "askwigconsulting/cohort"
+
+
+def test_submit_upstream_redacts_email_and_token(repo, home, source):
+    pdir = repo / ".cohort" / "proposals"
+    pdir.mkdir(parents=True, exist_ok=True)
+    secret = "ghp_" + "A" * 36
+    (pdir / "improvement-pii.md").write_text(
+        improve.dump_frontmatter([("kind", "improvement"), ("upstream_candidate", True)])
+        + f"Reported by jane@acme-internal.com with token {secret}.\n",
+        encoding="utf-8",
+    )
+    result = improve.do_submit_proposals(repo, source, dry_run=False, run=RecordingRunner(),
+                                         gh_ok=True, home=home, upstream=True)
+    staged = (source / "proposals" / "improvement-pii.md").read_text(encoding="utf-8")
+    assert "jane@acme-internal.com" not in staged and secret not in staged
+    assert "[email]" in staged and "[redacted token]" in staged
+    assert result["redacted"]  # surfaced for visibility
+
+
+def test_propose_flags_email_in_body_as_non_candidate(repo, home):
+    # a free-text proposal carrying an email must not be flagged upstream-safe
+    ok, why = score_generality(
+        {"kind": "improvement"}, "raised by jane@acme-internal.com on host db-prod-01", M_NONE
+    )
+    assert ok is False and "email" in why
+
+
+def test_submit_upstream_rejects_option_like_remote(repo, home, tmp_path, monkeypatch):
+    """A tampered [update] upstream_remote that looks like a git option must not
+    reach `git push` — it fails to resolve a valid target and degrades."""
+    src = tmp_path / "src-evil"
+    src.mkdir()
+    shutil.copytree(COHORT_SRC / "canonical", src / "canonical")
+    _git(src, "init", "-q")
+    _git(src, "remote", "add", "origin", "https://github.com/askwigconsulting/cohort.git")
+    cohort_toml = home / ".cohort" / "cohort.toml"
+    cohort_toml.parent.mkdir(parents=True, exist_ok=True)
+    cohort_toml.write_text(
+        '[update]\nupstream_remote = "--receive-pack=touch /tmp/PWNED"\n', encoding="utf-8"
+    )
+    _run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=repo)
+    _run_cli("propose-improvement", home=home, cwd=repo)
+    runner = RecordingRunner()
+    result = improve.do_submit_proposals(repo, src, dry_run=False, run=runner,
+                                         gh_ok=True, home=home, upstream=True)
+    assert result["degraded"] is True and runner.calls == []  # no git/gh ever ran

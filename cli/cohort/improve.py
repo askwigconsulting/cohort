@@ -60,13 +60,22 @@ def _require_project(repo: Path) -> CohortPaths:
 # `submit-proposals --upstream`, which filters to candidates, derives the upstream
 # repo identity, and runs a second sanitize pass before any upstream PR.
 
-# User-home absolute paths carry usernames → project/operator-identifying. We do
-# NOT treat .cohort/.claude refs as markers: they exist in every install and are
+# User-home absolute paths carry usernames → project/operator-identifying. Anchored
+# to a non-path boundary so it doesn't match mid-path (e.g. /var/home/...). We do NOT
+# treat .cohort/.claude refs as markers: they exist in every install and are
 # Cohort-internal, not project-identifying.
-_LOCAL_PATH = re.compile(r"/(?:home|Users|root)/[^\s)]+|[A-Za-z]:\\Users\\[^\s)]+")
+_LOCAL_PATH = re.compile(r"(?<![\w/])(?:/(?:home|Users|root)/[^\s)]+|[A-Za-z]:\\Users\\[^\s)]+)")
+# High-signal identifiers that should never be published upstream regardless of project.
+_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+_SECRET = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"
+)
 
 # owner/repo from an SSH (git@host:owner/repo.git) or HTTPS (https://host/owner/repo.git) URL.
 _SLUG = re.compile(r"[:/]([^/:\s]+)/([^/\s]+?)(?:\.git)?/?$")
+# A safe GitHub OWNER/REPO target for `gh --repo` (no leading dash, no metachars).
+_REPO_TARGET = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
 
 
 @dataclass(frozen=True)
@@ -74,13 +83,16 @@ class ProjectMarkers:
     """Identifiers that mark content as project-specific (must not leak upstream).
 
     ``slug`` is the project repo's ``owner/repo`` (from its git remote); ``specialists``
-    are the project-scope specialist agent names (``<repo>/.cohort/agents/*.md``).
-    The bare repo *directory* name is deliberately excluded — too collision-prone to
-    be a reliable marker.
+    are the project-scope specialist agent names (``<repo>/.cohort/agents/*.md``);
+    ``identity`` is the committer's git name/email. The bare repo *directory* name is
+    deliberately excluded — too collision-prone to be a reliable marker. This set is a
+    best-effort defense-in-depth filter, not an exhaustive PII detector: the human PR
+    review is the real publish gate.
     """
 
     slug: Optional[str]
-    specialists: tuple
+    specialists: tuple[str, ...]
+    identity: tuple[str, ...] = ()
 
 
 def _derive_slug(url: str) -> Optional[str]:
@@ -89,16 +101,26 @@ def _derive_slug(url: str) -> Optional[str]:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
-def _remote_slug(path: Path, remote: str = "origin") -> Optional[str]:
-    """The ``owner/repo`` of ``path``'s ``remote`` (best-effort, read-only)."""
+def _git_config(path: Path, key: str) -> Optional[str]:
     r = subprocess.run(
-        ["git", "-C", str(path), "remote", "get-url", remote],
+        ["git", "-C", str(path), "config", "--get", key], capture_output=True, text=True
+    )
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def _remote_slug(path: Path, remote: str = "origin") -> Optional[str]:
+    """The ``owner/repo`` of ``path``'s ``remote`` (best-effort, read-only). ``--``
+    terminates options so a config-supplied remote name can never be read as a flag."""
+    if remote.startswith("-"):
+        return None
+    r = subprocess.run(
+        ["git", "-C", str(path), "remote", "get-url", "--", remote],
         capture_output=True, text=True,
     )
     return _derive_slug(r.stdout) if r.returncode == 0 else None
 
 
-def _project_specialists(repo: Path) -> tuple:
+def _project_specialists(repo: Path) -> tuple[str, ...]:
     """Names of the project-scope specialist agents, if any."""
     agents_dir = CohortPaths.for_project(repo).cohort_home / "agents"
     if not agents_dir.exists():
@@ -108,53 +130,75 @@ def _project_specialists(repo: Path) -> tuple:
 
 def project_markers(repo: Path) -> ProjectMarkers:
     """Collect the project-identifying markers for ``repo``."""
-    return ProjectMarkers(slug=_remote_slug(repo), specialists=_project_specialists(repo))
+    identity = tuple(v for v in (_git_config(repo, "user.name"), _git_config(repo, "user.email")) if v)
+    return ProjectMarkers(
+        slug=_remote_slug(repo), specialists=_project_specialists(repo), identity=identity
+    )
 
 
-def score_generality(frontmatter: dict, body: str, markers: ProjectMarkers) -> tuple:
+def _scan_text(frontmatter: dict, body: str) -> str:
+    """The full surface a proposal exposes upstream: body + frontmatter string values
+    (so the candidacy gate sees `evidence_summary` etc., not just the body)."""
+    fm_vals = " ".join(str(v) for v in (frontmatter or {}).values())
+    return f"{body}\n{fm_vals}"
+
+
+def score_generality(frontmatter: dict, body: str, markers: ProjectMarkers) -> tuple[bool, str]:
     """Is this proposal generally useful to upstream Cohort? Returns
     ``(is_candidate, rationale)``. A candidate is canonical-shaped (``kind:
-    improvement``) and references no project slug, specialist, or user-home path.
-
-    Specialist names are matched whole-word; a specialist whose name collides with a
-    common word biases toward *not* upstreaming — the safe direction (never leak)."""
+    improvement``) and exposes no project slug/specialist/identity, user-home path,
+    email, or secret-shaped token. Markers are matched whole-word (specialists/identity)
+    or case-insensitively (slug); a collision biases toward *not* upstreaming — the
+    safe direction (never leak). This is best-effort, not exhaustive — a human reviews
+    the rendered PR before publishing."""
     kind = (frontmatter or {}).get("kind", "")
     if kind != "improvement":
         return False, f"kind is {kind or 'unset'!r}, not a canonical-shaped improvement"
+    text = _scan_text(frontmatter, body)
     hits = []
-    if markers.slug and markers.slug in body:
+    if markers.slug and re.search(re.escape(markers.slug), text, re.IGNORECASE):
         hits.append(f"project repo {markers.slug}")
     for name in markers.specialists:
-        if re.search(rf"\b{re.escape(name)}\b", body):
+        if re.search(rf"\b{re.escape(name)}\b", text):
             hits.append(f"project specialist {name!r}")
-    if _LOCAL_PATH.search(body):
+    for who in markers.identity:
+        if re.search(rf"\b{re.escape(who)}\b", text):
+            hits.append("committer identity")
+    if _LOCAL_PATH.search(text):
         hits.append("a user-home filesystem path")
+    if _EMAIL.search(text):
+        hits.append("an email address")
+    if _SECRET.search(text):
+        hits.append("a secret-shaped token")
     if hits:
-        return False, "references " + "; ".join(hits)
-    return True, "generic improvement; no project repo, specialists, or user paths referenced"
+        return False, "references " + "; ".join(dict.fromkeys(hits))
+    return True, "generic improvement; no project, identity, path, email, or secret markers"
 
 
-def sanitize_for_upstream(text: str, markers: ProjectMarkers) -> tuple:
-    """Defense-in-depth scrub before an upstream PR: replace any residual project
-    slug/specialist/user-home-path with a placeholder. Returns ``(clean, removed)``.
-    Candidates are pre-filtered to be clean, so this mainly catches enrichment-
-    injected paths."""
-    removed = []
+def sanitize_for_upstream(text: str, markers: ProjectMarkers) -> tuple[str, list[str]]:
+    """Defense-in-depth scrub before an upstream PR: replace residual project
+    slug/specialist/identity, user-home paths, emails, and secret-shaped tokens with
+    placeholders. Returns ``(clean, removed)``. Candidates are pre-filtered to be
+    clean, so this mainly catches enrichment-injected content; it is NOT a complete
+    PII filter — the human PR review is the real gate."""
+    removed: list[str] = []
     out = text
-    if markers.slug and markers.slug in out:
-        out = out.replace(markers.slug, "[project repo]")
-        removed.append(markers.slug)
+
+    def _sub(pattern: str, repl: str, s: str, *, flags: int = 0) -> str:
+        def _r(m: re.Match) -> str:
+            removed.append(m.group(0))
+            return repl
+        return re.sub(pattern, _r, s, flags=flags)
+
+    if markers.slug:
+        out = _sub(re.escape(markers.slug), "[project repo]", out, flags=re.IGNORECASE)
     for name in markers.specialists:
-        new = re.sub(rf"\b{re.escape(name)}\b", "[project specialist]", out)
-        if new != out:
-            removed.append(name)
-            out = new
-
-    def _redact(match: re.Match) -> str:
-        removed.append(match.group(0))
-        return "[user path]"
-
-    out = _LOCAL_PATH.sub(_redact, out)
+        out = _sub(rf"\b{re.escape(name)}\b", "[project specialist]", out)
+    for who in markers.identity:
+        out = _sub(rf"\b{re.escape(who)}\b", "[identity]", out)
+    out = _sub(_SECRET.pattern, "[redacted token]", out)
+    out = _sub(_EMAIL.pattern, "[email]", out)
+    out = _sub(_LOCAL_PATH.pattern, "[user path]", out)
     return out, removed
 
 
@@ -362,9 +406,10 @@ def do_submit_proposals(
 
     Only ever: create/push a feature branch ``cohort/proposal-<id>`` and run
     ``gh pr create --draft``. Never merges; never pushes the default branch;
-    never writes canonical/. Idempotent via the ``submitted_at`` stamp. On any
-    git/gh failure it degrades cleanly *and restores the original branch* so the
-    user's working tree is never left stranded.
+    never writes canonical/. Idempotent *per destination* — local submits skip on
+    ``submitted_at``, upstream submits on ``submitted_upstream`` — so a proposal can
+    go both places, but never twice to the same one. On any git/gh failure it degrades
+    cleanly *and restores the original branch* so the working tree is never stranded.
     """
     run = run or _default_run
     paths = CohortPaths.for_project(repo)
@@ -376,25 +421,27 @@ def do_submit_proposals(
     # Upstream mode resolves a coherent (push-remote, PR-target) pair up front, so a
     # failure to identify the upstream short-circuits before any branch is created.
     push_remote, pr_target, markers = "origin", target_repo, None
+    seen_key = "submitted_at"  # local idempotency key (per-destination)
     if upstream:
+        seen_key = "submitted_upstream"
         push_remote, _ = resolve_upstream(source, home or Path.home())
         pr_target = _remote_slug(source, push_remote)
         markers = project_markers(repo)
-        if pr_target is None and not dry_run:
+        if (pr_target is None or not _REPO_TARGET.match(pr_target)) and not dry_run:
             return {
                 "action": "submit-proposals", "submitted": [], "skipped": [], "degraded": True,
-                "detail": f"could not resolve the upstream repo from remote {push_remote!r}; "
-                "set [update] upstream_remote in cohort.toml to a GitHub remote.",
+                "detail": f"could not resolve a valid upstream OWNER/REPO from remote "
+                f"{push_remote!r}; set [update] upstream_remote in cohort.toml to a GitHub remote.",
             }
 
     available = _gh_available(source) if gh_ok is None else gh_ok
-    submitted, skipped = [], []
+    submitted, skipped, redacted = [], [], []
     degraded = not available and not dry_run
 
     for p in proposals:
         fm = load_artifact(p).frontmatter or {}
-        if fm.get("submitted_at"):
-            skipped.append(p.name)  # idempotent: already submitted
+        if fm.get(seen_key):
+            skipped.append(p.name)  # idempotent: already submitted to this destination
             continue
         if not _SAFE_STEM.match(p.stem):
             skipped.append(p.name)  # unsafe filename → never feed to git/gh argv
@@ -412,13 +459,14 @@ def do_submit_proposals(
             run(["git", "-C", str(source), "checkout", "-b", branch])
             staged.parent.mkdir(parents=True, exist_ok=True)
             if upstream:
-                clean, _ = sanitize_for_upstream(p.read_text(encoding="utf-8"), markers)
+                clean, removed = sanitize_for_upstream(p.read_text(encoding="utf-8"), markers)
                 staged.write_text(clean, encoding="utf-8")
+                redacted.extend(removed)
             else:
                 staged.write_bytes(p.read_bytes())
             run(["git", "-C", str(source), "add", str(staged)])
             run(["git", "-C", str(source), "commit", "-m", f"Proposal ({kind}): {p.stem}"])
-            run(["git", "-C", str(source), "push", push_remote, branch])
+            run(["git", "-C", str(source), "push", "--", push_remote, branch])
             title = f"Cohort {'upstream ' if upstream else ''}proposal ({kind}): {p.stem}"
             pr_cmd = ["gh", "pr", "create", "--draft", "--head", branch,
                       "--title", title, "--body-file", str(staged)]
@@ -437,13 +485,19 @@ def do_submit_proposals(
                     pass
         if degraded:
             break  # leave the proposal as a file (unstamped) for manual PR creation
-        stamp = {"submitted_at": now_iso(), "branch": branch}
+        # Stamp only this destination's key, so a local submit doesn't bar a later
+        # upstream one (or vice versa).
         if upstream:
-            stamp["submitted_upstream"] = pr_target
+            stamp = {"submitted_upstream": pr_target, "submitted_upstream_at": now_iso(), "branch": branch}
+        else:
+            stamp = {"submitted_at": now_iso(), "branch": branch}
         _stamp(p, **stamp)
         submitted.append(p.name)
 
-    return {
+    result = {
         "action": "submit-proposals", "dry_run": dry_run, "degraded": degraded,
         "submitted": submitted, "skipped": skipped,
     }
+    if upstream:
+        result["redacted"] = sorted(set(redacted))
+    return result
