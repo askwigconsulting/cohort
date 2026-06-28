@@ -271,13 +271,31 @@ class ClaudeRenderer:
         fn = ONE_TO_ONE_RENDERERS.get(ir.kind)
         return fn(ir) if fn is not None else None
 
-    def compile(self, irs: list[IRArtifact]) -> tuple[list[StagedFile], list[str]]:
-        """IR → staged Claude files (1:1 + corpus + merge payloads); + skipped names."""
+    def compile(
+        self, irs: list[IRArtifact], inject_directory: bool = True
+    ) -> tuple[list[StagedFile], list[str]]:
+        """IR → staged Claude files (1:1 + corpus + merge payloads); + skipped names.
+
+        ``inject_directory`` is the tier switch: the global office injects the
+        specialist directory into its generalist; the project tier has no
+        office-directory concept (and no generalist), so it passes False.
+        """
         matched = [ir for ir in irs if self.matches(ir)]
-        specialists = [
-            ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
-        ]
-        directory = render_office_directory(specialists)
+        if inject_directory:
+            specialists = [
+                ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
+            ]
+            directory: Optional[str] = render_office_directory(specialists)
+        else:
+            generalists = [
+                ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "generalist"
+            ]
+            if generalists:
+                raise MarkerError(
+                    f"{generalists[0].name}: the project tier cannot declare a generalist "
+                    "(no office-directory injection at project scope)"
+                )
+            directory = None
 
         staged: list[StagedFile] = []
         skipped: list[str] = []
