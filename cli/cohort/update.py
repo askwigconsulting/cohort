@@ -21,17 +21,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
+from .gitutil import GIT_ENV
 from .install_model import CohortPaths
 from .source import SourceUnresolved, resolve_source
 
-# Force git fully non-interactive: never prompt for credentials/host keys; fail
-# fast when offline. (``--quiet`` only silences progress — it does NOT stop prompts.)
-_GIT_ENV = {
-    "GIT_TERMINAL_PROMPT": "0",
-    "GIT_ASKPASS": "",
-    "SSH_ASKPASS": "",
-    "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=5",
-}
+# Non-interactive git hardening lives in gitutil so update.py and improve.py share it.
+_GIT_ENV = GIT_ENV
 _FETCH_TIMEOUT = 8  # seconds; a flaky network must not stall session startup
 _GIT_TIMEOUT = 10
 _PULL_TIMEOUT = 30  # a local ff-only merge is fast, but allow headroom for a big one
