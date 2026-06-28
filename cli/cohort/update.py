@@ -234,9 +234,10 @@ class UpdateResult:
 
 
 def _is_dirty(source: Path) -> bool:
-    """True if the working tree has uncommitted *tracked* changes (``--porcelain``
-    already honors ``.gitignore``, so Cohort's own .cohort/.claude artifacts are
-    excluded). A failed status read counts as dirty — refuse rather than risk it."""
+    """True if the working tree has any uncommitted change — modified tracked files
+    OR untracked files (``--porcelain`` lists both; it only omits ``.gitignore``-d
+    paths, so Cohort's own .cohort/.claude artifacts are excluded). A failed status
+    read counts as dirty — refuse rather than risk it."""
     rc, out = _git(source, "status", "--porcelain")
     return rc != 0 or bool(out.strip())
 
@@ -275,20 +276,26 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
     from .manifest import load_manifest
 
     paths = CohortPaths(home)
-    manifest = load_manifest(paths.manifest)
-    ides = list(manifest.ides) if manifest else []
-    if not ides:
-        return [], None
-    mode = manifest.mode if (manifest and manifest.mode) else resolve_mode(copy=False)
+    ides: list = []
+    # Everything here runs AFTER the fast-forward has applied, so it must never
+    # raise: a corrupt manifest (load_manifest), a malformed pulled tree
+    # (CompileError), a foreign file (ClobberRefused), or an OS error
+    # (read-only FS, full disk) all degrade to a refused_detail.
     try:
+        manifest = load_manifest(paths.manifest)
+        ides = list(manifest.ides) if manifest else []
+        if not ides:
+            return [], None
+        mode = manifest.mode if (manifest and manifest.mode) else resolve_mode(copy=False)
         for ide in ides:
             write_staging(paths, compile_ide(source, ide))
         do_install(home=home, selection=ides, mode=mode, force=False, source=source, dry_run=False)
-    except CompileError as exc:
-        # A malformed/hostile pulled tree must not crash post-merge: fail closed.
-        return ides, f"the updated canonical tree failed to compile: {exc}"
     except ClobberRefused as exc:
         return ides, str(exc)
+    except CompileError as exc:
+        return ides, f"the updated canonical tree failed to compile: {exc}"
+    except Exception as exc:  # noqa: BLE001 - do_update must not raise once the merge applied
+        return ides, f"recompile failed after the update applied: {exc}"
     return ides, None
 
 

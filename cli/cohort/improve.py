@@ -65,12 +65,16 @@ def _require_project(repo: Path) -> CohortPaths:
 # treat .cohort/.claude refs as markers: they exist in every install and are
 # Cohort-internal, not project-identifying.
 _LOCAL_PATH = re.compile(r"(?<![\w/])(?:/(?:home|Users|root)/[^\s)]+|[A-Za-z]:\\Users\\[^\s)]+)")
-# High-signal identifiers that should never be published upstream regardless of project.
-_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+# High-signal identifiers that should never be published upstream regardless of
+# project. Every quantifier is bounded (upper limits) so attacker-influenced
+# proposal text can't trigger catastrophic backtracking (ReDoS).
+_EMAIL = re.compile(r"\b[\w.+-]{1,64}@[\w-]{1,255}(?:\.[\w-]{1,255}){1,8}\b")
 _SECRET = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}"
-    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"
+    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,255}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,255}"
+    r"|eyJ[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512})"
 )
+_MAX_SCAN = 200_000  # cap the surface fed to the marker scanners (defense vs huge inputs)
+_MAX_FIELD = 200  # max length of a feedback agent/command field (input-boundary guard)
 
 # owner/repo from an SSH (git@host:owner/repo.git) or HTTPS (https://host/owner/repo.git) URL.
 _SLUG = re.compile(r"[:/]([^/:\s]+)/([^/\s]+?)(?:\.git)?/?$")
@@ -140,7 +144,7 @@ def _scan_text(frontmatter: dict, body: str) -> str:
     """The full surface a proposal exposes upstream: body + frontmatter string values
     (so the candidacy gate sees `evidence_summary` etc., not just the body)."""
     fm_vals = " ".join(str(v) for v in (frontmatter or {}).values())
-    return f"{body}\n{fm_vals}"
+    return f"{body}\n{fm_vals}"[:_MAX_SCAN]
 
 
 def score_generality(frontmatter: dict, body: str, markers: ProjectMarkers) -> tuple[bool, str]:
@@ -212,6 +216,9 @@ def do_feedback(
     paths = _require_project(repo)
     if rating not in RATINGS:
         raise FeedbackError(f"rating must be one of {RATINGS}, got {rating!r}")
+    for field, value in (("agent", agent), ("command", command)):
+        if value and len(value) > _MAX_FIELD:
+            raise FeedbackError(f"{field} too long (max {_MAX_FIELD} chars)")
     pairs = [("rating", rating)]
     if agent:
         pairs.append(("agent", agent))
@@ -483,6 +490,16 @@ def do_submit_proposals(
                     run(["git", "-C", str(source), "checkout", original])
                 except Exception:  # noqa: BLE001
                     pass
+            if degraded:
+                # Clean up the partial attempt so a retry isn't permanently wedged:
+                # the leftover branch would fail the next `checkout -b`, and the
+                # staged file would make a later `cohort update` refuse as dirty.
+                try:
+                    run(["git", "-C", str(source), "branch", "-D", branch])
+                except Exception:  # noqa: BLE001
+                    pass
+                if staged.exists():
+                    staged.unlink()
         if degraded:
             break  # leave the proposal as a file (unstamped) for manual PR creation
         # Stamp only this destination's key, so a local submit doesn't bar a later
