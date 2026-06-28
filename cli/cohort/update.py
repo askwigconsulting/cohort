@@ -294,6 +294,17 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
     return ides, None
 
 
+def do_relink(source: Path, home: Path) -> dict:
+    """Re-point a moved/renamed install at ``source`` and recompile its IDEs.
+
+    Reuses the recompile path, which (since the executor self-heals Cohort-owned
+    links) re-points a dangling ``~/.cohort/canonical`` and re-stages without
+    ``--force``. Returns ``{recompiled_ides, refused}``.
+    """
+    ides, refused = _recompile_installed(source, home)
+    return {"recompiled_ides": ides, "refused": refused}
+
+
 def do_update(
     source: Path,
     home: Path,
