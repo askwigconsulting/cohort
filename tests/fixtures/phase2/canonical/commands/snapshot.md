@@ -1,7 +1,7 @@
 ---
 name: snapshot
 kind: command
-scope: project
+scope: global
 description: Write a dated session snapshot to the project context.
 targets: [claude, codex, cursor]
 invocation: snapshot

@@ -283,7 +283,7 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
             return [], None
         mode = manifest.mode if (manifest and manifest.mode) else resolve_mode(copy=False)
         for ide in ides:
-            write_staging(paths, compile_ide(source, ide))
+            write_staging(paths, compile_ide(source, ide, scope="global"))
         do_install(home=home, selection=ides, mode=mode, force=False, source=source, dry_run=False)
     except ClobberRefused as exc:
         return ides, str(exc)

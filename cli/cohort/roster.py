@@ -120,7 +120,7 @@ def do_add_agent(
         raise AddAgentError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
 
     paths = CohortPaths.for_global(home)
-    write_staging(paths, compile_ide(source, "claude"))
+    write_staging(paths, compile_ide(source, "claude", scope="global"))
     report = do_install(
         home=home, selection=["claude"], mode="link", force=False, source=source, dry_run=False
     )

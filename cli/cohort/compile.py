@@ -49,7 +49,7 @@ class CompileResult:
         }
 
 
-def _load_irs(source: Path):
+def _load_irs(source: Path, scope: Optional[str] = None):
     irs = []
     for p in discover_artifacts(source / "canonical"):
         result = load_artifact(p)
@@ -58,12 +58,21 @@ def _load_irs(source: Path):
         errors = validate_frontmatter(result.frontmatter, p.stem)
         if errors:
             raise CompileError(f"{p}: {errors[0].code} {errors[0].message}")
-        irs.append(build_ir(result.frontmatter, result.body, p))
+        ir = build_ir(result.frontmatter, result.body, p)
+        # Tier partition: a tier only ever compiles its own scope. This is the leak
+        # guard — a scope:project artifact in the global canonical can never reach the
+        # global office, and vice versa.
+        if scope is not None and ir.scope != scope:
+            continue
+        irs.append(ir)
     return irs
 
 
-def compile_ide(source: Path, ide: str) -> CompileResult:
-    """Render every targeting canonical artifact into staged files for ``ide``.
+def compile_ide(source: Path, ide: str, scope: Optional[str] = None) -> CompileResult:
+    """Render every targeting canonical artifact of ``scope`` into staged files for
+    ``ide``. The global install passes ``scope="global"`` (the leak guard — project
+    artifacts never reach the global office); a project-tier compile passes
+    ``"project"``; ``None`` (default) compiles all scopes, for direct/test use.
 
     Generic over the renderer descriptor (P7-R1): ``renderer.compile(irs)`` owns
     the IDE-specific 1:1 + aggregate staging; this function just loads/validates
@@ -74,7 +83,7 @@ def compile_ide(source: Path, ide: str) -> CompileResult:
     if renderer is None:
         return result  # no renderer for this IDE
     try:
-        staged, skipped = renderer.compile(_load_irs(source))
+        staged, skipped = renderer.compile(_load_irs(source, scope))
     except MarkerError as exc:
         raise CompileError(str(exc)) from exc
     result.staged = staged
