@@ -81,10 +81,17 @@ sequence above.
 
 ## Commands
 
-`validate` · `install` / `uninstall` · `compile` / `recompile` · `init` / `deinit` · `add-agent`
-(global) / `add-specialist` (project) · `promote` · `snapshot` · `context refresh` · `status` ·
-`weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
-command supports `--dry-run`; installs/compiles are idempotent and reversible.
+`validate` · `install` / `uninstall` · `compile` / `recompile` · `update` · `init` / `deinit` ·
+`add-agent` (global) / `add-specialist` (project) · `promote` · `snapshot` · `context refresh` ·
+`status` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` /
+`submit-proposals`. Every command supports `--dry-run`; installs/compiles are idempotent and
+reversible. `cohort --version` prints the release.
+
+## Versioning
+
+Releases follow [Semantic Versioning](https://semver.org/) and are recorded in
+[CHANGELOG.md](CHANGELOG.md). The session-start update-check advises when a clone falls behind;
+`cohort update` (or `/update`) applies a clean fast-forward.
 
 ## Stack
 

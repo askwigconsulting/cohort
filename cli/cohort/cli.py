@@ -14,6 +14,7 @@ from typing import Optional
 
 import typer
 
+from . import __version__
 from .compile import CompileError, CompileResult, compile_ide, write_staging
 from .executor import ClobberRefused
 from .install import (
@@ -77,9 +78,19 @@ def _force_utf8_io() -> None:
                 pass
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        typer.echo(__version__)
+        raise typer.Exit()
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
+    version: bool = typer.Option(
+        False, "--version", help="Show the Cohort version and exit.",
+        is_eager=True, callback=_version_callback,
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
