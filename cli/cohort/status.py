@@ -8,12 +8,29 @@ Never mutates the filesystem.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from . import merge
 from .install_model import CohortPaths
 from .manifest import load_manifest
+
+RELINK_HINT = "cohort relink"
+
+
+def _source_health(gpaths: CohortPaths) -> dict[str, Any]:
+    """Health of the install's source link (``~/.cohort/canonical``). A dangling
+    symlink (the source clone moved/was deleted) is the moved-install failure mode."""
+    canonical = gpaths.canonical
+    if not canonical.is_symlink():
+        return {"ok": True, "linked": False}
+    target = os.readlink(canonical)
+    ok = canonical.exists()  # follows the link → False when dangling
+    health = {"ok": ok, "linked": True, "target": target}
+    if not ok:
+        health["restore"] = RELINK_HINT
+    return health
 from .project import (
     IMPORT_LINE,
     _newest_activity,
@@ -48,6 +65,7 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
         "global": {
             "ides": manifest.ides if manifest else [],
             "roster": {"count": len(roster), "names": roster},
+            "source": _source_health(gpaths),
         },
     }
 

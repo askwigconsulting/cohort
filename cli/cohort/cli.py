@@ -33,7 +33,7 @@ from .improve import (
     do_submit_proposals,
 )
 from .install_model import CohortPaths, resolve_mode
-from .update import UpdateResult, do_update, do_update_check
+from .update import UpdateResult, do_relink, do_update, do_update_check
 from .logconf import emit_log
 from .project import (
     do_context_refresh,
@@ -397,6 +397,29 @@ def recompile(
     raise typer.Exit(code=0)
 
 
+@app.command()
+def relink(
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Re-point a moved/renamed install at the source and recompile installed IDEs."""
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    result = do_relink(source_path, Path.home())
+    if json_output:
+        typer.echo(_json.dumps(result, indent=2))
+    elif result["refused"]:
+        typer.echo(f"error: {result['refused']}", err=True)
+    elif result["recompiled_ides"]:
+        typer.echo(f"Relinked at {source_path}; recompiled: {', '.join(result['recompiled_ides'])}.")
+    else:
+        typer.echo("No installed IDEs to relink (run `cohort install`).")
+    raise typer.Exit(code=1 if result["refused"] else 0)
+
+
 def _warn_divergence(report: InstallReport) -> None:
     if report.diverged:
         typer.echo(
@@ -687,6 +710,13 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
         g = r["global"]
         typer.echo(f"IDEs: {', '.join(g['ides']) or '-'}")
         typer.echo(f"Roster: {g['roster']['count']} agents")
+        src = g.get("source", {})
+        if src.get("linked") and not src.get("ok"):
+            typer.echo(
+                f"  ! source link is broken (moved/deleted clone) — run "
+                f"`{src.get('restore', 'cohort relink')}`",
+                err=True,
+            )
         if "project" in r:
             p = r["project"]
             typer.echo(f"Project: {p['repo']}")
