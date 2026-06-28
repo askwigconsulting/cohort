@@ -47,6 +47,12 @@ def test_derive_slug_ssh_and_https():
     assert _derive_slug("definitely not a url") is None
 
 
+def test_derive_slug_rejects_nested_path():
+    # GitLab subgroup / GHE sub-org → ambiguous 3-segment path → fail closed
+    assert _derive_slug("https://gitlab.com/group/subgroup/repo.git") is None
+    assert _derive_slug("git@github.com:owner/repo.git") == "owner/repo"
+
+
 def test_score_generality_generic_is_candidate():
     ok, why = score_generality(
         {"kind": "improvement"}, "Revisit low-rated agent 'steward'. Reduce friction.", M_PROJ
@@ -335,6 +341,17 @@ def test_submit_cleanup_on_failure_enables_retry(repo, home, source):
     flat = [" ".join(c) for c in runner.calls]
     assert any("branch -D cohort/proposal-" in c for c in flat)  # leftover branch deleted
     assert not (source / "proposals" / name).exists()  # staged file removed (no dirty-tree wedge)
+
+
+def test_submit_invalid_repo_target_degrades(repo, home, source):
+    _run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=repo)
+    _run_cli("propose-improvement", home=home, cwd=repo)
+    runner = RecordingRunner()
+    result = improve.do_submit_proposals(
+        repo, source, dry_run=False, run=runner, gh_ok=True, target_repo="../evil"
+    )
+    assert result["degraded"] is True and "OWNER/REPO" in result.get("detail", "")
+    assert runner.calls == []  # validated before any git/gh ran
 
 
 def test_feedback_rejects_overlong_field(repo, home):

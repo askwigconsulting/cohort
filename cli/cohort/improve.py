@@ -20,15 +20,18 @@ that defaults to the deterministic summary (the real Steward enriches in-IDE).
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from .frontmatter import dump_frontmatter
+from .gitutil import GIT_ENV, GIT_TIMEOUT
 from .install_model import CohortPaths
 from .loader import load_artifact, load_artifact_text
 from .project import _short_id, _stage, _utc_compact, now_iso
@@ -70,14 +73,18 @@ _LOCAL_PATH = re.compile(r"(?<![\w/])(?:/(?:home|Users|root)/[^\s)]+|[A-Za-z]:\\
 # proposal text can't trigger catastrophic backtracking (ReDoS).
 _EMAIL = re.compile(r"\b[\w.+-]{1,64}@[\w-]{1,255}(?:\.[\w-]{1,255}){1,8}\b")
 _SECRET = re.compile(
-    r"\b(?:gh[pousr]_[A-Za-z0-9]{20,255}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,255}"
-    r"|eyJ[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512})"
+    r"(?:gh[pousr]_[A-Za-z0-9]{20,255}|github_pat_[A-Za-z0-9_]{20,255}|AKIA[0-9A-Z]{16}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,255}|AIza[A-Za-z0-9_-]{35}|sk-[A-Za-z0-9]{20,255}"
+    r"|eyJ[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}\.[A-Za-z0-9_-]{8,512}"
+    r"|-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----)"
 )
 _MAX_SCAN = 200_000  # cap the surface fed to the marker scanners (defense vs huge inputs)
 _MAX_FIELD = 200  # max length of a feedback agent/command field (input-boundary guard)
 
-# owner/repo from an SSH (git@host:owner/repo.git) or HTTPS (https://host/owner/repo.git) URL.
-_SLUG = re.compile(r"[:/]([^/:\s]+)/([^/\s]+?)(?:\.git)?/?$")
+# owner/repo from an SSH (git@host:owner/repo.git) or HTTPS (https://host/owner/repo.git)
+# URL — anchored on the host boundary and accepting ONLY a 2-segment path. A nested
+# path (GitLab subgroup, GHE sub-org) is ambiguous → fail closed (None).
+_SLUG = re.compile(r"(?:@|//)[^/:\s]+[:/]([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
 # A safe GitHub OWNER/REPO target for `gh --repo` (no leading dash, no metachars).
 _REPO_TARGET = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
 
@@ -105,9 +112,14 @@ def _derive_slug(url: str) -> Optional[str]:
     return f"{m.group(1)}/{m.group(2)}" if m else None
 
 
+def _git_env() -> dict:
+    return {**os.environ, **GIT_ENV}
+
+
 def _git_config(path: Path, key: str) -> Optional[str]:
     r = subprocess.run(
-        ["git", "-C", str(path), "config", "--get", key], capture_output=True, text=True
+        ["git", "-C", str(path), "config", "--get", key],
+        capture_output=True, text=True, env=_git_env(), timeout=GIT_TIMEOUT,
     )
     return r.stdout.strip() or None if r.returncode == 0 else None
 
@@ -119,7 +131,7 @@ def _remote_slug(path: Path, remote: str = "origin") -> Optional[str]:
         return None
     r = subprocess.run(
         ["git", "-C", str(path), "remote", "get-url", "--", remote],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=_git_env(), timeout=GIT_TIMEOUT,
     )
     return _derive_slug(r.stdout) if r.returncode == 0 else None
 
@@ -144,7 +156,9 @@ def _scan_text(frontmatter: dict, body: str) -> str:
     """The full surface a proposal exposes upstream: body + frontmatter string values
     (so the candidacy gate sees `evidence_summary` etc., not just the body)."""
     fm_vals = " ".join(str(v) for v in (frontmatter or {}).values())
-    return f"{body}\n{fm_vals}"[:_MAX_SCAN]
+    # NFKC-normalize so homoglyph/full-width variants of identifiers can't slip past
+    # the marker scanners; cap the surface against pathological inputs.
+    return unicodedata.normalize("NFKC", f"{body}\n{fm_vals}")[:_MAX_SCAN]
 
 
 def score_generality(frontmatter: dict, body: str, markers: ProjectMarkers) -> tuple[bool, str]:
@@ -163,10 +177,10 @@ def score_generality(frontmatter: dict, body: str, markers: ProjectMarkers) -> t
     if markers.slug and re.search(re.escape(markers.slug), text, re.IGNORECASE):
         hits.append(f"project repo {markers.slug}")
     for name in markers.specialists:
-        if re.search(rf"\b{re.escape(name)}\b", text):
+        if re.search(rf"\b{re.escape(name)}\b", text, re.IGNORECASE):
             hits.append(f"project specialist {name!r}")
     for who in markers.identity:
-        if re.search(rf"\b{re.escape(who)}\b", text):
+        if re.search(rf"\b{re.escape(who)}\b", text, re.IGNORECASE):
             hits.append("committer identity")
     if _LOCAL_PATH.search(text):
         hits.append("a user-home filesystem path")
@@ -197,9 +211,9 @@ def sanitize_for_upstream(text: str, markers: ProjectMarkers) -> tuple[str, list
     if markers.slug:
         out = _sub(re.escape(markers.slug), "[project repo]", out, flags=re.IGNORECASE)
     for name in markers.specialists:
-        out = _sub(rf"\b{re.escape(name)}\b", "[project specialist]", out)
+        out = _sub(rf"\b{re.escape(name)}\b", "[project specialist]", out, flags=re.IGNORECASE)
     for who in markers.identity:
-        out = _sub(rf"\b{re.escape(who)}\b", "[identity]", out)
+        out = _sub(rf"\b{re.escape(who)}\b", "[identity]", out, flags=re.IGNORECASE)
     out = _sub(_SECRET.pattern, "[redacted token]", out)
     out = _sub(_EMAIL.pattern, "[email]", out)
     out = _sub(_LOCAL_PATH.pattern, "[user path]", out)
@@ -346,8 +360,14 @@ def do_propose_improvement(
 Runner = Callable[[list], object]
 
 
+_PUSH_TIMEOUT = 120  # push / `gh pr create` reach the network; allow more headroom
+
+
 def _default_run(cmd: list) -> object:
-    return subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return subprocess.run(
+        cmd, check=True, capture_output=True, text=True,
+        env=_git_env(), timeout=_PUSH_TIMEOUT,
+    )
 
 
 def _gh_available(source: Path) -> bool:
@@ -355,7 +375,7 @@ def _gh_available(source: Path) -> bool:
         return False
     r = subprocess.run(
         ["git", "-C", str(source), "remote", "get-url", "origin"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=_git_env(), timeout=GIT_TIMEOUT,
     )
     return r.returncode == 0
 
@@ -384,7 +404,7 @@ def _current_branch(source: Path) -> Optional[str]:
     try:
         r = subprocess.run(
             ["git", "-C", str(source), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=GIT_TIMEOUT, env=_git_env(),
         )
         return r.stdout.strip() or None if r.returncode == 0 else None
     except Exception:  # noqa: BLE001
@@ -434,12 +454,19 @@ def do_submit_proposals(
         push_remote, _ = resolve_upstream(source, home or Path.home())
         pr_target = _remote_slug(source, push_remote)
         markers = project_markers(repo)
-        if (pr_target is None or not _REPO_TARGET.match(pr_target)) and not dry_run:
+        if pr_target is None and not dry_run:
             return {
                 "action": "submit-proposals", "submitted": [], "skipped": [], "degraded": True,
-                "detail": f"could not resolve a valid upstream OWNER/REPO from remote "
-                f"{push_remote!r}; set [update] upstream_remote in cohort.toml to a GitHub remote.",
+                "detail": f"could not resolve the upstream repo from remote {push_remote!r}; "
+                "set [update] upstream_remote in cohort.toml to a GitHub remote.",
             }
+    # Any PR target — derived upstream or an explicit --repo — must be a valid OWNER/REPO
+    # before it reaches `gh` argv.
+    if pr_target is not None and not _REPO_TARGET.match(pr_target) and not dry_run:
+        return {
+            "action": "submit-proposals", "submitted": [], "skipped": [], "degraded": True,
+            "detail": f"{pr_target!r} is not a valid OWNER/REPO PR target.",
+        }
 
     available = _gh_available(source) if gh_ok is None else gh_ok
     submitted, skipped, redacted = [], [], []
