@@ -213,7 +213,7 @@ def test_add_specialist_body_file_replaces_template(home, source, tmp_path):
         "--body-file", str(body), home=home, cwd=repo,
     )
     assert proc.returncode == 0
-    content = (repo / ".cohort" / "agents" / "etl-advisor.md").read_text(encoding="utf-8")
+    content = (repo / ".cohort" / "canonical" / "agents" / "etl-advisor.md").read_text(encoding="utf-8")
     assert "Airflow DAGs" in content
     assert "edit me" not in content
     assert "scope: project" in content  # frontmatter still generated, not user-supplied
@@ -228,7 +228,7 @@ def test_add_specialist_missing_body_file_errors(home, source, tmp_path):
         home=home, cwd=repo,
     )
     assert proc.returncode == 2
-    assert not (repo / ".cohort" / "agents" / "x.md").exists()
+    assert not (repo / ".cohort" / "canonical" / "agents" / "x.md").exists()
 
 
 # === interview commands (canonical) ==========================================

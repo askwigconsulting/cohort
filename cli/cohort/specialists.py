@@ -1,12 +1,14 @@
 """Project-isolated specialists: `cohort add-specialist`, `cohort remove-specialist`,
 and `cohort promote`.
 
-The new technical piece (P6 [R1]) is *project-scope agent compilation*: discover
-``<repo>/.cohort/agents/`` (team-owned, ``scope: project``), render through the
-reused agent renderer with **no** office-directory injection (no project
-generalist), stage to ``<repo>/.cohort/compiled/claude/agents/``, and link into
-``<repo>/.claude/agents/`` — all recorded in the *project* manifest. Nothing here
-touches ``~/.cohort/`` or the Cohort source.
+Specialists are team-owned canonical artifacts under
+``<repo>/.cohort/canonical/agents/`` (``scope: project``) — the same layout every
+project-tier kind uses. Authoring writes the source there; compile + placement
+route through the single project install path (``do_install_project``), which
+renders with **no** office-directory injection (no project generalist), stages to
+``<repo>/.cohort/compiled/claude/``, and links into ``<repo>/.claude/`` — all
+recorded in the *project* manifest. Nothing here touches ``~/.cohort/`` or the
+Cohort source.
 """
 
 from __future__ import annotations
@@ -16,19 +18,14 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from .adapters.claude import MarkerError, render_agent
-from .compile import CompileResult, scan_staging_ops, write_staging
-from .executor import ReverseResult, _reverse_place_ops, apply
+from .compile import CompileError
+from .executor import ClobberRefused, ReverseResult, _reverse_place_ops
 from .frontmatter import dump_frontmatter
-from .install_model import CohortPaths, Op, OpType
-from .ir import build_ir
+from .install_model import CohortPaths
 from .loader import load_artifact, load_artifact_text
 from .manifest import load_manifest, now_iso
-from .project import _stage
 from .roster import READONLY_TOOLS_LIST, reject_control_chars
 from .schema import NAME_PATTERN, validate_frontmatter
-
-PROJECT_IDE = "project"
 
 
 class AddSpecialistError(Exception):
@@ -103,29 +100,23 @@ def _is_shadow(home: Path, name: str) -> bool:
     return (CohortPaths.for_global(home).canonical / "agents" / f"{name}.md").exists()
 
 
-def compile_specialists(paths: CohortPaths, extra_irs: Optional[list] = None) -> list:
-    """Render every project specialist into project staging (no injection, R1)."""
-    agents_dir = paths.cohort_home / "agents"
-    irs = []
-    for p in sorted(agents_dir.glob("*.md")):
-        loaded = load_artifact(p)
-        errors = validate_frontmatter(loaded.frontmatter, p.stem)
-        if errors:
-            raise AddSpecialistError(f"{p.name}: {errors[0].code} {errors[0].message}")
-        irs.append(build_ir(loaded.frontmatter, loaded.body, p))
-    irs.extend(extra_irs or [])
-    try:
-        staged = [render_agent(ir) for ir in irs]  # specialists carry no marker
-    except MarkerError as exc:
-        raise AddSpecialistError(f"project specialist must not carry an office-directory marker: {exc}")
-    write_staging(paths, CompileResult(ide="claude", staged=staged))
-    return staged
+def _legacy_hint(paths: CohortPaths, name: str) -> str:
+    """A migration hint when ``name`` still lives in the pre-unification layout."""
+    legacy = paths.cohort_home / "agents" / f"{name}.md"
+    if not legacy.exists():
+        return ""
+    return (
+        f" (found under the legacy {legacy.parent} — run "
+        f"`git mv .cohort/agents/{name}.md .cohort/canonical/agents/{name}.md`)"
+    )
 
 
 def do_add_specialist(
     repo: Path, home: Path, name: str, display_name: str, department: str,
     description: str, dry_run: bool, body: Optional[str] = None,
 ) -> dict[str, Any]:
+    from .install import do_install_project  # lazy: avoid import cycle
+
     paths = CohortPaths.for_project(repo)
     if not paths.manifest.exists():
         raise AddSpecialistError("not a Cohort project; run `cohort init` first")
@@ -137,9 +128,18 @@ def do_add_specialist(
         )
     except ValueError as exc:
         raise AddSpecialistError(str(exc))
-    dest = paths.cohort_home / "agents" / f"{name}.md"
+    dest = paths.canonical / "agents" / f"{name}.md"
     if dest.exists():
         raise AddSpecialistError(f"specialist {name!r} already exists in this repo")
+    legacy = sorted((paths.cohort_home / "agents").glob("*.md"))
+    if legacy:
+        # Refuse before authoring anything: rebuilding staging while unmigrated
+        # sources exist would dangle their placed links (they no longer compile).
+        names = ", ".join(p.stem for p in legacy)
+        raise AddSpecialistError(
+            f"unmigrated project specialists in .cohort/agents/ ({names}) — run "
+            f"`git mv .cohort/agents/<n>.md .cohort/canonical/agents/<n>.md` first"
+        )
     if body is not None and not body.strip():
         raise AddSpecialistError("--body-file is empty")
 
@@ -156,20 +156,21 @@ def do_add_specialist(
     errors = validate_frontmatter(new.frontmatter, name)
     if errors:
         raise AddSpecialistError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
-    new_ir = build_ir(new.frontmatter, new.body, dest)
-    compile_specialists(paths, extra_irs=[new_ir])  # stage all specialists incl the new one
-    scaffold_src = _stage(paths.compiled / "project-scaffold", f"{name}.md", content)
-    plan = [
-        Op(OpType.SCAFFOLD.value, PROJECT_IDE, str(dest), src=scaffold_src, preserve=True),
-        *scan_staging_ops(paths, "claude", "link"),
-    ]
-    manifest = load_manifest(paths.manifest)
-    outcomes = apply(plan, paths, manifest, force=False)
-    manifest.persist(paths.manifest)
+    # Author the team-owned canonical source (git-tracked, preserved on deinit),
+    # then compile + place the whole project tier through the single install path
+    # — one writer of compiled/claude/, so authoring can never strand another
+    # command's placements.
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    try:
+        report = do_install_project(repo)
+    except (CompileError, ClobberRefused) as exc:
+        dest.unlink()  # don't leave a source the project tier cannot compile/place
+        raise AddSpecialistError(str(exc))
     return {
         "action": "add-specialist", "dry_run": False, "name": name, "shadow": shadow,
         "path": str(dest), "compiled": str(repo / ".claude" / "agents" / f"{name}.md"),
-        "applied": sum(1 for o in outcomes if o.status == "applied"),
+        "applied": report["applied"],
     }
 
 
@@ -186,24 +187,29 @@ def do_remove_specialist(repo: Path, home: Path, name: str, dry_run: bool) -> di
         raise RemoveSpecialistError("not a Cohort project; run `cohort init` first")
     if not re.fullmatch(NAME_PATTERN, name):
         raise RemoveSpecialistError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
-    src = paths.cohort_home / "agents" / f"{name}.md"
+    src = paths.canonical / "agents" / f"{name}.md"
     if not src.exists():
-        raise RemoveSpecialistError(f"no project specialist {name!r} in this repo")
+        raise RemoveSpecialistError(
+            f"no project specialist {name!r} in this repo{_legacy_hint(paths, name)}"
+        )
 
     placed = repo / ".claude" / "agents" / f"{name}.md"
     staged = paths.compiled / "claude" / "agents" / f"{name}.md"
+    # Pre-unification installs staged the scaffold separately; clean it up too.
     scaffold_stage = paths.compiled / "project-scaffold" / f"{name}.md"
     shadow = _is_shadow(home, name)
     if dry_run:
         return {"action": "remove-specialist", "dry_run": True, "name": name,
                 "path": str(src), "placed": str(placed), "unshadows": shadow}
 
-    targets = {str(src), str(placed)}
+    # The legacy dest too: a migrated (git mv'd) specialist may still carry its
+    # pre-unification SCAFFOLD op, which would otherwise orphan in the manifest.
+    targets = {str(src), str(placed), str(paths.cohort_home / "agents" / f"{name}.md")}
     mine = [op for op in manifest.ops if op.dest in targets]
     result = ReverseResult()
     _reverse_place_ops(mine, result, purge=True)  # purge: the human explicitly targeted it
     if src.exists():
-        src.unlink()  # hand-added source (no scaffold op recorded) — the command's target
+        src.unlink()  # team-owned canonical source (never a manifest op) — the command's target
     if placed.is_symlink() and (
         not placed.exists()
         or paths.compiled.resolve() in Path(os.path.realpath(placed)).parents
@@ -241,9 +247,11 @@ def _render_proposal(name: str, body: str) -> str:
 
 def do_promote(repo: Path, name: str, dry_run: bool) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
-    spec = paths.cohort_home / "agents" / f"{name}.md"
+    spec = paths.canonical / "agents" / f"{name}.md"
     if not spec.exists():
-        raise PromoteError(f"no project specialist {name!r} in this repo")
+        raise PromoteError(
+            f"no project specialist {name!r} in this repo{_legacy_hint(paths, name)}"
+        )
     loaded = load_artifact(spec)
     if loaded.load_error is not None:
         raise PromoteError(f"{name!r} is not a valid artifact: {loaded.load_error.message}")

@@ -71,12 +71,14 @@ def _load_irs(source: Path, scope: Optional[str] = None):
 
 def compile_ide(
     source: Path, ide: str, scope: Optional[str] = None,
-    only_agents: Optional[frozenset[str]] = None,
+    only_agents: Optional[frozenset[str]] = None, project_tier: bool = False,
 ) -> CompileResult:
     """Render every targeting canonical artifact of ``scope`` into staged files for
     ``ide``. The global install passes ``scope="global"`` (the leak guard — project
     artifacts never reach the global office); a project-tier compile passes
-    ``"project"``; ``None`` (default) compiles all scopes, for direct/test use.
+    ``"project"`` with ``project_tier=True`` (no office directory, no generalist,
+    no CLAUDE.md memory merge); ``None`` (default) compiles all scopes, for
+    direct/test use.
 
     ``only_agents`` restricts *agent* artifacts to the named subset (a tailored
     roster); every other kind still compiles. Filtering happens before the
@@ -96,12 +98,33 @@ def compile_ide(
         irs = [ir for ir in irs if not (ir.kind == "agent" and ir.name not in only_agents)]
         result.skipped.extend(sorted(excluded))
     try:
-        staged, skipped = renderer.compile(irs)
+        staged, skipped = renderer.compile(irs, project_tier=project_tier)
     except MarkerError as exc:
         raise CompileError(str(exc)) from exc
     result.staged = staged
     result.skipped.extend(skipped)
     return result
+
+
+def _assert_staging_contained(paths: CohortPaths, staging_root: Path) -> None:
+    """Refuse a redirected staging tree (the repo-escape guard).
+
+    A hostile repo can pre-plant ``.cohort`` or ``.cohort/compiled`` as a symlink
+    into ``$HOME`` so a project-tier compile rmtrees and rewrites the *global*
+    staging (which the global office links into ``~/.claude``). Staging is
+    Cohort-derived and never legitimately a symlink, so any symlink component —
+    or a compiled dir resolving outside the install base — is refused.
+    """
+    if paths.cohort_home.is_symlink() or paths.compiled.is_symlink() or staging_root.is_symlink():
+        raise CompileError(
+            f"refusing to write staging: {paths.compiled} is (or is under) a symlink"
+        )
+    base = paths.base.resolve()
+    resolved = paths.compiled.resolve()
+    if base != resolved and base not in resolved.parents:
+        raise CompileError(
+            f"refusing to write staging: {paths.compiled} resolves outside {base}"
+        )
 
 
 def write_staging(paths: CohortPaths, result: CompileResult) -> None:
@@ -111,6 +134,7 @@ def write_staging(paths: CohortPaths, result: CompileResult) -> None:
     a canonical artifact removed since last compile leaves no stale staged file.
     """
     staging_root = paths.compiled_ide(result.ide)
+    _assert_staging_contained(paths, staging_root)
     if staging_root.exists():
         shutil.rmtree(staging_root)
     for sf in result.staged:

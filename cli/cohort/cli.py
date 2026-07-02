@@ -837,6 +837,12 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
             typer.echo(f"  specialists: {', '.join(specs) or '-'}")
             for s in p.get("shadowed", []):
                 typer.echo(f"    ! {s} shadows a global agent (project wins in this repo)")
+            for s in p.get("legacy_agents", []):
+                typer.echo(
+                    f"    ! {s} is in the legacy .cohort/agents/ (no longer compiled) — run "
+                    f"`git mv .cohort/agents/{s}.md .cohort/canonical/agents/{s}.md`",
+                    err=True,
+                )
             st = p["staleness"]
             typer.echo(f"  staleness: {'STALE' if st['stale'] else 'fresh'} (>{st['threshold_hours']:g}h)")
             w = p["wiring"]

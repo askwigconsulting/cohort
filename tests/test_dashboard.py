@@ -225,11 +225,11 @@ def test_action_remove_specialist_prunes(server):
     srv, repo = server
     home = srv.home
     add_specialist(repo, home)
-    assert (repo / ".cohort" / "agents" / "data-modeler.md").exists()
+    assert (repo / ".cohort" / "canonical" / "agents" / "data-modeler.md").exists()
     code, _ = request(srv, "POST", "/api/action", token=srv.token,
                       body={"action": "remove-specialist", "args": {"name": "data-modeler"}})
     assert code == 200
-    assert not (repo / ".cohort" / "agents" / "data-modeler.md").exists()
+    assert not (repo / ".cohort" / "canonical" / "agents" / "data-modeler.md").exists()
     assert not (repo / ".claude" / "agents" / "data-modeler.md").is_symlink()
 
 

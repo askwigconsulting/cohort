@@ -109,7 +109,7 @@ class CodexRenderer:
     def matches(self, ir: IRArtifact) -> bool:
         return ir.targets_ide(self.ide)
 
-    def compile(self, irs: list[IRArtifact]) -> tuple[list[StagedFile], list[str]]:
+    def compile(self, irs: list[IRArtifact], project_tier: bool = False) -> tuple[list[StagedFile], list[str]]:
         matched = [ir for ir in irs if self.matches(ir)]
         specialists = [
             ir for ir in matched if ir.kind == "agent" and ir.fields.get("topology") == "specialist"
