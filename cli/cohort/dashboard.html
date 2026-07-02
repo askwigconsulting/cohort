@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cohort — office dashboard</title>
+<style>
+  :root {
+    --page: #f9f9f7; --surface: #fcfcfb;
+    --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --hairline: #e1e0d9; --ring: rgba(11,11,11,0.10);
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --accent: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --page: #0d0d0d; --surface: #1a1a19;
+      --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --hairline: #2c2c2a; --ring: rgba(255,255,255,0.10);
+      --accent: #3987e5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 20px 24px 8px;
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: 0.2px; }
+  header .sub { color: var(--ink-2); }
+  header .spacer { flex: 1; }
+  header .poll { color: var(--muted); font-size: 12px; }
+  main { padding: 8px 24px 40px; max-width: 1080px; margin: 0 auto; }
+  section { margin-top: 20px; }
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.8px;
+    color: var(--muted); margin: 0 0 8px; font-weight: 600;
+  }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .card .k { color: var(--ink-2); font-size: 12px; margin-bottom: 4px; }
+  .card .v { font-size: 20px; font-weight: 600; }
+  .card .d { color: var(--muted); font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; }
+  .status .ico { font-size: 12px; }
+  .s-good { color: var(--good); }
+  .s-warning { color: var(--warning); }
+  .s-serious { color: var(--serious); }
+  .s-critical { color: var(--critical); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    background: var(--surface); border: 1px solid var(--hairline); border-radius: 999px;
+    padding: 2px 10px; font-size: 12px; color: var(--ink-2);
+  }
+  .chip .shadow { color: var(--warning); }
+  table { width: 100%; border-collapse: collapse; background: var(--surface);
+          border: 1px solid var(--ring); border-radius: 8px; overflow: hidden; }
+  th, td { text-align: left; padding: 8px 12px; border-top: 1px solid var(--hairline);
+           font-size: 13px; vertical-align: top; }
+  thead th { border-top: none; color: var(--muted); font-size: 11px; text-transform: uppercase;
+             letter-spacing: 0.6px; font-weight: 600; }
+  td.num, th.num { font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); font-size: 13px; padding: 10px 2px; }
+  button {
+    font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 6px;
+    border: 1px solid var(--hairline); background: var(--surface); color: var(--ink);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button.danger:hover { border-color: var(--critical); color: var(--critical); }
+  .actions-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  .actions-row input, .actions-row select {
+    font: inherit; font-size: 12px; padding: 4px 8px; border-radius: 6px;
+    border: 1px solid var(--hairline); background: var(--surface); color: var(--ink);
+  }
+  #toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--surface); border: 1px solid var(--ring); border-radius: 8px;
+    padding: 8px 16px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s; max-width: 80vw;
+  }
+  #toast.show { opacity: 1; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 28px; }
+  code { background: var(--surface); border: 1px solid var(--hairline); border-radius: 4px;
+         padding: 0 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cohort</h1>
+  <span class="sub" id="hdr-version"></span>
+  <span id="hdr-update"></span>
+  <span class="spacer"></span>
+  <span class="poll" id="hdr-poll"></span>
+</header>
+<main>
+  <section id="sec-wiring">
+    <h2>Wiring &amp; health</h2>
+    <div class="cards" id="wiring-cards"></div>
+  </section>
+
+  <section id="sec-roster">
+    <h2>Roster</h2>
+    <div id="roster"></div>
+  </section>
+
+  <section id="sec-loop">
+    <h2>Improvement loop</h2>
+    <div class="cards" id="signal-cards"></div>
+    <div class="actions-row" id="loop-actions"></div>
+    <h2 style="margin-top:16px">Proposals</h2>
+    <div id="proposals"></div>
+    <h2 style="margin-top:16px">Recent feedback</h2>
+    <div id="feedback"></div>
+    <h2 style="margin-top:16px">Recent sessions</h2>
+    <div id="sessions"></div>
+  </section>
+
+  <footer>
+    Loopback-only lens over <code>cohort status</code> and this repo&rsquo;s <code>.cohort/</code> state.
+    Every button calls the same human-gated command the CLI exposes; agents stay advisory.
+    Submitting proposals as draft PRs stays in the terminal: <code>cohort submit-proposals</code>.
+  </footer>
+</main>
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const TOKEN = "__COHORT_TOKEN__";
+const POLL_MS = 5000;
+let pollTimer = null;
+
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const when = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d) ? esc(iso) : esc(d.toLocaleString([], {
+    year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }));
+};
+
+function status(kind, label) {
+  const ico = {good:"✓", warning:"⚠", serious:"⚠", critical:"✕"}[kind];
+  return `<span class="status s-${kind}"><span class="ico">${ico}</span>${esc(label)}</span>`;
+}
+
+function card(k, v, d) {
+  return `<div class="card"><div class="k">${esc(k)}</div><div class="v">${v}</div>` +
+         (d ? `<div class="d">${d}</div>` : "") + `</div>`;
+}
+
+function toast(msg, ok) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.style.borderColor = ok ? "var(--good)" : "var(--critical)";
+  el.classList.add("show");
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.remove("show"), 3500);
+}
+
+async function api(path, opts) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "X-Cohort-Token": TOKEN, "Content-Type": "application/json",
+               ...(opts && opts.headers) },
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
+}
+
+async function act(action, args, confirmMsg) {
+  if (confirmMsg && !window.confirm(confirmMsg)) return;
+  try {
+    const report = await api("/api/action", { method: "POST",
+      body: JSON.stringify({ action, args }) });
+    toast(`${action}: done` + (report.file ? ` (${report.file})` : ""), true);
+    refresh();
+  } catch (err) {
+    toast(`${action}: ${err.message}`, false);
+  }
+}
+
+function renderWiring(s) {
+  const g = s.global, cards = [];
+
+  const upd = g.update || {};
+  let updHtml, hdrUpd;
+  if (!upd.available) {
+    updHtml = `<span class="status" style="color:var(--muted)">unknown</span>`;
+    hdrUpd = "";
+  } else if (upd.diverged) {
+    updHtml = status("serious", "diverged from upstream");
+    hdrUpd = status("serious", "diverged");
+  } else if (upd.behind > 0) {
+    updHtml = status("warning", `${upd.behind} behind`);
+    hdrUpd = status("warning", `${upd.behind} behind — run cohort update`);
+  } else {
+    updHtml = status("good", "up to date");
+    hdrUpd = status("good", "up to date");
+  }
+  cards.push(card("Version", `v${esc(s.version)}`, updHtml +
+    (upd.available && upd.upstream
+      ? ` <span style="color:var(--muted)">vs ${esc(upd.upstream)}</span>` : "")));
+  document.getElementById("hdr-update").innerHTML = hdrUpd;
+
+  const src = g.source || {};
+  cards.push(card("Source link",
+    src.ok ? status("good", src.linked ? "linked" : "in place") : status("critical", "dangling"),
+    src.ok ? esc(src.target || "") : `restore: <code>${esc(src.restore || "")}</code>`));
+
+  const ides = g.ides || [];
+  const parity = g.parity || {};
+  for (const ide of ["claude", "codex", "cursor"]) {
+    if (!ides.includes(ide)) {
+      cards.push(card(ide, `<span class="status" style="color:var(--muted)">not installed</span>`, ""));
+      continue;
+    }
+    const p = parity[ide];
+    let body = status("good", "installed");
+    let detail = "";
+    if (p && !p.ok) {
+      body = status("warning", "parity drift");
+      const bits = [];
+      if (p.undeclared.length) bits.push(`undeclared: ${p.undeclared.map(esc).join(", ")}`);
+      if (p.stale.length) bits.push(`stale gaps: ${p.stale.map(esc).join(", ")}`);
+      detail = bits.join(" · ");
+    } else if (p) {
+      detail = `covers ${p.covered.length} kinds` +
+        (Object.keys(p.declared_gaps).length
+          ? ` · ${Object.keys(p.declared_gaps).length} declared gap(s)` : "");
+    }
+    cards.push(card(ide, body, detail));
+  }
+
+  if (s.project) {
+    const w = s.project.wiring || {};
+    const wmap = { present: status("good", "wired"),
+                   diverged: status("warning", "diverged"),
+                   missing: status("critical", "missing") };
+    cards.push(card("Project wiring", wmap[w.state] || esc(w.state),
+      w.restore ? `restore: <code>${esc(w.restore)}</code>` : "CLAUDE.md → project_context.md"));
+    const st = s.project.staleness || {};
+    cards.push(card("Context freshness",
+      st.stale ? status("warning", "stale") : status("good", "fresh"),
+      st.age_hours == null ? "no activity recorded"
+        : `${st.age_hours}h old · threshold ${st.threshold_hours}h`));
+  } else {
+    cards.push(card("Project", `<span class="status" style="color:var(--muted)">none</span>`,
+      `not a Cohort project — run <code>cohort init</code> here`));
+  }
+  document.getElementById("wiring-cards").innerHTML = cards.join("");
+}
+
+function renderRoster(s) {
+  const parts = [];
+  const roster = s.global.roster || { count: 0, names: [] };
+  parts.push(`<div class="card" style="margin-bottom:10px"><div class="k">Global office
+    (${roster.count})</div><div class="chips" style="margin-top:6px">` +
+    roster.names.map((n) => `<span class="chip">${esc(n)}</span>`).join("") + `</div></div>`);
+
+  if (s.project) {
+    const shadowed = new Set(s.project.shadowed || []);
+    const specialists = s.project.specialists || [];
+    const rows = specialists.map((n) => `<tr>
+      <td>${esc(n)}${shadowed.has(n)
+        ? ` <span class="chip"><span class="shadow">⚠ shadows global</span></span>` : ""}</td>
+      <td style="text-align:right"><button class="danger prune" data-name="${esc(n)}">
+        Prune</button></td></tr>`).join("");
+    parts.push(specialists.length
+      ? `<table><thead><tr><th>Project specialists (this repo)</th><th></th></tr></thead>
+         <tbody>${rows}</tbody></table>`
+      : `<div class="empty">No project specialists — add one with <code>cohort add-specialist</code>.</div>`);
+  }
+  document.getElementById("roster").innerHTML = parts.join("");
+}
+
+function renderLoop(s) {
+  const sec = document.getElementById("sec-loop");
+  if (!s.project) { sec.style.display = "none"; return; }
+  sec.style.display = "";
+  const sig = s.project.signals || {};
+  document.getElementById("signal-cards").innerHTML = [
+    card("Feedback entries", String(sig.feedback_total ?? 0), ""),
+    card("Sessions", String(sig.sessions ?? 0), ""),
+    card("Low-rated agents", (sig.low_rated_agents || []).length
+      ? status("warning", (sig.low_rated_agents || []).join(", ")) : status("good", "none"), ""),
+    card("Command friction", (sig.friction_commands || []).length
+      ? status("warning", (sig.friction_commands || []).join(", ")) : status("good", "none"), ""),
+  ].join("");
+
+  const agents = [...(s.global.roster?.names || []), ...(s.project.specialists || [])];
+  document.getElementById("loop-actions").innerHTML = `
+    <select id="fb-agent"><option value="">any agent</option>` +
+      agents.map((a) => `<option>${esc(a)}</option>`).join("") + `</select>
+    <input id="fb-note" placeholder="optional note" size="28" maxlength="500">
+    <button onclick="sendFeedback('up')">👍 Feedback</button>
+    <button onclick="sendFeedback('down')">👎 Feedback</button>
+    <button onclick="act('propose-improvement', {},
+      'Synthesize an improvement proposal from current feedback and sessions?')">Propose improvement</button>
+    <button onclick="act('snapshot', {})">Snapshot session</button>`;
+
+  const props = s.project.proposals || [];
+  document.getElementById("proposals").innerHTML = props.length
+    ? `<table><thead><tr><th>Proposal</th><th>Kind</th><th>Upstream?</th><th>Status</th></tr></thead><tbody>` +
+      props.map((p) => {
+        const st = p.submitted_upstream ? status("good", "submitted upstream")
+          : p.submitted_at ? status("good", "submitted")
+          : `<span class="status" style="color:var(--muted)">draft — submit via CLI</span>`;
+        return `<tr><td>${esc(p.file)}</td><td>${esc(p.kind)}</td>
+          <td>${p.upstream_candidate ? "yes" : "no"}</td><td>${st}</td></tr>`;
+      }).join("") + `</tbody></table>`
+    : `<div class="empty">No proposals yet.</div>`;
+
+  const fb = s.project.feedback || [];
+  document.getElementById("feedback").innerHTML = fb.length
+    ? `<table><thead><tr><th></th><th>About</th><th>Note</th><th>When</th></tr></thead><tbody>` +
+      fb.map((f) => `<tr><td>${f.rating === "up" ? "👍" : "👎"}</td>
+        <td>${esc(f.agent || f.command || "—")}</td>
+        <td>${esc(f.note || "")}</td><td class="num">${when(f.timestamp)}</td></tr>`).join("") +
+      `</tbody></table>`
+    : `<div class="empty">No feedback yet — rate an agent above.</div>`;
+
+  const sess = s.project.sessions || [];
+  document.getElementById("sessions").innerHTML = sess.length
+    ? `<table><thead><tr><th>Session</th><th>Branch</th><th>Author</th><th>When</th></tr></thead><tbody>` +
+      sess.map((x) => `<tr><td>${esc(x.file)}</td><td>${esc(x.branch || "")}</td>
+        <td>${esc(x.author || "")}</td><td class="num">${when(x.timestamp)}</td></tr>`).join("") +
+      `</tbody></table>`
+    : `<div class="empty">No sessions yet — take a snapshot above.</div>`;
+}
+
+function sendFeedback(rating) {
+  const agent = document.getElementById("fb-agent").value;
+  const note = document.getElementById("fb-note").value;
+  act("feedback", { rating, agent, note });
+  document.getElementById("fb-note").value = "";
+}
+
+async function refresh() {
+  try {
+    const s = await api("/api/state");
+    document.getElementById("hdr-version").textContent =
+      s.project ? s.project.repo : "(no project in this directory)";
+    renderWiring(s);
+    renderRoster(s);
+    renderLoop(s);
+    document.getElementById("hdr-poll").textContent =
+      "updated " + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById("hdr-poll").textContent = "refresh failed: " + err.message;
+  }
+}
+
+function schedule() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(() => {
+    if (document.visibilityState === "visible") refresh();
+  }, POLL_MS);
+}
+document.getElementById("roster").addEventListener("click", (ev) => {
+  const btn = ev.target.closest("button.prune");
+  if (!btn) return;
+  const name = btn.dataset.name;
+  act("remove-specialist", { name },
+    `Prune project specialist "${name}"? This deletes its source and compiled output in this repo.`);
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") refresh();
+});
+refresh();
+schedule();
+</script>
+</body>
+</html>
