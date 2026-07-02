@@ -34,6 +34,7 @@ from .install_model import (
     OpOutcome,
     OpStatus,
     OpType,
+    resolve_mode,
 )
 from .manifest import Manifest, load_manifest, new_install_id, now_iso
 
@@ -385,7 +386,7 @@ def _remove_stale_placed(stale: list[Op], manifest: Manifest, paths: CohortPaths
     return result.outcomes
 
 
-def do_install_project(repo: Path, mode: str = "link") -> dict[str, Any]:
+def do_install_project(repo: Path, mode: Optional[str] = None) -> dict[str, Any]:
     """Compile ``<repo>/.cohort/canonical/`` at *project* scope and place it into
     ``<repo>/.claude/`` via the project manifest — reversible, and isolated from the
     global office (the executor's base is the repo, never ``$HOME``).
@@ -393,28 +394,54 @@ def do_install_project(repo: Path, mode: str = "link") -> dict[str, Any]:
     Claude-only for now (the project tier hardcodes claude, like ``add-specialist``).
     ``project_tier=True`` disables office-directory injection (no project
     generalist) and the CLAUDE.md memory merge — that managed block is owned by
-    ``cohort init`` (the ``@import`` of ``project_context.md``).
+    ``cohort init`` (the ``@import`` of ``project_context.md``). Mirrors
+    ``do_install``'s discipline: preflight-refuse before any mutation, and prune
+    placements the fresh compile no longer produces (only when it produced
+    something — an empty compile never wipes the tier). Refuses to run while
+    unmigrated pre-unification sources sit in ``.cohort/agents/``: rebuilding
+    staging without compiling them would dangle their placed links.
     """
-    from .compile import compile_ide, scan_staging_ops, write_staging  # lazy: avoid import cycle
+    from .compile import (  # lazy: avoid import cycle
+        compile_ide,
+        planned_dests,
+        scan_staging_ops,
+        write_staging,
+    )
 
     ppaths = CohortPaths.for_project(repo)
     if not ppaths.manifest.exists():
         raise UsageError("not a Cohort project; run `cohort init` first")
+    legacy = sorted((ppaths.cohort_home / "agents").glob("*.md"))
+    if legacy:
+        names = ", ".join(p.stem for p in legacy)
+        raise UsageError(
+            f"unmigrated project specialists in .cohort/agents/ ({names}) — run "
+            f"`git mv .cohort/agents/<name>.md .cohort/canonical/agents/<name>.md` first"
+        )
     if not (ppaths.cohort_home / "canonical").exists():
         return {"action": "project-recompile", "ide": "claude", "staged": [], "applied": 0}
 
     ide = "claude"
+    mode = mode or resolve_mode(False)  # Windows-safe default (copy without symlink rights)
     result = compile_ide(ppaths.cohort_home, ide, scope="project", project_tier=True)
     write_staging(ppaths, result)
     plan = scan_staging_ops(ppaths, ide, mode)
     manifest = load_manifest(ppaths.manifest)
+    pf = preflight(plan, manifest, force=False)
+    if pf.clobbers:
+        raise ClobberRefused(pf.clobbers)
+    stale = _stale_placed_ops(
+        manifest, planned_dests(ppaths, [result]), {ide} if result.staged else set(), ppaths
+    )
     outcomes = apply(plan, ppaths, manifest, force=False)
+    stale_outcomes = _remove_stale_placed(stale, manifest, ppaths)
     manifest.persist(ppaths.manifest)
     return {
         "action": "project-recompile",
         "ide": ide,
         "staged": [s.staged_rel for s in result.staged],
         "applied": sum(1 for o in outcomes if o.status == "applied"),
+        "pruned": sum(1 for o in stale_outcomes if o.status == "removed"),
     }
 
 

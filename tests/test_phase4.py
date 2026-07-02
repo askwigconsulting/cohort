@@ -149,6 +149,59 @@ def test_project_memory_never_overwrites_init_claude_md_wiring(tmp_path):
 
 
 @requires_symlinks
+def test_staging_write_refuses_symlinked_compiled_dir(tmp_path):
+    """A hostile repo pre-plants .cohort/compiled as a symlink into $HOME so the
+    project compile would rmtree + rewrite the victim's global staging. Refused."""
+    repo, victim = tmp_path / "repo", tmp_path / "victim-home" / ".cohort" / "compiled"
+    ppaths = _project(repo)
+    _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
+    sentinel = victim / "claude" / "agents" / "chief-of-staff.md"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("global agent\n", encoding="utf-8")
+    (ppaths.compiled).symlink_to(victim, target_is_directory=True)
+    with pytest.raises(CompileError):
+        do_install_project(repo)
+    assert sentinel.read_text(encoding="utf-8") == "global agent\n"  # untouched
+
+
+@requires_symlinks
+def test_removed_source_prunes_placed_link_and_manifest_op(tmp_path):
+    """A canonical source deleted between runs (git branch switch, teammate rm)
+    must not leave a dangling placed link or a stale manifest op."""
+    repo = tmp_path / "repo"
+    ppaths = _project(repo)
+    _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
+    _add(ppaths, "commands", "lint", _CMD.format(n="lint"))
+    do_install_project(repo)
+    (ppaths.canonical / "commands" / "lint.md").unlink()
+    report = do_install_project(repo)
+    assert report["pruned"] == 1
+    assert not (repo / ".claude" / "commands" / "lint.md").is_symlink()  # no dangling link
+    assert (repo / ".claude" / "commands" / "deploy.md").exists()  # survivor intact
+    manifest = load_manifest(ppaths.manifest)
+    assert not any(op.dest.endswith("lint.md") for op in manifest.ops)
+
+
+@requires_symlinks
+def test_foreign_file_at_dest_refused_before_any_placement(tmp_path):
+    """Preflight-refuse, atomically: a user-owned file at one dest must abort the
+    whole install before anything else is placed."""
+    from cohort.executor import ClobberRefused
+
+    repo = tmp_path / "repo"
+    ppaths = _project(repo)
+    _add(ppaths, "agents", "helper", _AGENT.format(n="helper"))
+    _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
+    foreign = repo / ".claude" / "commands" / "deploy.md"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_text("the user's own command\n", encoding="utf-8")
+    with pytest.raises(ClobberRefused):
+        do_install_project(repo)
+    assert not (repo / ".claude" / "agents" / "helper.md").exists()  # nothing placed
+    assert foreign.read_text(encoding="utf-8") == "the user's own command\n"
+
+
+@requires_symlinks
 def test_authoring_and_install_share_one_staging(tmp_path):
     """C2: add-specialist and do_install_project used to write_staging the same
     compiled/claude/ wholesale (rmtree), dangling the other's placed links. Both

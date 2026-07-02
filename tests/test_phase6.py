@@ -194,14 +194,17 @@ def test_status_advises_on_legacy_agents_dir(tmp_path, source, home):
     assert data["project"]["specialists"] == []  # legacy sources no longer compile
 
 
-def test_add_specialist_legacy_collision_hints_migration(tmp_path, source, home):
+def test_add_specialist_refuses_while_legacy_sources_unmigrated(tmp_path, source, home):
+    # Rebuilding staging while .cohort/agents/ sources exist would dangle their
+    # placed links (they no longer compile), so authoring refuses with the hint.
     repo = inited_repo(tmp_path, source, home)
     legacy = repo / ".cohort" / "agents"
     legacy.mkdir(parents=True)
-    (legacy / "data-modeler.md").write_text("---\nname: data-modeler\n---\nbody\n", encoding="utf-8")
-    proc = add_specialist(repo, home)
+    (legacy / "old-timer.md").write_text("---\nname: old-timer\n---\nbody\n", encoding="utf-8")
+    proc = add_specialist(repo, home, name="new-guy")
     assert proc.returncode == 1
-    assert "git mv" in proc.stderr  # points at the migration, never overwrites
+    assert "git mv" in proc.stderr  # points at the migration, never breaks placements
+    assert not (repo / ".cohort" / "canonical" / "agents" / "new-guy.md").exists()
 
 
 def test_deinit_removes_compiled_preserves_sources_keeps_global(tmp_path, source, home):

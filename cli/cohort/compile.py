@@ -106,6 +106,27 @@ def compile_ide(
     return result
 
 
+def _assert_staging_contained(paths: CohortPaths, staging_root: Path) -> None:
+    """Refuse a redirected staging tree (the repo-escape guard).
+
+    A hostile repo can pre-plant ``.cohort`` or ``.cohort/compiled`` as a symlink
+    into ``$HOME`` so a project-tier compile rmtrees and rewrites the *global*
+    staging (which the global office links into ``~/.claude``). Staging is
+    Cohort-derived and never legitimately a symlink, so any symlink component —
+    or a compiled dir resolving outside the install base — is refused.
+    """
+    if paths.cohort_home.is_symlink() or paths.compiled.is_symlink() or staging_root.is_symlink():
+        raise CompileError(
+            f"refusing to write staging: {paths.compiled} is (or is under) a symlink"
+        )
+    base = paths.base.resolve()
+    resolved = paths.compiled.resolve()
+    if base != resolved and base not in resolved.parents:
+        raise CompileError(
+            f"refusing to write staging: {paths.compiled} resolves outside {base}"
+        )
+
+
 def write_staging(paths: CohortPaths, result: CompileResult) -> None:
     """Write a compile result to ``compiled/<ide>/``, replacing prior staging.
 
@@ -113,6 +134,7 @@ def write_staging(paths: CohortPaths, result: CompileResult) -> None:
     a canonical artifact removed since last compile leaves no stale staged file.
     """
     staging_root = paths.compiled_ide(result.ide)
+    _assert_staging_contained(paths, staging_root)
     if staging_root.exists():
         shutil.rmtree(staging_root)
     for sf in result.staged:

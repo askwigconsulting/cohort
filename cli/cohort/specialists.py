@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .compile import CompileError
-from .executor import ReverseResult, _reverse_place_ops
+from .executor import ClobberRefused, ReverseResult, _reverse_place_ops
 from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths
 from .loader import load_artifact, load_artifact_text
@@ -131,9 +131,14 @@ def do_add_specialist(
     dest = paths.canonical / "agents" / f"{name}.md"
     if dest.exists():
         raise AddSpecialistError(f"specialist {name!r} already exists in this repo")
-    if (paths.cohort_home / "agents" / f"{name}.md").exists():
+    legacy = sorted((paths.cohort_home / "agents").glob("*.md"))
+    if legacy:
+        # Refuse before authoring anything: rebuilding staging while unmigrated
+        # sources exist would dangle their placed links (they no longer compile).
+        names = ", ".join(p.stem for p in legacy)
         raise AddSpecialistError(
-            f"specialist {name!r} already exists in this repo{_legacy_hint(paths, name)}"
+            f"unmigrated project specialists in .cohort/agents/ ({names}) — run "
+            f"`git mv .cohort/agents/<n>.md .cohort/canonical/agents/<n>.md` first"
         )
     if body is not None and not body.strip():
         raise AddSpecialistError("--body-file is empty")
@@ -159,8 +164,8 @@ def do_add_specialist(
     dest.write_text(content, encoding="utf-8")
     try:
         report = do_install_project(repo)
-    except CompileError as exc:
-        dest.unlink()  # don't leave a source the project tier cannot compile
+    except (CompileError, ClobberRefused) as exc:
+        dest.unlink()  # don't leave a source the project tier cannot compile/place
         raise AddSpecialistError(str(exc))
     return {
         "action": "add-specialist", "dry_run": False, "name": name, "shadow": shadow,
@@ -197,7 +202,9 @@ def do_remove_specialist(repo: Path, home: Path, name: str, dry_run: bool) -> di
         return {"action": "remove-specialist", "dry_run": True, "name": name,
                 "path": str(src), "placed": str(placed), "unshadows": shadow}
 
-    targets = {str(src), str(placed)}
+    # The legacy dest too: a migrated (git mv'd) specialist may still carry its
+    # pre-unification SCAFFOLD op, which would otherwise orphan in the manifest.
+    targets = {str(src), str(placed), str(paths.cohort_home / "agents" / f"{name}.md")}
     mine = [op for op in manifest.ops if op.dest in targets]
     result = ReverseResult()
     _reverse_place_ops(mine, result, purge=True)  # purge: the human explicitly targeted it
