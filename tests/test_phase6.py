@@ -93,7 +93,7 @@ def test_add_specialist_requires_init(tmp_path, source, home):
 def test_add_specialist_scaffolds_and_compiles(tmp_path, source, home):
     repo = inited_repo(tmp_path, source, home)
     assert add_specialist(repo, home).returncode == 0
-    canonical = repo / ".cohort" / "agents" / "data-modeler.md"
+    canonical = repo / ".cohort" / "canonical" / "agents" / "data-modeler.md"
     assert "scope: project" in canonical.read_text()
     assert "topology: specialist" in canonical.read_text()  # never a project generalist
     assert (repo / ".claude" / "agents" / "data-modeler.md").exists()  # compiled in
@@ -117,18 +117,18 @@ def test_add_specialist_collision_refused(tmp_path, source, home):
 
 
 def test_specialist_marker_is_compile_error(tmp_path, source, home):
-    from cohort.install_model import CohortPaths
-    from cohort.specialists import AddSpecialistError, compile_specialists
+    from cohort.compile import CompileError
+    from cohort.install import do_install_project
     repo = inited_repo(tmp_path, source, home)
-    bad = repo / ".cohort" / "agents" / "bad.md"
+    bad = repo / ".cohort" / "canonical" / "agents" / "bad.md"
     bad.parent.mkdir(parents=True, exist_ok=True)
     bad.write_text(
         "---\nname: bad\nkind: agent\nscope: project\ndescription: x\ntargets: [all]\n"
         "department: D\ntopology: specialist\nadvisory: true\ntools: [read]\n---\n"
         "body\n<!-- cohort:office-directory -->\n", encoding="utf-8",
     )
-    with pytest.raises(AddSpecialistError):
-        compile_specialists(CohortPaths.for_project(repo))
+    with pytest.raises(CompileError):
+        do_install_project(repo)
 
 
 def test_add_specialist_shadow_warns(tmp_path, source, home):
@@ -143,19 +143,19 @@ def test_add_specialist_dry_run_writes_nothing(tmp_path, source, home):
     proc = run_cli("add-specialist", "--name", "data-modeler", "--display-name", "DM",
                    "--department", "Data", "--description", "x", "--dry-run", home=home, cwd=repo)
     assert proc.returncode == 0
-    assert not (repo / ".cohort" / "agents").exists()
+    assert not (repo / ".cohort" / "canonical" / "agents").exists()
 
 
 def test_specialist_compile_byte_stable(tmp_path, source, home):
     from cohort.compile import staging_tree_hash
+    from cohort.install import do_install_project
     from cohort.install_model import CohortPaths
-    from cohort.specialists import compile_specialists
     repo = inited_repo(tmp_path, source, home)
     add_specialist(repo, home)
     paths = CohortPaths.for_project(repo)
-    compile_specialists(paths)
+    do_install_project(repo)
     h1 = staging_tree_hash(paths, "claude")
-    compile_specialists(paths)
+    do_install_project(repo)
     assert staging_tree_hash(paths, "claude") == h1
 
 
@@ -170,7 +170,7 @@ def test_isolation_specialist_in_a_invisible_to_b(tmp_path, source, home):
     # invisible to repo B and to the global roster
     assert not (repo_b / ".claude" / "agents" / "a-only.md").exists()
     assert not (home / ".claude" / "agents" / "a-only.md").exists()
-    assert not (repo_b / ".cohort" / "agents" / "a-only.md").exists()
+    assert not (repo_b / ".cohort" / "canonical" / "agents" / "a-only.md").exists()
 
 
 def test_status_groups_and_flags_shadow(tmp_path, source, home):
@@ -183,13 +183,34 @@ def test_status_groups_and_flags_shadow(tmp_path, source, home):
     assert data["project"]["shadowed"] == ["counsel"]
 
 
+def test_status_advises_on_legacy_agents_dir(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    legacy = repo / ".cohort" / "agents"
+    legacy.mkdir(parents=True)
+    (legacy / "old-timer.md").write_text("---\nname: old-timer\n---\nbody\n", encoding="utf-8")
+    proc = run_cli("status", "--json", home=home, cwd=repo)
+    data = json.loads(proc.stdout)
+    assert data["project"]["legacy_agents"] == ["old-timer"]
+    assert data["project"]["specialists"] == []  # legacy sources no longer compile
+
+
+def test_add_specialist_legacy_collision_hints_migration(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    legacy = repo / ".cohort" / "agents"
+    legacy.mkdir(parents=True)
+    (legacy / "data-modeler.md").write_text("---\nname: data-modeler\n---\nbody\n", encoding="utf-8")
+    proc = add_specialist(repo, home)
+    assert proc.returncode == 1
+    assert "git mv" in proc.stderr  # points at the migration, never overwrites
+
+
 def test_deinit_removes_compiled_preserves_sources_keeps_global(tmp_path, source, home):
     repo = inited_repo(tmp_path, source, home)
     add_specialist(repo, home)
     before_global = tree_hash(home / ".claude" / "agents")
     assert run_cli("deinit", home=home, cwd=repo).returncode == 0
     assert not (repo / ".claude" / "agents" / "data-modeler.md").exists()  # compiled removed
-    assert (repo / ".cohort" / "agents" / "data-modeler.md").exists()  # source preserved
+    assert (repo / ".cohort" / "canonical" / "agents" / "data-modeler.md").exists()  # source preserved
     assert tree_hash(home / ".claude" / "agents") == before_global  # global untouched
 
 
@@ -254,7 +275,7 @@ def test_remove_specialist_prunes_source_compiled_and_manifest(tmp_path, source,
     add_specialist(repo, home)
     proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
     assert proc.returncode == 0
-    assert not (repo / ".cohort" / "agents" / "data-modeler.md").exists()
+    assert not (repo / ".cohort" / "canonical" / "agents" / "data-modeler.md").exists()
     assert not (repo / ".claude" / "agents" / "data-modeler.md").is_symlink()
     assert not (repo / ".cohort" / "compiled" / "claude" / "agents" / "data-modeler.md").exists()
     manifest = json.loads((repo / ".cohort" / "state" / "manifest.json").read_text())
@@ -271,7 +292,7 @@ def test_remove_specialist_leaves_siblings_and_global_untouched(tmp_path, source
     before_global = tree_hash(home / ".claude" / "agents")
     proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
     assert proc.returncode == 0
-    assert (repo / ".cohort" / "agents" / "etl-advisor.md").exists()
+    assert (repo / ".cohort" / "canonical" / "agents" / "etl-advisor.md").exists()
     assert (repo / ".claude" / "agents" / "etl-advisor.md").exists()
     assert tree_hash(home / ".claude" / "agents") == before_global
 
@@ -319,4 +340,4 @@ def test_remove_specialist_skips_user_repointed_link(tmp_path, source, home):
     proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
     assert proc.returncode == 0
     assert placed.is_symlink() and placed.exists()  # foreign link never clobbered
-    assert not (repo / ".cohort" / "agents" / "data-modeler.md").exists()
+    assert not (repo / ".cohort" / "canonical" / "agents" / "data-modeler.md").exists()

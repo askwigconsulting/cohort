@@ -137,11 +137,18 @@ def _remote_slug(path: Path, remote: str = "origin") -> Optional[str]:
 
 
 def _project_specialists(repo: Path) -> tuple[str, ...]:
-    """Names of the project-scope specialist agents, if any."""
-    agents_dir = CohortPaths.for_project(repo).cohort_home / "agents"
-    if not agents_dir.exists():
-        return ()
-    return tuple(sorted(p.stem for p in agents_dir.glob("*.md")))
+    """Names of the project-scope specialist agents, if any.
+
+    Reads the unified layout *and* the pre-unification ``.cohort/agents/``:
+    these names are privacy markers scrubbed from proposals, so an unmigrated
+    repo must keep scrubbing its old specialist names.
+    """
+    paths = CohortPaths.for_project(repo)
+    names: set[str] = set()
+    for agents_dir in (paths.canonical / "agents", paths.cohort_home / "agents"):
+        if agents_dir.exists():
+            names.update(p.stem for p in agents_dir.glob("*.md"))
+    return tuple(sorted(names))
 
 
 def project_markers(repo: Path) -> ProjectMarkers:

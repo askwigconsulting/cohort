@@ -72,8 +72,10 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
     repo = find_repo_root(cwd)
     ppaths = CohortPaths.for_project(repo)
     if ppaths.cohort_home.exists():
-        spec_dir = ppaths.cohort_home / "agents"
+        spec_dir = ppaths.canonical / "agents"
         specialists = sorted(p.stem for p in spec_dir.glob("*.md")) if spec_dir.exists() else []
+        legacy_dir = ppaths.cohort_home / "agents"
+        legacy = sorted(p.stem for p in legacy_dir.glob("*.md")) if legacy_dir.exists() else []
         newest = _newest_activity(ppaths)
         hours = _read_staleness_hours(ppaths)
         if newest is None:
@@ -92,4 +94,7 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
             "staleness": staleness,
             "wiring": wiring,
         }
+        if legacy:
+            # Pre-unification layout: these no longer compile or count as specialists.
+            result["project"]["legacy_agents"] = legacy
     return result

@@ -119,3 +119,53 @@ def test_project_tier_rejects_a_generalist(tmp_path):
     _add(ppaths, "agents", "gen", _AGENT.format(n="gen").replace("specialist", "generalist"))
     with pytest.raises(CompileError):
         do_install_project(repo)
+
+
+# --- the two data-loss collisions the layout unification closes (C1/C2) -----
+
+from cohort.merge import extract_block, upsert_block  # noqa: E402
+from cohort.project import IMPORT_LINE  # noqa: E402
+
+_MEMORY = ("---\nname: {n}\nkind: memory\nscope: project\ndescription: A project memory.\n"
+           "targets: [claude]\n---\nRemember this.\n")
+
+
+@requires_symlinks
+def test_project_memory_never_overwrites_init_claude_md_wiring(tmp_path):
+    """C1: `cohort init` owns the CLAUDE.md managed block (the project_context
+    @import). A project memory artifact must not replace it, so the project tier
+    skips the memory→CLAUDE.md merge entirely."""
+    repo = tmp_path / "repo"
+    ppaths = _project(repo)
+    claude_md = repo / ".claude" / "CLAUDE.md"
+    claude_md.parent.mkdir(parents=True)
+    claude_md.write_text(upsert_block("", IMPORT_LINE), encoding="utf-8")
+    _add(ppaths, "memories", "notes", _MEMORY.format(n="notes"))
+    _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
+    report = do_install_project(repo)
+    assert extract_block(claude_md.read_text(encoding="utf-8")) == IMPORT_LINE
+    assert not (repo / ".claude" / "cohort").exists()  # no orphaned memory corpus
+    assert all("CLAUDE" not in rel for rel in report["staged"])
+
+
+@requires_symlinks
+def test_authoring_and_install_share_one_staging(tmp_path):
+    """C2: add-specialist and do_install_project used to write_staging the same
+    compiled/claude/ wholesale (rmtree), dangling the other's placed links. Both
+    now route through the single project install path."""
+    from cohort.specialists import do_add_specialist
+
+    repo, home = tmp_path / "repo", tmp_path / "home"
+    ppaths = _project(repo)
+    home.mkdir()
+    _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
+    do_install_project(repo)
+    do_add_specialist(repo, home, "helper", "Helper", "Data", "A helper.", dry_run=False)
+    placed_cmd = repo / ".claude" / "commands" / "deploy.md"
+    placed_agent = repo / ".claude" / "agents" / "helper.md"
+    assert placed_cmd.exists() and placed_agent.exists()  # both resolve, nothing dangles
+    do_add_specialist(repo, home, "second", "Second", "Data", "Another.", dry_run=False)
+    assert placed_cmd.exists() and placed_agent.exists()
+    assert (repo / ".claude" / "agents" / "second.md").exists()
+    src = ppaths.canonical / "agents" / "helper.md"
+    assert src.exists()  # authored as a team-owned canonical artifact

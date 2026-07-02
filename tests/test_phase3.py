@@ -133,11 +133,15 @@ def test_project_markers_reads_slug_and_specialists(tmp_path):
     repo.mkdir()
     _git(repo, "init", "-q")
     _git(repo, "remote", "add", "origin", "git@github.com:acme/widgets.git")
-    agents = repo / ".cohort" / "agents"
+    agents = repo / ".cohort" / "canonical" / "agents"
     agents.mkdir(parents=True)
     (agents / "data-modeler.md").write_text("---\nname: data-modeler\n---\nbody\n", encoding="utf-8")
+    legacy = repo / ".cohort" / "agents"  # unmigrated names must stay scrubbed
+    legacy.mkdir(parents=True)
+    (legacy / "old-timer.md").write_text("---\nname: old-timer\n---\nbody\n", encoding="utf-8")
     markers = project_markers(repo)
     assert markers.slug == "acme/widgets" and "data-modeler" in markers.specialists
+    assert "old-timer" in markers.specialists
 
 
 # === integration (mirror Phase-8 fixtures + recording fake) =================
