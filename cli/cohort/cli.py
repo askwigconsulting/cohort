@@ -15,7 +15,7 @@ from typing import Optional
 import typer
 
 from . import __version__
-from .compile import CompileError, CompileResult, compile_ide, write_staging
+from .compile import CompileError, CompileResult, compile_ide, planned_dests, write_staging
 from .executor import ClobberRefused
 from .install import (
     CancelledSelection,
@@ -315,6 +315,12 @@ def compile(  # noqa: A001 - matches the user-facing command name
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
 
+    if agents is not None:
+        typer.echo(
+            "note: `compile --agents` only shrinks staging; it is not persisted. Run "
+            "`cohort recompile --agents ...` (or `cohort setup`) to place and remember a subset.",
+            err=True,
+        )
     paths = CohortPaths(Path.home())
     only = frozenset(roster) if roster is not None else None
     start = time.perf_counter()
@@ -387,6 +393,11 @@ def recompile(
             "(symlinks need Developer Mode/admin).",
             err=True,
         )
+    # Prune what this fresh compile no longer produces (a shrunk roster, a
+    # deleted-upstream artifact). Dests come from the in-memory results so the
+    # dry-run plan shows removals it would otherwise miss (staging isn't written).
+    fresh_dests = planned_dests(paths, results)
+    fresh_ides = {r.ide for r in results if r.staged}
     start = time.perf_counter()
     try:
         report = do_install(
@@ -396,6 +407,9 @@ def recompile(
             force=force,
             source=source_path,
             dry_run=effective_dry_run,
+            prune_stale=True,
+            fresh_dests=fresh_dests,
+            fresh_ides=fresh_ides,
         )
     except ClobberRefused as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -416,7 +430,7 @@ def recompile(
 @app.command()
 def setup(
     ctx: typer.Context,
-    ide: Optional[str] = typer.Option(None, "--ide", help="IDEs to install (comma-separated or 'all')."),
+    ide: Optional[str] = typer.Option(None, "--ide", help="IDEs to install (comma-separated or 'all'; default: all)."),
     agents: Optional[str] = typer.Option(None, "--agents", help="Agent subset (comma-separated) or 'all'."),
     company_url: Optional[str] = typer.Option(None, "--company-url", help="Your org's Cohort repo (shared office upstream)."),
     company_branch: Optional[str] = typer.Option(None, "--company-branch", help="Company repo default branch."),
@@ -464,8 +478,9 @@ def setup(
         if report["company"]:
             typer.echo(f"setup: company office upstream → {report['company']['url']}")
         summary = report["install"]["summary"]
+        removed = f" · removed {summary['removed']}" if summary.get("removed") else ""
         typer.echo(
-            f"setup: install applied {summary['applied']} · skipped {summary['skipped']}"
+            f"setup: install applied {summary['applied']} · skipped {summary['skipped']}{removed}"
         )
     raise typer.Exit(code=0)
 

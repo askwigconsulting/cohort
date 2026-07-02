@@ -199,6 +199,7 @@ class InstallReport:
             "applied": sum(1 for r in self.records if r.status == "applied"),
             "skipped": sum(1 for r in self.records if r.status == "skipped"),
             "backed_up": sum(1 for r in self.records if r.status == "backup"),
+            "removed": sum(1 for r in self.records if r.status in ("removed", "restored")),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -265,8 +266,22 @@ def do_install(
     force: bool,
     source: Path,
     dry_run: bool,
+    prune_stale: bool = False,
+    fresh_dests: Optional[set[str]] = None,
+    fresh_ides: Optional[set[str]] = None,
 ) -> InstallReport:
-    """Plan and (unless dry-run) apply an install. Raises ClobberRefused/exit 1."""
+    """Plan and (unless dry-run) apply an install. Raises ClobberRefused/exit 1.
+
+    ``prune_stale`` (only the compile-then-install callers — ``recompile`` /
+    ``setup`` — pass it) removes artifacts an IDE placed before but that the
+    fresh compile no longer produces: an agent dropped from a tailored roster,
+    or a canonical file deleted upstream. Plain ``install`` never prunes, so a
+    partial/missing staging can never be read as "everything left the office".
+    ``fresh_dests`` is the authoritative post-compile dest set (from the caller's
+    in-memory results, so a dry-run plans correctly without writing staging);
+    ``fresh_ides`` limits pruning to IDEs that actually recompiled to non-empty
+    output, so a compile that yields nothing for an IDE never wipes it.
+    """
     paths = CohortPaths(home)
     existing = load_manifest(paths.manifest)
     # The shared global home's mode is fixed by the first install; a later --copy
@@ -284,7 +299,11 @@ def do_install(
 
     merged = merge_ides(existing.ides if existing else [], selection)
     staging_missing = [ide for ide in selection if not paths.compiled_ide(ide).exists()]
-    stale = _stale_placed_ops(existing, plan, selection, paths)
+    planned = fresh_dests if fresh_dests is not None else {op.dest for op in plan}
+    stale = (
+        _stale_placed_ops(existing, planned, fresh_ides or set(selection), paths)
+        if prune_stale else []
+    )
     if dry_run:
         return InstallReport(
             mode=mode,
@@ -319,37 +338,50 @@ def do_install(
 
 
 def _stale_placed_ops(
-    existing: Optional[Manifest], plan: list[Op], selection: list[str], paths: CohortPaths
+    existing: Optional[Manifest], planned: set[str], prune_ides: set[str], paths: CohortPaths
 ) -> list[Op]:
-    """Recorded staged-placement ops for a selected IDE whose dest left the plan.
+    """Recorded placement ops (and their paired backups) an IDE no longer produces.
 
-    Happens when an artifact leaves staging between installs — a canonical
-    artifact deleted upstream, or an agent dropped from a tailored roster. Only
-    ops whose src points into ``compiled/`` qualify: the shared canonical link,
-    merges, and backups are never staged placements.
+    Returns the ops in manifest order so a LIFO reverse removes each placed
+    link/copy and *then* restores any ``--force`` backup parked at that dest —
+    the same restore path a slice uninstall takes. Only LINK/COPY ops whose src
+    points into ``compiled/`` are candidates (the shared canonical link and merges
+    are never staged placements), and only for IDEs in ``prune_ides`` (those that
+    recompiled to real output). Backup ops for a stale dest are pulled in so the
+    user's displaced original is not stranded.
     """
     if existing is None:
         return []
-    planned = {op.dest for op in plan}
     staged_root = str(paths.compiled) + os.sep
-    return [
-        o
+    stale_dests = {
+        o.dest
         for o in existing.ops
-        if o.ide in selection
+        if o.ide in prune_ides
         and o.op in (OpType.LINK.value, OpType.COPY.value)
         and o.dest not in planned
         and (o.src or "").startswith(staged_root)
+    }
+    if not stale_dests:
+        return []
+    return [
+        o
+        for o in existing.ops
+        if o.dest in stale_dests
+        and o.op in (OpType.LINK.value, OpType.COPY.value, OpType.BACKUP.value)
     ]
 
 
 def _remove_stale_placed(stale: list[Op], manifest: Manifest, paths: CohortPaths) -> list[OpOutcome]:
-    """Reverse the stale slice (ownership-checked) and drop it from the manifest."""
+    """Reverse the stale slice (ownership-checked, LIFO) and drop only the ops it
+    actually acted on. An op whose reversal was *skipped* (a user re-pointed link
+    or edited copy failed the ownership check) stays in the manifest so Cohort
+    keeps tracking it — never silently forgotten."""
     if not stale:
         return []
     result = ReverseResult()
     _reverse_place_ops(stale, result, purge=True)
-    drop = {id(o) for o in stale}
-    manifest.ops = [o for o in manifest.ops if id(o) not in drop]
+    acted = {id(o.op) for o in result.outcomes}  # removed/restored ops only
+    manifest.ops = [o for o in manifest.ops if id(o) not in acted]
     return result.outcomes
 
 

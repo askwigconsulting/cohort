@@ -48,7 +48,7 @@ Show the draft, apply their edits, then `cohort validate` and `cohort recompile`
 ## 3 — Custom global agents (optional)
 
 If their domain needs an advisor the roster lacks (e.g. trading-compliance,
-clinical-data), draft it: name, department, description, and a five-part body
+clinical-data), draft it: name, department, description, and a four-part body
 (Role / Advises on / Boundaries / Escalation). On approval:
 
     cohort add-agent --name <slug> --display-name <Name> --department <Dept> --description '<desc>'

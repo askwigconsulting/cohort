@@ -288,3 +288,105 @@ def test_add_specialist_description_injection_neutralized(home, source, tmp_path
         content = placed.read_text(encoding="utf-8")
         assert "advisory: false" not in content
         assert "scope: global" not in content
+
+
+# === review regressions: stale-cleanup scoping ===============================
+
+
+def test_plain_install_never_prunes_office(home, source):
+    # Finding 2: install must not read missing/partial staging as "office emptied".
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    assert len(placed_agents(home)) == 15
+    shutil.rmtree(home / ".cohort" / "compiled")  # derived + disposable
+    proc = run_cli("install", "--ide", "claude", "--source", str(source), home=home)
+    assert proc.returncode == 0
+    assert len(placed_agents(home)) == 15  # office intact, nothing wiped
+
+
+def test_dry_run_shrink_reports_removals(home, source):
+    # Finding 3: the plan the human approves must include the destructive half.
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    proc = run_cli("recompile", "--ide", "claude", "--agents", "counsel,chief-of-staff",
+                   "--dry-run", "--json", home=home)
+    assert proc.returncode == 0
+    data = json.loads(proc.stdout)
+    removed = [op for op in data["ops"] if op["status"] == "removed"]
+    assert len(removed) >= 12  # the dropped agents appear as removals
+    assert len(placed_agents(home)) == 15  # dry-run wrote nothing
+
+
+def test_add_agent_on_subset_office_survives_recompile(home, source):
+    # Finding 1 (blocker): the flagship subset→custom-agent flow must persist.
+    run_cli("setup", "--ide", "claude", "--agents", "counsel,chief-of-staff",
+            "--source", str(source), home=home)
+    proc = run_cli(
+        "add-agent", "--name", "trading-compliance", "--display-name", "TradingCompliance",
+        "--department", "Risk", "--topology", "specialist",
+        "--description", "Pre-trade compliance advice.", "--source", str(source), home=home,
+    )
+    assert proc.returncode == 0
+    assert "trading-compliance" in placed_agents(home)
+    assert json.loads((home / ".cohort" / "state" / "manifest.json").read_text())["roster"] \
+        == ["counsel", "chief-of-staff", "trading-compliance"]
+    # The mandated follow-up recompile must NOT remove the just-created agent.
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    assert sorted(placed_agents(home)) == ["chief-of-staff", "counsel", "trading-compliance"]
+
+
+# === review regressions: TOML preservation ==================================
+
+
+def test_setup_preserves_existing_toml_keys(home, source):
+    # Finding 4: a hand-added key/table must survive the company-wire rewrite.
+    cfg_dir = home / ".cohort"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "cohort.toml").write_text(
+        "# my config\ntop_key = 5\n\n[other]\nfoo = \"bar\"\n", encoding="utf-8"
+    )
+    proc = run_cli("setup", "--ide", "claude", "--company-url", "https://example.com/co.git",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 0
+    import tomllib
+    data = tomllib.loads((cfg_dir / "cohort.toml").read_text(encoding="utf-8"))
+    assert data["top_key"] == 5            # top-level key preserved
+    assert data["other"]["foo"] == "bar"   # other table preserved
+    assert data["update"]["upstream_remote"] == "company"
+
+
+def test_setup_rewires_update_table_without_duplicating(home, source):
+    for url in ("https://example.com/a.git", "https://example.com/b.git"):
+        run_cli("setup", "--ide", "claude", "--company-url", url,
+                "--source", str(source), home=home)
+    import tomllib
+    text = (home / ".cohort" / "cohort.toml").read_text(encoding="utf-8")
+    data = tomllib.loads(text)  # still parses after two rewrites
+    assert data["update"]["upstream_remote"] == "company"
+    assert text.count("upstream_remote") == 1  # no duplicate keys accreted
+
+
+def test_shrink_restores_forced_backup(home, source):
+    # Finding 5: a --force install parks the user's file in backups/; pruning that
+    # dest on a roster shrink must restore it, not strand it.
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    victim = home / ".claude" / "agents" / "hr-partner.md"
+    victim.unlink()  # replace Cohort's link with a user's own file
+    victim.write_text("MY OWN NOTES\n", encoding="utf-8")
+    run_cli("recompile", "--ide", "claude", "--force", "--source", str(source), home=home)
+    # Now shrink the roster so hr-partner leaves the plan.
+    proc = run_cli("recompile", "--ide", "claude", "--agents", "counsel,chief-of-staff",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 0
+    # The Cohort link is gone and the user's original file is restored in place —
+    # a regular file with their content, not a dangling link or an empty dest.
+    assert not victim.is_symlink()
+    assert victim.is_file() and victim.read_text(encoding="utf-8") == "MY OWN NOTES\n"
+
+
+def test_compile_agents_warns_not_persisted(home, source):
+    # Finding 7: plain compile --agents is staging-only; warn so a later install
+    # doesn't silently prune from an unremembered subset.
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    proc = run_cli("compile", "--ide", "claude", "--agents", "counsel",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 0
+    assert "not persisted" in proc.stderr

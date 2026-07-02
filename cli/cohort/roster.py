@@ -13,11 +13,12 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from .compile import compile_ide, write_staging
+from .compile import compile_ide, planned_dests, write_staging
 from .frontmatter import dump_frontmatter
 from .install import do_install
 from .install_model import CohortPaths
 from .loader import load_artifact
+from .manifest import load_manifest
 from .schema import NAME_PATTERN, validate_frontmatter
 
 # The canonical read-only tool set. The string form preserves the historical
@@ -144,10 +145,27 @@ def do_add_agent(
         raise AddAgentError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
 
     paths = CohortPaths.for_global(home)
-    write_staging(paths, compile_ide(source, "claude", scope="global"))
+    # Honor a tailored roster: on a subset office, compile with roster+[name] and
+    # extend the persisted subset, so the new agent is placed AND survives the
+    # next recompile/update (which would otherwise prune it as "not in roster").
+    manifest = load_manifest(paths.manifest)
+    subset = list(manifest.roster) if manifest and manifest.roster else None
+    if subset is not None and name not in subset:
+        subset = subset + [name]
+    only = frozenset(subset) if subset is not None else None
+    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    write_staging(paths, result)
     report = do_install(
-        home=home, selection=["claude"], mode="link", force=False, source=source, dry_run=False
+        home=home, selection=["claude"], mode="link", force=False, source=source, dry_run=False,
+        prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
     )
+    if subset is not None:
+        # Reload: do_install persisted its own manifest instance, so extend the
+        # roster on the current file rather than overwriting with a stale copy.
+        fresh = load_manifest(paths.manifest)
+        if fresh is not None:
+            fresh.roster = subset
+            fresh.persist(paths.manifest)
     return {
         "action": "add-agent", "dry_run": False, "name": name, "path": str(dest),
         "installed": report.summary,

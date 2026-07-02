@@ -264,7 +264,7 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
     during an update the user didn't opt into. A missing manifest (no install yet)
     recompiles nothing.
     """
-    from .compile import CompileError, compile_ide, write_staging
+    from .compile import CompileError, compile_ide, planned_dests, write_staging
     from .executor import ClobberRefused
     from .install import do_install
     from .install_model import resolve_mode
@@ -284,9 +284,16 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
         mode = manifest.mode if (manifest and manifest.mode) else resolve_mode(copy=False)
         # A tailored roster (cohort setup / recompile --agents) survives updates.
         only = frozenset(manifest.roster) if manifest and manifest.roster else None
-        for ide in ides:
-            write_staging(paths, compile_ide(source, ide, scope="global", only_agents=only))
-        do_install(home=home, selection=ides, mode=mode, force=False, source=source, dry_run=False)
+        results = [compile_ide(source, ide, scope="global", only_agents=only) for ide in ides]
+        for result in results:
+            write_staging(paths, result)
+        # Prune an agent/artifact the pulled canonical no longer produces, so an
+        # upstream deletion (or a persisted subset) doesn't leave a dangling link.
+        do_install(
+            home=home, selection=ides, mode=mode, force=False, source=source, dry_run=False,
+            prune_stale=True, fresh_dests=planned_dests(paths, results),
+            fresh_ides={r.ide for r in results if r.staged},
+        )
     except ClobberRefused as exc:
         return ides, str(exc)
     except CompileError as exc:

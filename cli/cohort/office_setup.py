@@ -13,13 +13,11 @@ NOT here: that is an LLM interview and lives in compiled canonical commands
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Optional
 
-from .compile import CompileError, compile_ide, write_staging
-from .executor import ClobberRefused
-from .install import UsageError, do_install, parse_ide, prompt_ide_selection
+from .compile import CompileError, compile_ide, planned_dests, write_staging
+from .install import do_install, parse_ide, prompt_ide_selection
 from .install_model import IDES, CohortPaths, resolve_mode
 from .manifest import load_manifest
 from .update import _git
@@ -88,32 +86,62 @@ def persist_roster(home: Path, roster: Optional[list[str]]) -> None:
 
 
 def _write_update_config(home: Path, remote: str, branch: Optional[str]) -> Path:
-    """Merge ``[update] upstream_remote/branch`` into the global cohort.toml.
+    """Set ``[update] upstream_remote/branch`` in the global cohort.toml.
 
-    Existing keys in other tables are preserved; values are emitted as JSON
-    strings, which are valid TOML basic strings.
+    A *surgical* line edit: only the two keys inside the ``[update]`` table are
+    rewritten (or the table appended if absent). Every other line — comments,
+    other tables, nested tables, arrays — is preserved verbatim, so a hand-added
+    key is never dropped and the file always stays parseable (a corrupt rewrite
+    would make ``_read_update_config`` fall back and silently ignore the company
+    upstream just configured).
     """
     cfg = CohortPaths(home).cohort_home / "cohort.toml"
-    data: dict[str, Any] = {}
-    if cfg.exists():
-        import tomllib
-
-        data = tomllib.loads(cfg.read_text(encoding="utf-8"))
-    upd = dict(data.get("update", {}))
-    upd["upstream_remote"] = remote
+    existing = cfg.read_text(encoding="utf-8") if cfg.exists() else ""
+    keys = {"upstream_remote": remote}
     if branch:
-        upd["upstream_branch"] = branch
-    data["update"] = upd
-    lines = ["# Cohort global config (machine-local)"]
-    for table, values in data.items():
-        if not isinstance(values, dict):
-            continue  # only shallow tables are ours to emit
-        lines.append(f"\n[{table}]")
-        for key, val in values.items():
-            lines.append(f"{key} = {json.dumps(val)}")
+        keys["upstream_branch"] = branch
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    cfg.write_text(_set_update_table(existing, keys), encoding="utf-8")
     return cfg
+
+
+def _toml_basic_string(value: str) -> str:
+    """Escape a scalar as a TOML basic string (quotes/backslashes/controls)."""
+    out = value.replace("\\", "\\\\").replace('"', '\\"')
+    out = out.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    return f'"{out}"'
+
+
+def _set_update_table(text: str, keys: dict[str, str]) -> str:
+    """Return ``text`` with the ``[update]`` table's ``keys`` set, all else intact."""
+    assignments = [f"{k} = {_toml_basic_string(v)}" for k, v in keys.items()]
+    lines = text.splitlines()
+    out: list[str] = []
+    in_update = False
+    seen_update = False
+    for line in lines:
+        stripped = line.strip()
+        is_header = stripped.startswith("[") and stripped.endswith("]")
+        if in_update and is_header:
+            in_update = False  # leaving the [update] table → emit our keys first
+            out.extend(assignments)
+        if is_header and stripped == "[update]":
+            in_update, seen_update = True, True
+            out.append(line)
+            continue
+        if in_update:
+            key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            if key in keys:
+                continue  # drop the old assignment; the new one is emitted on exit
+        out.append(line)
+    if in_update:  # file ended inside [update]
+        out.extend(assignments)
+    if not seen_update:
+        if out and out[-1].strip():
+            out.append("")
+        out.append("[update]")
+        out.extend(assignments)
+    return "\n".join(out) + "\n"
 
 
 def wire_company(source: Path, home: Path, url: str, branch: Optional[str]) -> dict[str, Any]:
@@ -200,13 +228,16 @@ def do_setup(
     try:
         results = [compile_ide(source, i, scope="global", only_agents=only) for i in selection]
     except CompileError as exc:
-        raise SetupError(str(exc))
+        raise SetupError(str(exc)) from exc
     if not dry_run:
         for result in results:
             write_staging(paths, result)
     report = do_install(
         home=home, selection=selection, mode=resolve_mode(copy), force=force,
         source=source, dry_run=dry_run,
+        prune_stale=True,
+        fresh_dests=planned_dests(paths, results),
+        fresh_ides={r.ide for r in results if r.staged},
     )
     if not dry_run:
         persist_roster(home, roster)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from .adapters.claude import MERGE_SUBDIR, ClaudeRenderer, MarkerError, StagedFile
 from .adapters.codex import CodexRenderer
@@ -122,6 +123,25 @@ def staging_tree_hash(paths: CohortPaths, ide: str) -> str:
     """Hash of an IDE's staging tree (for byte-stability assertions)."""
     root = paths.compiled_ide(ide)
     return path_hash(root) if root.exists() else ""
+
+
+def planned_dests(paths: CohortPaths, results: list[CompileResult]) -> set[str]:
+    """The install dests a set of *in-memory* compile results would place.
+
+    Mirrors ``scan_staging_ops``' staged→dest mapping but reads the results
+    directly, so a dry-run (which never writes staging) can still compute the
+    authoritative post-compile dest set for stale-artifact planning."""
+    dests: set[str] = set()
+    for result in results:
+        renderer = RENDERERS.get(result.ide)
+        if renderer is None:
+            continue
+        dest_root = renderer.dest_root(paths.base)
+        for sf in result.staged:
+            if MERGE_SUBDIR in Path(sf.staged_rel).parts:
+                continue
+            dests.add(str(dest_root / sf.staged_rel))
+    return dests
 
 
 # --- staging → install ops --------------------------------------------------
