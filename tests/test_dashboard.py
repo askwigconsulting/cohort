@@ -269,3 +269,19 @@ def test_dashboard_port_collision_errors(home, tmp_path, source, server):
                    home=home, cwd=repo)
     assert proc.returncode == 1
     assert "--port" in proc.stderr
+
+
+def test_negative_content_length_does_not_bypass_cap(server):
+    srv, _ = server
+    import socket
+    s = socket.create_connection(("127.0.0.1", srv.server_address[1]), timeout=5)
+    s.sendall(
+        f"POST /api/action HTTP/1.1\r\nHost: 127.0.0.1:{srv.server_address[1]}\r\n"
+        f"X-Cohort-Token: {srv.token}\r\nContent-Type: application/json\r\n"
+        f"Content-Length: -1\r\n\r\n".encode()
+    )
+    s.settimeout(5)
+    # A clamped length reads 0 bytes → empty body → 400, not a hang.
+    data = s.recv(256).decode("latin-1")
+    s.close()
+    assert "400" in data.split("\r\n", 1)[0]

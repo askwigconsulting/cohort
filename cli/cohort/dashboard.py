@@ -241,7 +241,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._guard():
             return
         try:
-            length = min(int(self.headers.get("Content-Length", "0")), 65536)
+            # Clamp non-negative: a negative Content-Length would make read(-1)
+            # read to EOF, defeating the cap and blocking the thread.
+            length = max(0, min(int(self.headers.get("Content-Length", "0")), 65536))
             body = json.loads(self.rfile.read(length) or b"{}")
             action = str(body.get("action", ""))
             args = body.get("args") or {}
