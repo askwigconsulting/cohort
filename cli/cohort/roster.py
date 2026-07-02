@@ -14,12 +14,32 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .compile import compile_ide, write_staging
+from .frontmatter import dump_frontmatter
 from .install import do_install
 from .install_model import CohortPaths
 from .loader import load_artifact
 from .schema import NAME_PATTERN, validate_frontmatter
 
+# The canonical read-only tool set. The string form preserves the historical
+# byte layout for callers that still interpolate; the list form feeds the safe
+# YAML emitter (dump_frontmatter), which quotes/escapes every scalar so a
+# metadata value can never inject a trailing frontmatter key.
+READONLY_TOOLS_LIST = ["read", "grep", "glob"]
 READONLY_TOOLS = "[read, grep, glob]"
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def reject_control_chars(**fields: str) -> None:
+    """Refuse a free-text metadata value containing a newline or control char.
+
+    Safe YAML emission already prevents such a value from injecting a frontmatter
+    key, but a newline would still fracture the rendered agent body (the office
+    directory line). These are single-line display fields, so reject at the input
+    boundary — a clean refusal beats a mangled artifact. Raises ``ValueError``."""
+    for label, value in fields.items():
+        if value and _CONTROL_CHARS.search(value):
+            raise ValueError(f"{label} must not contain newlines or control characters")
 
 
 class AddAgentError(Exception):
@@ -39,22 +59,20 @@ def prompt_add_agent_inputs() -> dict[str, str]:
 
 
 def _scaffold(name: str, display_name: str, department: str, topology: str, description: str) -> str:
-    fm = "\n".join(
+    fm = dump_frontmatter(
         [
-            "---",
-            f"name: {name}",
-            "kind: agent",
-            "scope: global",
-            f"description: {description}",
-            "targets: [all]",
-            f"department: {department}",
-            f"topology: {topology}",
-            "advisory: true",
-            f"tools: {READONLY_TOOLS}",
-            f"display_name: {display_name}",
-            "---",
+            ("name", name),
+            ("kind", "agent"),
+            ("scope", "global"),
+            ("description", description),
+            ("targets", ["all"]),
+            ("department", department),
+            ("topology", topology),
+            ("advisory", True),
+            ("tools", READONLY_TOOLS_LIST),
+            ("display_name", display_name),
         ]
-    )
+    ).rstrip("\n")
     body = "\n".join(
         [
             f"**Role.** {description}",
@@ -94,6 +112,12 @@ def do_add_agent(
         raise AddAgentError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
     if topology not in ("specialist", "generalist"):
         raise AddAgentError(f"topology must be specialist|generalist, got {topology!r}")
+    try:
+        reject_control_chars(
+            display_name=display_name, department=department, description=description
+        )
+    except ValueError as exc:
+        raise AddAgentError(str(exc))
     agents_dir = source / "canonical" / "agents"
     dest = agents_dir / f"{name}.md"
     if dest.exists():
