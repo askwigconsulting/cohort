@@ -25,7 +25,7 @@ from .ir import build_ir
 from .loader import load_artifact, load_artifact_text
 from .manifest import load_manifest, now_iso
 from .project import _stage
-from .roster import READONLY_TOOLS
+from .roster import READONLY_TOOLS_LIST, reject_control_chars
 from .schema import NAME_PATTERN, validate_frontmatter
 
 PROJECT_IDE = "project"
@@ -54,37 +54,48 @@ def prompt_add_specialist_inputs() -> dict[str, str]:
     }
 
 
-def _scaffold(name: str, display_name: str, department: str, description: str) -> str:
-    fm = "\n".join(
+def _scaffold(
+    name: str, display_name: str, department: str, description: str,
+    body: Optional[str] = None,
+) -> str:
+    """The canonical specialist file. ``body`` (e.g. from an init interview via
+    ``--body-file``) replaces the placeholder template.
+
+    Frontmatter is emitted through the safe YAML serializer (``dump_frontmatter``),
+    not string interpolation: a ``description``/``department``/``display_name`` value
+    carrying newlines or YAML metacharacters is quoted/escaped, so it can never
+    inject a trailing ``advisory: false`` / ``tools: [...]`` key and escape the
+    advisory read-only sandbox. ``do_add_specialist`` additionally validates the
+    result before it is staged (fail-closed)."""
+    fm = dump_frontmatter(
         [
-            "---",
-            f"name: {name}",
-            "kind: agent",
-            "scope: project",
-            f"description: {description}",
-            "targets: [all]",
-            f"department: {department}",
-            "topology: specialist",
-            "advisory: true",
-            f"tools: {READONLY_TOOLS}",
-            f"display_name: {display_name}",
-            "---",
+            ("name", name),
+            ("kind", "agent"),
+            ("scope", "project"),
+            ("description", description),
+            ("targets", ["all"]),
+            ("department", department),
+            ("topology", "specialist"),
+            ("advisory", True),
+            ("tools", READONLY_TOOLS_LIST),
+            ("display_name", display_name),
         ]
-    )
-    body = "\n".join(
-        [
-            f"**Role.** {description}",
-            "",
-            "**Advises on.** _Areas of responsibility (edit me)._",
-            "",
-            "**Boundaries.** Advisory only — you recommend and never approve, execute, or take an "
-            "irreversible action; a human decides.",
-            "",
-            "**Escalation.** Hand cross-functional questions to ChiefOfStaff; defer decisions to the "
-            "responsible human.",
-        ]
-    )
-    return f"{fm}\n{body}\n"
+    ).rstrip("\n")
+    if body is None:
+        body = "\n".join(
+            [
+                f"**Role.** {description}",
+                "",
+                "**Advises on.** _Areas of responsibility (edit me)._",
+                "",
+                "**Boundaries.** Advisory only — you recommend and never approve, execute, or take an "
+                "irreversible action; a human decides.",
+                "",
+                "**Escalation.** Hand cross-functional questions to ChiefOfStaff; defer decisions to the "
+                "responsible human.",
+            ]
+        )
+    return f"{fm}\n{body.strip()}\n"
 
 
 def _is_shadow(home: Path, name: str) -> bool:
@@ -113,24 +124,38 @@ def compile_specialists(paths: CohortPaths, extra_irs: Optional[list] = None) ->
 
 def do_add_specialist(
     repo: Path, home: Path, name: str, display_name: str, department: str,
-    description: str, dry_run: bool,
+    description: str, dry_run: bool, body: Optional[str] = None,
 ) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
     if not paths.manifest.exists():
         raise AddSpecialistError("not a Cohort project; run `cohort init` first")
     if not re.fullmatch(NAME_PATTERN, name):
         raise AddSpecialistError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
+    try:
+        reject_control_chars(
+            display_name=display_name, department=department, description=description
+        )
+    except ValueError as exc:
+        raise AddSpecialistError(str(exc))
     dest = paths.cohort_home / "agents" / f"{name}.md"
     if dest.exists():
         raise AddSpecialistError(f"specialist {name!r} already exists in this repo")
+    if body is not None and not body.strip():
+        raise AddSpecialistError("--body-file is empty")
 
-    content = _scaffold(name, display_name, department, description)
+    content = _scaffold(name, display_name, department, description, body)
     shadow = _is_shadow(home, name)
     if dry_run:
         return {"action": "add-specialist", "dry_run": True, "name": name,
                 "shadow": shadow, "path": str(dest)}
 
     new = load_artifact_text(content, name_stem=name)
+    # Fail closed: validate the scaffolded artifact before it is ever staged or
+    # placed, so an invalid frontmatter (e.g. an injected advisory/tools override
+    # that slipped past emission) can never reach a live agent file.
+    errors = validate_frontmatter(new.frontmatter, name)
+    if errors:
+        raise AddSpecialistError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
     new_ir = build_ir(new.frontmatter, new.body, dest)
     compile_specialists(paths, extra_irs=[new_ir])  # stage all specialists incl the new one
     scaffold_src = _stage(paths.compiled / "project-scaffold", f"{name}.md", content)

@@ -187,7 +187,7 @@ def test_install_json_shape(home):
     assert data["action"] == "install"
     assert data["mode"] == ("copy" if os.name == "nt" else "link")  # copy-mode default on Windows
     assert data["ides"] == ["claude"]
-    assert set(data["summary"]) == {"applied", "skipped", "backed_up"}
+    assert set(data["summary"]) == {"applied", "skipped", "backed_up", "removed"}
 
 
 def test_install_dry_run_json_has_null_install_id(home):

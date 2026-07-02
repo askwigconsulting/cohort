@@ -22,6 +22,29 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 - `cohort remove-specialist` — prune a project specialist: canonical source,
   compiled output, placed artifact, and its manifest records, with the executor's
   ownership checks (a user-repointed link is never clobbered). (#49)
+- `cohort setup` — a guided first-run interview (company Cohort repo as the
+  office's upstream, IDE selection, roster subset), fully flag-driven for
+  scripted installs. A tailored roster persists on the manifest and survives
+  `cohort update` recompiles; `--agents all` restores the full office. (#51)
+- `/office-setup` and `/project-setup` — compiled interview commands. The first
+  tailors the global office (office-context memory + human-reviewed custom
+  agents); the second interviews the team about a repo, fills
+  `project_context.md`, and scaffolds specialists with real content. (#51)
+- `add-specialist --body-file` — supply the agent body (e.g. from an interview)
+  instead of the "_edit me_" template; frontmatter stays generated so
+  `advisory: true` and project scope cannot be overridden. (#51)
+- Stale placed-artifact cleanup, scoped to the compile-then-install callers
+  (`recompile`/`setup`/`update`): artifacts a fresh compile no longer produces (an
+  agent dropped from a tailored roster, or one deleted upstream) are reversed
+  (ownership-checked) and pruned from the manifest. Plain `install` never prunes,
+  a dry-run reports the removals it would make, and a `--force` backup displaced at
+  a pruned dest is restored rather than stranded. (#51)
+
+### Security
+- Agent/specialist scaffolds emit frontmatter through the safe YAML serializer and
+  reject control characters in the display fields, closing a frontmatter-injection
+  that could append `advisory: false` + write tools and escape the read-only
+  advisory sandbox; `add-specialist` now validates before staging (fail-closed). (#51)
 
 ## [0.3.0] — 2026-06-27 · Self-update
 

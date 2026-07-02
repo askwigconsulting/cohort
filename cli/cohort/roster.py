@@ -13,13 +13,34 @@ import re
 from pathlib import Path
 from typing import Any, Optional
 
-from .compile import compile_ide, write_staging
+from .compile import compile_ide, planned_dests, write_staging
+from .frontmatter import dump_frontmatter
 from .install import do_install
-from .install_model import CohortPaths
+from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
+from .manifest import load_manifest
 from .schema import NAME_PATTERN, validate_frontmatter
 
+# The canonical read-only tool set. The string form preserves the historical
+# byte layout for callers that still interpolate; the list form feeds the safe
+# YAML emitter (dump_frontmatter), which quotes/escapes every scalar so a
+# metadata value can never inject a trailing frontmatter key.
+READONLY_TOOLS_LIST = ["read", "grep", "glob"]
 READONLY_TOOLS = "[read, grep, glob]"
+
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def reject_control_chars(**fields: str) -> None:
+    """Refuse a free-text metadata value containing a newline or control char.
+
+    Safe YAML emission already prevents such a value from injecting a frontmatter
+    key, but a newline would still fracture the rendered agent body (the office
+    directory line). These are single-line display fields, so reject at the input
+    boundary — a clean refusal beats a mangled artifact. Raises ``ValueError``."""
+    for label, value in fields.items():
+        if value and _CONTROL_CHARS.search(value):
+            raise ValueError(f"{label} must not contain newlines or control characters")
 
 
 class AddAgentError(Exception):
@@ -39,22 +60,20 @@ def prompt_add_agent_inputs() -> dict[str, str]:
 
 
 def _scaffold(name: str, display_name: str, department: str, topology: str, description: str) -> str:
-    fm = "\n".join(
+    fm = dump_frontmatter(
         [
-            "---",
-            f"name: {name}",
-            "kind: agent",
-            "scope: global",
-            f"description: {description}",
-            "targets: [all]",
-            f"department: {department}",
-            f"topology: {topology}",
-            "advisory: true",
-            f"tools: {READONLY_TOOLS}",
-            f"display_name: {display_name}",
-            "---",
+            ("name", name),
+            ("kind", "agent"),
+            ("scope", "global"),
+            ("description", description),
+            ("targets", ["all"]),
+            ("department", department),
+            ("topology", topology),
+            ("advisory", True),
+            ("tools", READONLY_TOOLS_LIST),
+            ("display_name", display_name),
         ]
-    )
+    ).rstrip("\n")
     body = "\n".join(
         [
             f"**Role.** {description}",
@@ -94,6 +113,12 @@ def do_add_agent(
         raise AddAgentError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
     if topology not in ("specialist", "generalist"):
         raise AddAgentError(f"topology must be specialist|generalist, got {topology!r}")
+    try:
+        reject_control_chars(
+            display_name=display_name, department=department, description=description
+        )
+    except ValueError as exc:
+        raise AddAgentError(str(exc))
     agents_dir = source / "canonical" / "agents"
     dest = agents_dir / f"{name}.md"
     if dest.exists():
@@ -120,10 +145,28 @@ def do_add_agent(
         raise AddAgentError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
 
     paths = CohortPaths.for_global(home)
-    write_staging(paths, compile_ide(source, "claude", scope="global"))
+    # Honor a tailored roster: on a subset office, compile with roster+[name] and
+    # extend the persisted subset, so the new agent is placed AND survives the
+    # next recompile/update (which would otherwise prune it as "not in roster").
+    manifest = load_manifest(paths.manifest)
+    subset = list(manifest.roster) if manifest and manifest.roster else None
+    if subset is not None and name not in subset:
+        subset = subset + [name]
+    only = frozenset(subset) if subset is not None else None
+    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    write_staging(paths, result)
     report = do_install(
-        home=home, selection=["claude"], mode="link", force=False, source=source, dry_run=False
+        home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,
+        source=source, dry_run=False,
+        prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
     )
+    if subset is not None:
+        # Reload: do_install persisted its own manifest instance, so extend the
+        # roster on the current file rather than overwriting with a stale copy.
+        fresh = load_manifest(paths.manifest)
+        if fresh is not None:
+            fresh.roster = subset
+            fresh.persist(paths.manifest)
     return {
         "action": "add-agent", "dry_run": False, "name": name, "path": str(dest),
         "installed": report.summary,
