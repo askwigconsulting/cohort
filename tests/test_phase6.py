@@ -244,3 +244,79 @@ def test_proposals_is_git_tracked(tmp_path, source, home):
     run_cli("promote", "data-modeler", home=home, cwd=repo)
     ignored = subprocess.run(["git", "check-ignore", "-q", ".cohort/proposals"], cwd=repo)
     assert ignored.returncode == 1  # not ignored
+
+
+# === remove-specialist (prune) ===============================================
+
+
+def test_remove_specialist_prunes_source_compiled_and_manifest(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    add_specialist(repo, home)
+    proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
+    assert proc.returncode == 0
+    assert not (repo / ".cohort" / "agents" / "data-modeler.md").exists()
+    assert not (repo / ".claude" / "agents" / "data-modeler.md").is_symlink()
+    assert not (repo / ".cohort" / "compiled" / "claude" / "agents" / "data-modeler.md").exists()
+    manifest = json.loads((repo / ".cohort" / "state" / "manifest.json").read_text())
+    assert not any("data-modeler" in op["dest"] for op in manifest["ops"])
+
+
+def test_remove_specialist_leaves_siblings_and_global_untouched(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    assert add_specialist(repo, home, name="data-modeler").returncode == 0
+    # The second add re-applies over the first's existing placed link; it must
+    # classify as ours (satisfied), not clobber — the Windows \\?\ regression.
+    assert add_specialist(repo, home, name="etl-advisor").returncode == 0
+    assert (repo / ".claude" / "agents" / "etl-advisor.md").exists()
+    before_global = tree_hash(home / ".claude" / "agents")
+    proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
+    assert proc.returncode == 0
+    assert (repo / ".cohort" / "agents" / "etl-advisor.md").exists()
+    assert (repo / ".claude" / "agents" / "etl-advisor.md").exists()
+    assert tree_hash(home / ".claude" / "agents") == before_global
+
+
+def test_remove_specialist_unknown_name_errors(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    proc = run_cli("remove-specialist", "nonexistent", home=home, cwd=repo)
+    assert proc.returncode == 1
+    assert "no project specialist" in proc.stderr
+
+
+def test_remove_specialist_requires_init(tmp_path, source, home):
+    repo = make_git_repo(tmp_path / "uninited")
+    proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
+    assert proc.returncode == 1
+    assert "cohort init" in proc.stderr
+
+
+def test_remove_specialist_dry_run_writes_nothing(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    add_specialist(repo, home)
+    before = tree_hash(repo / ".cohort")
+    proc = run_cli("remove-specialist", "data-modeler", "--dry-run", home=home, cwd=repo)
+    assert proc.returncode == 0
+    assert tree_hash(repo / ".cohort") == before
+    assert (repo / ".claude" / "agents" / "data-modeler.md").exists()
+
+
+def test_remove_specialist_unshadows_global_agent(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    add_specialist(repo, home, name="counsel")  # shadows the global counsel
+    proc = run_cli("remove-specialist", "counsel", home=home, cwd=repo)
+    assert proc.returncode == 0
+    assert "no longer shadowed" in proc.stderr
+
+
+def test_remove_specialist_skips_user_repointed_link(tmp_path, source, home):
+    repo = inited_repo(tmp_path, source, home)
+    add_specialist(repo, home)
+    placed = repo / ".claude" / "agents" / "data-modeler.md"
+    foreign = repo / "foreign.md"
+    foreign.write_text("mine\n", encoding="utf-8")
+    placed.unlink()
+    placed.symlink_to(foreign)  # user re-pointed the link at a live target
+    proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
+    assert proc.returncode == 0
+    assert placed.is_symlink() and placed.exists()  # foreign link never clobbered
+    assert not (repo / ".cohort" / "agents" / "data-modeler.md").exists()

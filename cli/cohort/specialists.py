@@ -1,4 +1,5 @@
-"""Project-isolated specialists: `cohort add-specialist` and `cohort promote`.
+"""Project-isolated specialists: `cohort add-specialist`, `cohort remove-specialist`,
+and `cohort promote`.
 
 The new technical piece (P6 [R1]) is *project-scope agent compilation*: discover
 ``<repo>/.cohort/agents/`` (team-owned, ``scope: project``), render through the
@@ -10,13 +11,14 @@ touches ``~/.cohort/`` or the Cohort source.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any, Optional
 
 from .adapters.claude import MarkerError, render_agent
 from .compile import CompileResult, scan_staging_ops, write_staging
-from .executor import apply
+from .executor import ReverseResult, _reverse_place_ops, apply
 from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
@@ -35,6 +37,10 @@ class AddSpecialistError(Exception):
 
 class PromoteError(Exception):
     """A refused promote request."""
+
+
+class RemoveSpecialistError(Exception):
+    """A refused remove-specialist request."""
 
 
 def prompt_add_specialist_inputs() -> dict[str, str]:
@@ -139,6 +145,60 @@ def do_add_specialist(
         "action": "add-specialist", "dry_run": False, "name": name, "shadow": shadow,
         "path": str(dest), "compiled": str(repo / ".claude" / "agents" / f"{name}.md"),
         "applied": sum(1 for o in outcomes if o.status == "applied"),
+    }
+
+
+# --- remove-specialist -------------------------------------------------------
+
+
+def do_remove_specialist(repo: Path, home: Path, name: str, dry_run: bool) -> dict[str, Any]:
+    """Prune one project specialist: canonical source, staging, placed artifact,
+    and its recorded manifest ops. Reuses the executor's ownership-checked
+    reversal so a user-repointed link is skipped, never clobbered."""
+    paths = CohortPaths.for_project(repo)
+    manifest = load_manifest(paths.manifest)
+    if manifest is None:
+        raise RemoveSpecialistError("not a Cohort project; run `cohort init` first")
+    if not re.fullmatch(NAME_PATTERN, name):
+        raise RemoveSpecialistError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
+    src = paths.cohort_home / "agents" / f"{name}.md"
+    if not src.exists():
+        raise RemoveSpecialistError(f"no project specialist {name!r} in this repo")
+
+    placed = repo / ".claude" / "agents" / f"{name}.md"
+    staged = paths.compiled / "claude" / "agents" / f"{name}.md"
+    scaffold_stage = paths.compiled / "project-scaffold" / f"{name}.md"
+    shadow = _is_shadow(home, name)
+    if dry_run:
+        return {"action": "remove-specialist", "dry_run": True, "name": name,
+                "path": str(src), "placed": str(placed), "unshadows": shadow}
+
+    targets = {str(src), str(placed)}
+    mine = [op for op in manifest.ops if op.dest in targets]
+    result = ReverseResult()
+    _reverse_place_ops(mine, result, purge=True)  # purge: the human explicitly targeted it
+    if src.exists():
+        src.unlink()  # hand-added source (no scaffold op recorded) — the command's target
+    if placed.is_symlink() and (
+        not placed.exists()
+        or paths.compiled.resolve() in Path(os.path.realpath(placed)).parents
+    ):
+        # Ownership re-check on resolved paths: Windows readlink returns a
+        # \\?\-prefixed substitute name the executor's exact compare skips, so
+        # the recorded-op reversal above can leave the link behind. realpath
+        # canonicalizes both sides (prefix, short names, case) before deciding
+        # the link points into our staging (ours) or dangles.
+        placed.unlink()
+    for leftover in (staged, scaffold_stage):
+        if leftover.exists():
+            leftover.unlink()  # derived staging is a non-op artifact
+    manifest.ops = [op for op in manifest.ops if op.dest not in targets]
+    manifest.persist(paths.manifest)
+    return {
+        "action": "remove-specialist", "dry_run": False, "name": name,
+        "path": str(src), "unshadows": shadow,
+        "removed": result.removed, "skipped": result.skipped,
+        "placed_removed": not (placed.exists() or placed.is_symlink()),
     }
 
 

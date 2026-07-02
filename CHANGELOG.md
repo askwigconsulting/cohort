@@ -11,6 +11,18 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- `cohort dashboard` — a lightweight, loopback-only web dashboard (stdlib HTTP
+  server, zero new dependencies) showing wiring & health (IDE placement, source-link
+  health, canonical↔compiled parity, version vs upstream), the roster, and the
+  improvement loop (signals, feedback, proposals, sessions). Actions (feedback,
+  prune specialist, propose improvement, snapshot) call the same human-gated
+  command functions as the CLI; every `/api` call requires a per-launch token and
+  a loopback Host header. (#49)
+- `cohort remove-specialist` — prune a project specialist: canonical source,
+  compiled output, placed artifact, and its manifest records, with the executor's
+  ownership checks (a user-repointed link is never clobbered). (#49)
+
 ## [0.3.0] — 2026-06-27 · Self-update
 
 Cohort can now keep itself current and learn from the projects that use it.
