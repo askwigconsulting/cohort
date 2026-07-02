@@ -285,3 +285,30 @@ def test_negative_content_length_does_not_bypass_cap(server):
     data = s.recv(256).decode("latin-1")
     s.close()
     assert "400" in data.split("\r\n", 1)[0]
+
+
+def test_action_snapshot_outside_project_is_400(home, tmp_path, source):
+    # do_snapshot *returns* an error field rather than raising; the API must
+    # surface it as a refusal, not a 200 "done".
+    plain = make_git_repo(tmp_path / "plain")
+    srv = DashboardServer(home, plain, 0)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        code, data = request(srv, "POST", "/api/action", token=srv.token,
+                             body={"action": "snapshot", "args": {}})
+        assert code == 400
+        assert "not a Cohort project" in json.loads(data)["error"]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_update_cache_does_not_block_get(home, tmp_path, source):
+    # A stale/first get returns immediately with the placeholder and refreshes
+    # off-thread; it must never run the git fetch inline.
+    from cohort.dashboard import _UpdateCache
+    cache = _UpdateCache()
+    repo = inited_repo(tmp_path, source, home)
+    val = cache.get(repo, home)  # first call: placeholder, background refresh kicked
+    assert val == {"available": False, "upstream": ""}

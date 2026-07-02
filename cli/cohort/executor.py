@@ -69,8 +69,12 @@ def path_hash(path: Path) -> str:
 def _strip_extended_prefix(target: str) -> str:
     """Windows stores absolute symlink targets as \\\\?\\-prefixed substitute
     names, and ``os.readlink`` surfaces the prefix when it cannot strip it —
-    which would make our own link read as foreign. The prefix is a pure
-    no-op qualifier, so dropping it before comparing is always safe."""
+    which would make our own link read as foreign. Dropping the ``\\\\?\\``
+    prefix is safe for the drive-letter form Cohort's own links use (a no-op on
+    any target that lacks it). The ``\\\\?\\UNC\\`` share form is a known gap:
+    stripping leaves ``UNC\\server\\share`` which won't equal ``\\\\server\\share``,
+    so such a link is treated as foreign and skipped (conservative — never a
+    wrong removal; ``do_remove_specialist`` falls back to ``realpath``)."""
     return target[4:] if target.startswith("\\\\?\\") else target
 
 

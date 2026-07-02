@@ -32,6 +32,7 @@ from . import __version__
 from .compile import RENDERERS
 from .improve import (
     FeedbackError,
+    ProposeError,
     aggregate_signals,
     do_feedback,
     do_propose_improvement,
@@ -60,22 +61,48 @@ def _resolve_source_lenient(home: Path) -> Optional[Path]:
         return None
 
 
+_UPDATE_UNKNOWN = {"available": False, "upstream": ""}
+
+
 class _UpdateCache:
-    """TTL cache around ``update_status`` (it fetches; polls must stay fast)."""
+    """TTL cache around ``update_status``, refreshed off the request thread.
+
+    ``update_status`` runs a ``git fetch`` (up to 8s), so it must never run while
+    a request holds the lock — a poll would stall for the whole fetch. Instead a
+    stale/empty ``get`` kicks a single background refresh and returns the last
+    value (or the "unknown" placeholder on the very first call); the next poll
+    picks up the result. The lock is only ever held for trivial dict swaps."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._value: Optional[dict] = None
         self._at = 0.0
+        self._refreshing = False
 
     def get(self, source: Optional[Path], home: Path) -> dict:
         if source is None:
-            return {"available": False, "upstream": ""}
+            return dict(_UPDATE_UNKNOWN)
         with self._lock:
-            if self._value is None or time.monotonic() - self._at > _UPDATE_TTL_SECONDS:
-                self._value = update_status(source, home)
-                self._at = time.monotonic()
-            return self._value
+            fresh = self._value is not None and time.monotonic() - self._at <= _UPDATE_TTL_SECONDS
+            value = self._value if self._value is not None else dict(_UPDATE_UNKNOWN)
+            start_refresh = not fresh and not self._refreshing
+            if start_refresh:
+                self._refreshing = True
+        if start_refresh:
+            threading.Thread(
+                target=self._refresh, args=(source, home), daemon=True
+            ).start()
+        return value
+
+    def _refresh(self, source: Path, home: Path) -> None:
+        try:
+            result = update_status(source, home)  # never raises (its contract)
+        except Exception:  # noqa: BLE001 - a refresh must never crash the daemon thread
+            result = dict(_UPDATE_UNKNOWN)
+        with self._lock:
+            self._value = result
+            self._at = time.monotonic()
+            self._refreshing = False
 
 
 def _proposal_entry(path: Path) -> dict[str, Any]:
@@ -155,19 +182,25 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
     repo = find_repo_root(cwd)
     try:
         if action == "feedback":
-            return do_feedback(
+            report = do_feedback(
                 repo, str(args.get("rating", "")), args.get("agent") or None,
                 args.get("command") or None, str(args.get("note", "")), dry_run=False,
             )
-        if action == "remove-specialist":
-            return do_remove_specialist(repo, home, str(args.get("name", "")), dry_run=False)
-        if action == "propose-improvement":
-            return do_propose_improvement(repo, dry_run=False)
-        if action == "snapshot":
-            return do_snapshot(repo, dry_run=False, refresh_index=True)
-    except (FeedbackError, RemoveSpecialistError) as exc:
+        elif action == "remove-specialist":
+            report = do_remove_specialist(repo, home, str(args.get("name", "")), dry_run=False)
+        elif action == "propose-improvement":
+            report = do_propose_improvement(repo, dry_run=False)
+        elif action == "snapshot":
+            report = do_snapshot(repo, dry_run=False, refresh_index=True)
+        else:
+            raise ActionError(f"unknown action {action!r}")
+    except (FeedbackError, ProposeError, RemoveSpecialistError) as exc:
         raise ActionError(str(exc))
-    raise ActionError(f"unknown action {action!r}")
+    # Some command functions (e.g. do_snapshot outside a project) *return* an
+    # error field rather than raising — surface it as a refusal, not a "done".
+    if isinstance(report, dict) and report.get("error"):
+        raise ActionError(str(report["error"]))
+    return report
 
 
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
@@ -256,6 +289,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "malformed request body"})
         except ActionError as exc:
             self._send_json(400, {"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - never drop the connection: report as 500
+            self._send_json(500, {"error": f"action failed: {exc}"})
 
 
 class DashboardServer(ThreadingHTTPServer):

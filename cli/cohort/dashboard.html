@@ -296,16 +296,26 @@ function renderLoop(s) {
       ? status("warning", (sig.friction_commands || []).join(", ")) : status("good", "none"), ""),
   ].join("");
 
+  // Build the actions row ONCE — re-running innerHTML on every 5s poll would wipe
+  // a note the user is mid-typing and reset the agent selection. Later polls only
+  // reconcile the agent dropdown, and never while it is focused.
+  const actions = document.getElementById("loop-actions");
+  if (!document.getElementById("fb-note")) {
+    actions.innerHTML = `
+      <select id="fb-agent"></select>
+      <input id="fb-note" placeholder="optional note" size="28" maxlength="500">
+      <button id="fb-up">👍 Feedback</button>
+      <button id="fb-down">👎 Feedback</button>
+      <button id="fb-propose">Propose improvement</button>
+      <button id="fb-snapshot">Snapshot session</button>`;
+    document.getElementById("fb-up").onclick = () => sendFeedback("up");
+    document.getElementById("fb-down").onclick = () => sendFeedback("down");
+    document.getElementById("fb-propose").onclick = () => act("propose-improvement", {},
+      "Synthesize an improvement proposal from current feedback and sessions?");
+    document.getElementById("fb-snapshot").onclick = () => act("snapshot", {});
+  }
   const agents = [...(s.global.roster?.names || []), ...(s.project.specialists || [])];
-  document.getElementById("loop-actions").innerHTML = `
-    <select id="fb-agent"><option value="">any agent</option>` +
-      agents.map((a) => `<option>${esc(a)}</option>`).join("") + `</select>
-    <input id="fb-note" placeholder="optional note" size="28" maxlength="500">
-    <button onclick="sendFeedback('up')">👍 Feedback</button>
-    <button onclick="sendFeedback('down')">👎 Feedback</button>
-    <button onclick="act('propose-improvement', {},
-      'Synthesize an improvement proposal from current feedback and sessions?')">Propose improvement</button>
-    <button onclick="act('snapshot', {})">Snapshot session</button>`;
+  syncAgentOptions(agents);
 
   const props = s.project.proposals || [];
   document.getElementById("proposals").innerHTML = props.length
@@ -335,6 +345,18 @@ function renderLoop(s) {
         <td>${esc(x.author || "")}</td><td class="num">${when(x.timestamp)}</td></tr>`).join("") +
       `</tbody></table>`
     : `<div class="empty">No sessions yet — take a snapshot above.</div>`;
+}
+
+function syncAgentOptions(agents) {
+  const sel = document.getElementById("fb-agent");
+  if (!sel || document.activeElement === sel) return;  // don't yank an open dropdown
+  const desired = ["", ...agents];
+  const current = Array.from(sel.options).map((o) => o.value);
+  if (current.length === desired.length && current.every((v, i) => v === desired[i])) return;
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">any agent</option>` +
+    agents.map((a) => `<option>${esc(a)}</option>`).join("");
+  if (desired.includes(keep)) sel.value = keep;  // preserve the selection
 }
 
 function sendFeedback(rating) {
