@@ -16,7 +16,7 @@ from typing import Any, Optional
 from .compile import compile_ide, planned_dests, write_staging
 from .frontmatter import dump_frontmatter
 from .install import do_install
-from .install_model import CohortPaths
+from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
 from .manifest import load_manifest
 from .schema import NAME_PATTERN, validate_frontmatter
@@ -156,7 +156,8 @@ def do_add_agent(
     result = compile_ide(source, "claude", scope="global", only_agents=only)
     write_staging(paths, result)
     report = do_install(
-        home=home, selection=["claude"], mode="link", force=False, source=source, dry_run=False,
+        home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,
+        source=source, dry_run=False,
         prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
     )
     if subset is not None:
