@@ -40,24 +40,30 @@ class Manifest:
     mode: str
     ides: list[str] = field(default_factory=list)
     ops: list[Op] = field(default_factory=list)
+    roster: Optional[list[str]] = None  # tailored agent subset; None = full roster
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "install_id": self.install_id,
             "created_at": self.created_at,
             "mode": self.mode,
             "ides": list(self.ides),
             "ops": [op.to_dict() for op in self.ops],
         }
+        if self.roster is not None:
+            out["roster"] = list(self.roster)
+        return out
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Manifest":
+        roster = data.get("roster")
         return cls(
             install_id=data["install_id"],
             created_at=data["created_at"],
             mode=data.get("mode", "link"),
             ides=list(data.get("ides", [])),
             ops=[Op.from_dict(o) for o in data.get("ops", [])],
+            roster=list(roster) if roster is not None else None,
         )
 
     def persist(self, path: Path) -> None:

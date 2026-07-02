@@ -48,7 +48,13 @@ def prompt_add_specialist_inputs() -> dict[str, str]:
     }
 
 
-def _scaffold(name: str, display_name: str, department: str, description: str) -> str:
+def _scaffold(
+    name: str, display_name: str, department: str, description: str,
+    body: Optional[str] = None,
+) -> str:
+    """The canonical specialist file. ``body`` (e.g. from an init interview via
+    ``--body-file``) replaces the placeholder template; frontmatter is always
+    generated here so scope/advisory/tools can't be overridden by content."""
     fm = "\n".join(
         [
             "---",
@@ -65,20 +71,21 @@ def _scaffold(name: str, display_name: str, department: str, description: str) -
             "---",
         ]
     )
-    body = "\n".join(
-        [
-            f"**Role.** {description}",
-            "",
-            "**Advises on.** _Areas of responsibility (edit me)._",
-            "",
-            "**Boundaries.** Advisory only — you recommend and never approve, execute, or take an "
-            "irreversible action; a human decides.",
-            "",
-            "**Escalation.** Hand cross-functional questions to ChiefOfStaff; defer decisions to the "
-            "responsible human.",
-        ]
-    )
-    return f"{fm}\n{body}\n"
+    if body is None:
+        body = "\n".join(
+            [
+                f"**Role.** {description}",
+                "",
+                "**Advises on.** _Areas of responsibility (edit me)._",
+                "",
+                "**Boundaries.** Advisory only — you recommend and never approve, execute, or take an "
+                "irreversible action; a human decides.",
+                "",
+                "**Escalation.** Hand cross-functional questions to ChiefOfStaff; defer decisions to the "
+                "responsible human.",
+            ]
+        )
+    return f"{fm}\n{body.strip()}\n"
 
 
 def _is_shadow(home: Path, name: str) -> bool:
@@ -107,7 +114,7 @@ def compile_specialists(paths: CohortPaths, extra_irs: Optional[list] = None) ->
 
 def do_add_specialist(
     repo: Path, home: Path, name: str, display_name: str, department: str,
-    description: str, dry_run: bool,
+    description: str, dry_run: bool, body: Optional[str] = None,
 ) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
     if not paths.manifest.exists():
@@ -117,8 +124,10 @@ def do_add_specialist(
     dest = paths.cohort_home / "agents" / f"{name}.md"
     if dest.exists():
         raise AddSpecialistError(f"specialist {name!r} already exists in this repo")
+    if body is not None and not body.strip():
+        raise AddSpecialistError("--body-file is empty")
 
-    content = _scaffold(name, display_name, department, description)
+    content = _scaffold(name, display_name, department, description, body)
     shadow = _is_shadow(home, name)
     if dry_run:
         return {"action": "add-specialist", "dry_run": True, "name": name,

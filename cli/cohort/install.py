@@ -7,6 +7,7 @@ them.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from typing import Any, Optional, TextIO
 from .executor import (
     ClobberRefused,
     Preflight,
+    ReverseResult,
+    _reverse_place_ops,
     apply,
     path_hash,
     preflight,
@@ -281,11 +284,13 @@ def do_install(
 
     merged = merge_ides(existing.ides if existing else [], selection)
     staging_missing = [ide for ide in selection if not paths.compiled_ide(ide).exists()]
+    stale = _stale_placed_ops(existing, plan, selection, paths)
     if dry_run:
         return InstallReport(
             mode=mode,
             ides=merged,
-            records=_classified_to_records(pf, force),
+            records=_classified_to_records(pf, force)
+            + [OpRecord(o, "removed") for o in stale],
             install_id=None,
             dry_run=True,
             staging_missing=staging_missing,
@@ -300,6 +305,7 @@ def do_install(
             install_id=new_install_id(), created_at=now_iso(), mode=mode, ides=merged, ops=[]
         )
     outcomes = apply(plan, paths, manifest, force)
+    outcomes += _remove_stale_placed(stale, manifest, paths)
     manifest.persist(paths.manifest)  # ensure ides/mode update lands even if all skipped
     return InstallReport(
         mode=mode,
@@ -310,6 +316,41 @@ def do_install(
         staging_missing=staging_missing,
         diverged=sum(o.diverged for o in outcomes),
     )
+
+
+def _stale_placed_ops(
+    existing: Optional[Manifest], plan: list[Op], selection: list[str], paths: CohortPaths
+) -> list[Op]:
+    """Recorded staged-placement ops for a selected IDE whose dest left the plan.
+
+    Happens when an artifact leaves staging between installs — a canonical
+    artifact deleted upstream, or an agent dropped from a tailored roster. Only
+    ops whose src points into ``compiled/`` qualify: the shared canonical link,
+    merges, and backups are never staged placements.
+    """
+    if existing is None:
+        return []
+    planned = {op.dest for op in plan}
+    staged_root = str(paths.compiled) + os.sep
+    return [
+        o
+        for o in existing.ops
+        if o.ide in selection
+        and o.op in (OpType.LINK.value, OpType.COPY.value)
+        and o.dest not in planned
+        and (o.src or "").startswith(staged_root)
+    ]
+
+
+def _remove_stale_placed(stale: list[Op], manifest: Manifest, paths: CohortPaths) -> list[OpOutcome]:
+    """Reverse the stale slice (ownership-checked) and drop it from the manifest."""
+    if not stale:
+        return []
+    result = ReverseResult()
+    _reverse_place_ops(stale, result, purge=True)
+    drop = {id(o) for o in stale}
+    manifest.ops = [o for o in manifest.ops if id(o) not in drop]
+    return result.outcomes
 
 
 # --- uninstall --------------------------------------------------------------

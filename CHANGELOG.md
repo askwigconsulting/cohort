@@ -11,6 +11,22 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- `cohort setup` — a guided first-run interview (company Cohort repo as the
+  office's upstream, IDE selection, roster subset), fully flag-driven for
+  scripted installs. A tailored roster persists on the manifest and survives
+  `cohort update` recompiles; `--agents all` restores the full office. (#51)
+- `/office-setup` and `/project-setup` — compiled interview commands. The first
+  tailors the global office (office-context memory + human-reviewed custom
+  agents); the second interviews the team about a repo, fills
+  `project_context.md`, and scaffolds specialists with real content. (#51)
+- `add-specialist --body-file` — supply the agent body (e.g. from an interview)
+  instead of the "_edit me_" template; frontmatter stays generated so
+  `advisory: true` and project scope cannot be overridden. (#51)
+- Stale placed-artifact cleanup on install: artifacts that leave staging (an
+  agent dropped from a tailored roster, or deleted upstream) are now reversed
+  (ownership-checked) and pruned from the manifest instead of dangling. (#51)
+
 ## [0.3.0] — 2026-06-27 · Self-update
 
 Cohort can now keep itself current and learn from the projects that use it.

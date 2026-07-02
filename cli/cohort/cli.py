@@ -22,6 +22,7 @@ from .install import (
     InstallReport,
     UninstallReport,
     UsageError,
+    _isatty as _install_isatty,
     do_install,
     do_uninstall,
     resolve_selection,
@@ -33,6 +34,13 @@ from .improve import (
     do_submit_proposals,
 )
 from .install_model import CohortPaths, resolve_mode
+from .office_setup import (
+    SetupError,
+    do_setup,
+    effective_roster,
+    persist_roster,
+    prompt_setup_inputs,
+)
 from .update import UpdateResult, do_relink, do_update, do_update_check
 from .logconf import emit_log
 from .project import (
@@ -290,6 +298,7 @@ def _resolve_for_compile(ide: Optional[str], source: Optional[str]):
 def compile(  # noqa: A001 - matches the user-facing command name
     ctx: typer.Context,
     ide: Optional[str] = typer.Option(None, "--ide", help="claude (codex/cursor land in Phase 7)."),
+    agents: Optional[str] = typer.Option(None, "--agents", help="Agent subset (comma-separated) or 'all'."),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Render to memory; write no staging."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
@@ -298,17 +307,19 @@ def compile(  # noqa: A001 - matches the user-facing command name
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         selection, source_path = _resolve_for_compile(ide, source)
+        roster = effective_roster(Path.home(), agents, source_path)
     except CancelledSelection:
         typer.echo("cancelled")
         raise typer.Exit(code=0)
-    except (UsageError, SourceUnresolved) as exc:
+    except (UsageError, SourceUnresolved, SetupError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
 
     paths = CohortPaths(Path.home())
+    only = frozenset(roster) if roster is not None else None
     start = time.perf_counter()
     try:
-        results = [compile_ide(source_path, i, scope="global") for i in selection]
+        results = [compile_ide(source_path, i, scope="global", only_agents=only) for i in selection]
     except CompileError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -337,6 +348,7 @@ def compile(  # noqa: A001 - matches the user-facing command name
 def recompile(
     ctx: typer.Context,
     ide: Optional[str] = typer.Option(None, "--ide", help="IDEs to recompile + install."),
+    agents: Optional[str] = typer.Option(None, "--agents", help="Agent subset (comma-separated) or 'all'; persists."),
     copy: bool = typer.Option(False, "--copy", help="Materialize copies instead of symlinks."),
     force: bool = typer.Option(False, "--force", help="Back up and replace foreign files at a dest."),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
@@ -347,16 +359,18 @@ def recompile(
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         selection, source_path = _resolve_for_compile(ide, source)
+        roster = effective_roster(Path.home(), agents, source_path)
     except CancelledSelection:
         typer.echo("cancelled")
         raise typer.Exit(code=0)
-    except (UsageError, SourceUnresolved) as exc:
+    except (UsageError, SourceUnresolved, SetupError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
 
     paths = CohortPaths(Path.home())
+    only = frozenset(roster) if roster is not None else None
     try:
-        results = [compile_ide(source_path, i, scope="global") for i in selection]
+        results = [compile_ide(source_path, i, scope="global", only_agents=only) for i in selection]
     except CompileError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -388,12 +402,71 @@ def recompile(
         typer.echo("re-run with --force to back up and replace them.", err=True)
         raise typer.Exit(code=1)
     elapsed_ms = int((time.perf_counter() - start) * 1000)
+    if not effective_dry_run:
+        persist_roster(Path.home(), roster)  # update-recompiles honor the subset
     _log_records("compile", "recompile", report.records, elapsed_ms)
     if json_output:
         typer.echo(_json.dumps(report.to_dict(), indent=2))
     else:
         _print_install_human(report)
         _warn_divergence(report)
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def setup(
+    ctx: typer.Context,
+    ide: Optional[str] = typer.Option(None, "--ide", help="IDEs to install (comma-separated or 'all')."),
+    agents: Optional[str] = typer.Option(None, "--agents", help="Agent subset (comma-separated) or 'all'."),
+    company_url: Optional[str] = typer.Option(None, "--company-url", help="Your org's Cohort repo (shared office upstream)."),
+    company_branch: Optional[str] = typer.Option(None, "--company-branch", help="Company repo default branch."),
+    copy: bool = typer.Option(False, "--copy", help="Materialize copies instead of symlinks."),
+    force: bool = typer.Option(False, "--force", help="Back up and replace foreign files at a dest."),
+    non_interactive: bool = typer.Option(False, "--non-interactive", help="Skip the interview; use flags/defaults."),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Guided first-run interview — company office, IDEs, roster — then compile + install."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    flagged = non_interactive or any(v is not None for v in (ide, agents, company_url))
+    if not flagged and _install_isatty():
+        answers = prompt_setup_inputs(source_path)
+        ide, agents = answers["ide"], answers["agents"]
+        company_url, company_branch = answers["company_url"], answers["company_branch"]
+    try:
+        report = do_setup(
+            home=Path.home(), source=source_path, ide=ide, agents=agents,
+            company_url=company_url, company_branch=company_branch,
+            copy=copy, force=force, dry_run=effective_dry_run,
+        )
+    except (SetupError, UsageError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except ClobberRefused as exc:
+        typer.echo(f"error: {exc}", err=True)
+        typer.echo("re-run with --force to back up and replace them.", err=True)
+        raise typer.Exit(code=1)
+    for warning in report["warnings"]:
+        typer.echo(f"warning: {warning}", err=True)
+    if json_output:
+        typer.echo(_json.dumps(report, indent=2))
+    else:
+        prefix = "(dry-run) " if report["dry_run"] else ""
+        roster = report["roster"]
+        roster_text = "full roster" if roster == "all" else f"{len(roster)} agents ({', '.join(roster)})"
+        typer.echo(f"setup: {prefix}{', '.join(report['ides'])} · {roster_text}")
+        if report["company"]:
+            typer.echo(f"setup: company office upstream → {report['company']['url']}")
+        summary = report["install"]["summary"]
+        typer.echo(
+            f"setup: install applied {summary['applied']} · skipped {summary['skipped']}"
+        )
     raise typer.Exit(code=0)
 
 
@@ -778,6 +851,9 @@ def add_specialist(
     display_name: Optional[str] = typer.Option(None, "--display-name"),
     department: Optional[str] = typer.Option(None, "--department"),
     description: Optional[str] = typer.Option(None, "--description"),
+    body_file: Optional[str] = typer.Option(
+        None, "--body-file", help="Markdown file supplying the agent body (replaces the template)."
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
@@ -791,10 +867,17 @@ def add_specialist(
             "department": department or "Project",
             "description": description or f"{display_name or name} (project specialist).",
         }
+    body = None
+    if body_file is not None:
+        body_path = Path(body_file)
+        if not body_path.is_file():
+            typer.echo(f"error: --body-file not found: {body_file}", err=True)
+            raise typer.Exit(code=2)
+        body = body_path.read_text(encoding="utf-8")
     try:
         report = do_add_specialist(
             find_repo_root(Path.cwd()), Path.home(), inputs["name"], inputs["display_name"],
-            inputs["department"], inputs["description"], effective_dry_run,
+            inputs["department"], inputs["description"], effective_dry_run, body=body,
         )
     except AddSpecialistError as exc:
         typer.echo(f"error: {exc}", err=True)

@@ -282,8 +282,10 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
         if not ides:
             return [], None
         mode = manifest.mode if (manifest and manifest.mode) else resolve_mode(copy=False)
+        # A tailored roster (cohort setup / recompile --agents) survives updates.
+        only = frozenset(manifest.roster) if manifest and manifest.roster else None
         for ide in ides:
-            write_staging(paths, compile_ide(source, ide, scope="global"))
+            write_staging(paths, compile_ide(source, ide, scope="global", only_agents=only))
         do_install(home=home, selection=ides, mode=mode, force=False, source=source, dry_run=False)
     except ClobberRefused as exc:
         return ides, str(exc)

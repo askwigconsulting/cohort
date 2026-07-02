@@ -38,6 +38,15 @@ cohort propose-improvement
 cohort submit-proposals
 ```
 
+Prefer a guided first run? `cohort setup` interviews you instead — *is there a company Cohort repo
+to point to* (your org's fork becomes the office's upstream for updates and proposals), *which
+IDEs*, and *which agents* (a tailored subset persists across updates; `--agents all` restores the
+full roster). Every question has a flag (`--ide`, `--agents`, `--company-url`, `--non-interactive`)
+so scripted installs skip the interview. Then, inside your IDE, `/office-setup` tailors the office
+to what you actually do (office context + custom drafted agents, human-reviewed), and
+`/project-setup` interviews the team about a repo — filling `project_context.md` and scaffolding
+specialists with real content via `add-specialist --body-file`.
+
 `recompile` compiles the office roster from canonical and places it into each selected IDE (it's
 compile-then-install; plain `install` only places already-compiled output); `init` scaffolds the per-repo shared context
 (`<repo>/.cohort/`) and wires it into project memory; `add-specialist` adds a repo-local advisor;
@@ -81,7 +90,7 @@ sequence above.
 
 ## Commands
 
-`validate` · `install` / `uninstall` · `compile` / `recompile` · `update` · `init` / `deinit` ·
+`validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `update` · `init` / `deinit` ·
 `add-agent` (global) / `add-specialist` (project) · `promote` · `snapshot` · `context refresh` ·
 `status` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` /
 `submit-proposals`. Every command supports `--dry-run`; installs/compiles are idempotent and

@@ -68,11 +68,18 @@ def _load_irs(source: Path, scope: Optional[str] = None):
     return irs
 
 
-def compile_ide(source: Path, ide: str, scope: Optional[str] = None) -> CompileResult:
+def compile_ide(
+    source: Path, ide: str, scope: Optional[str] = None,
+    only_agents: Optional[frozenset[str]] = None,
+) -> CompileResult:
     """Render every targeting canonical artifact of ``scope`` into staged files for
     ``ide``. The global install passes ``scope="global"`` (the leak guard — project
     artifacts never reach the global office); a project-tier compile passes
     ``"project"``; ``None`` (default) compiles all scopes, for direct/test use.
+
+    ``only_agents`` restricts *agent* artifacts to the named subset (a tailored
+    roster); every other kind still compiles. Filtering happens before the
+    renderer, so an injected office directory lists only the installed subset.
 
     Generic over the renderer descriptor (P7-R1): ``renderer.compile(irs)`` owns
     the IDE-specific 1:1 + aggregate staging; this function just loads/validates
@@ -82,12 +89,17 @@ def compile_ide(source: Path, ide: str, scope: Optional[str] = None) -> CompileR
     renderer = RENDERERS.get(ide)
     if renderer is None:
         return result  # no renderer for this IDE
+    irs = _load_irs(source, scope)
+    if only_agents is not None:
+        excluded = [ir.name for ir in irs if ir.kind == "agent" and ir.name not in only_agents]
+        irs = [ir for ir in irs if not (ir.kind == "agent" and ir.name not in only_agents)]
+        result.skipped.extend(sorted(excluded))
     try:
-        staged, skipped = renderer.compile(_load_irs(source, scope))
+        staged, skipped = renderer.compile(irs)
     except MarkerError as exc:
         raise CompileError(str(exc)) from exc
     result.staged = staged
-    result.skipped = skipped
+    result.skipped.extend(skipped)
     return result
 
 
