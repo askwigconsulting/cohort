@@ -80,6 +80,19 @@ Or run the one-shot bootstrap: `powershell -ExecutionPolicy Bypass -File .\insta
 required. The remaining journey (`cohort init`, `snapshot`, the feedback loop, …) is identical to the
 sequence above.
 
+## Dashboard
+
+`cohort dashboard` serves a local web view of the office at `http://127.0.0.1:8787`
+(`--port` to change, `--no-open` to skip the browser, Ctrl-C to stop). It shows what
+the office is wired to (IDE placement, source-link health, canonical↔compiled parity,
+version vs upstream), who is on the roster, and what it has recently done (sessions,
+feedback, proposals). Buttons for pruning a specialist, rating an agent, proposing an
+improvement, and snapshotting a session call the exact same human-gated commands as
+the CLI — the dashboard adds no new write paths, and submitting proposals as draft
+PRs deliberately stays in the terminal. It is loopback-only, token-guarded per
+launch, built on the Python stdlib (no extra dependencies), and dies with Ctrl-C —
+no daemon.
+
 ## Scope model
 
 | | Global (office roster) | Project (this repo) |
@@ -91,10 +104,11 @@ sequence above.
 ## Commands
 
 `validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `update` · `init` / `deinit` ·
-`add-agent` (global) / `add-specialist` (project) · `promote` · `snapshot` · `context refresh` ·
-`status` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` /
-`submit-proposals`. Every command supports `--dry-run`; installs/compiles are idempotent and
-reversible. `cohort --version` prints the release.
+`add-agent` (global) / `add-specialist` / `remove-specialist` (project) · `promote` · `snapshot` ·
+`context refresh` · `status` · `dashboard` · `weekly-report` / `monthly-report` · `feedback` /
+`propose-improvement` / `submit-proposals`. Every command supports `--dry-run` (`dashboard`, a
+read-mostly server, excepted); installs/compiles are idempotent and reversible. `cohort --version`
+prints the release.
 
 ## Versioning
 

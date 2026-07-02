@@ -12,6 +12,16 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- `cohort dashboard` — a lightweight, loopback-only web dashboard (stdlib HTTP
+  server, zero new dependencies) showing wiring & health (IDE placement, source-link
+  health, canonical↔compiled parity, version vs upstream), the roster, and the
+  improvement loop (signals, feedback, proposals, sessions). Actions (feedback,
+  prune specialist, propose improvement, snapshot) call the same human-gated
+  command functions as the CLI; every `/api` call requires a per-launch token and
+  a loopback Host header. (#49)
+- `cohort remove-specialist` — prune a project specialist: canonical source,
+  compiled output, placed artifact, and its manifest records, with the executor's
+  ownership checks (a user-repointed link is never clobbered). (#49)
 - `cohort setup` — a guided first-run interview (company Cohort repo as the
   office's upstream, IDE selection, roster subset), fully flag-driven for
   scripted installs. A tailored roster persists on the manifest and survives
@@ -34,7 +44,7 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 - Agent/specialist scaffolds emit frontmatter through the safe YAML serializer and
   reject control characters in the display fields, closing a frontmatter-injection
   that could append `advisory: false` + write tools and escape the read-only
-  advisory sandbox; `add-specialist` now validates before staging (fail-closed).
+  advisory sandbox; `add-specialist` now validates before staging (fail-closed). (#51)
 
 ## [0.3.0] — 2026-06-27 · Self-update
 

@@ -26,6 +26,9 @@ cohort = "cohort.cli:run"
 [tool.setuptools.packages.find]
 where = ["cli"]
 
+[tool.setuptools.package-data]
+cohort = ["dashboard.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

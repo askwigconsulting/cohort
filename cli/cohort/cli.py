@@ -58,10 +58,13 @@ from .source import SourceUnresolved, resolve_source
 from .specialists import (
     AddSpecialistError,
     PromoteError,
+    RemoveSpecialistError,
     do_add_specialist,
     do_promote,
+    do_remove_specialist,
     prompt_add_specialist_inputs,
 )
+from .dashboard import do_dashboard
 from .status import do_status
 
 app = typer.Typer(
@@ -790,6 +793,28 @@ def add_agent(
 
 
 @app.command()
+def dashboard(
+    port: int = typer.Option(8787, "--port", help="Localhost port to serve on."),
+    no_open: bool = typer.Option(False, "--no-open", help="Do not open the browser."),
+) -> None:
+    """Serve the local office dashboard (loopback-only; Ctrl-C to stop)."""
+    try:
+        server = do_dashboard(Path.home(), Path.cwd(), port, open_browser=not no_open)
+    except OSError as exc:
+        typer.echo(f"error: could not bind 127.0.0.1:{port} ({exc.strerror}); try --port", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"cohort dashboard: {server.url} (Ctrl-C to stop)")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("cohort dashboard: stopped")
+    finally:
+        server.shutdown()
+        server.server_close()
+    raise typer.Exit(code=0)
+
+
+@app.command()
 def status(json_output: bool = typer.Option(False, "--json")) -> None:
     """Read-only aggregate of the install (global + project)."""
     report = do_status(Path.home(), Path.cwd())
@@ -903,6 +928,30 @@ def add_specialist(
         typer.echo(
             f"warning: {report['name']} shares a name with a global roster agent; the project "
             f"specialist takes precedence over the global one in this repo.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command("remove-specialist")
+def remove_specialist(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="The project specialist to remove."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Remove (prune) a project specialist: source, compiled output, and manifest records."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        report = do_remove_specialist(find_repo_root(Path.cwd()), Path.home(), name, effective_dry_run)
+    except RemoveSpecialistError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"remove-specialist: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} ({r['path']})"))
+    if report.get("unshadows"):
+        typer.echo(
+            f"note: the global roster agent {report['name']!r} is no longer shadowed in this repo.",
             err=True,
         )
     raise typer.Exit(code=0)
