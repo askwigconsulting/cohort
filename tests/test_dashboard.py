@@ -24,8 +24,11 @@ def run_cli(*args, home, cwd=None):
     env["HOME"] = str(home)
     env["USERPROFILE"] = str(home)
     env.pop("COHORT_SOURCE", None)
+    # timeout: a CLI that unexpectedly serves (e.g. a port "collision" that
+    # binds anyway) must fail the test, never hang the suite.
     return subprocess.run(
-        [sys.executable, "-m", "cohort", *args], cwd=cwd, capture_output=True, text=True, env=env
+        [sys.executable, "-m", "cohort", *args], cwd=cwd, capture_output=True, text=True,
+        env=env, timeout=120,
     )
 
 

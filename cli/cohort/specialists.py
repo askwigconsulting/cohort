@@ -180,9 +180,15 @@ def do_remove_specialist(repo: Path, home: Path, name: str, dry_run: bool) -> di
     if src.exists():
         src.unlink()  # hand-added source (no scaffold op recorded) — the command's target
     if placed.is_symlink() and (
-        not placed.exists() or paths.compiled in Path(os.readlink(placed)).parents
+        not placed.exists()
+        or paths.compiled.resolve() in Path(os.path.realpath(placed)).parents
     ):
-        placed.unlink()  # unrecorded but ours (points into staging) or dangling
+        # Ownership re-check on resolved paths: Windows readlink returns a
+        # \\?\-prefixed substitute name the executor's exact compare skips, so
+        # the recorded-op reversal above can leave the link behind. realpath
+        # canonicalizes both sides (prefix, short names, case) before deciding
+        # the link points into our staging (ours) or dangles.
+        placed.unlink()
     for leftover in (staged, scaffold_stage):
         if leftover.exists():
             leftover.unlink()  # derived staging is a non-op artifact

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
@@ -257,6 +258,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
+    # HTTPServer turns SO_REUSEADDR on; Windows interprets that flag as "let a
+    # second socket bind this port", so a port collision would silently start a
+    # second server instead of failing. Keep it only where it means fast-rebind.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, home: Path, cwd: Path, port: int) -> None:
         super().__init__(("127.0.0.1", port), DashboardHandler)
