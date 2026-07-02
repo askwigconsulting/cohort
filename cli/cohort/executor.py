@@ -66,8 +66,18 @@ def path_hash(path: Path) -> str:
     return h.hexdigest()
 
 
+def _strip_extended_prefix(target: str) -> str:
+    """Windows stores absolute symlink targets as \\\\?\\-prefixed substitute
+    names, and ``os.readlink`` surfaces the prefix when it cannot strip it —
+    which would make our own link read as foreign. The prefix is a pure
+    no-op qualifier, so dropping it before comparing is always safe."""
+    return target[4:] if target.startswith("\\\\?\\") else target
+
+
 def _symlink_points_to(dest: Path, src: str) -> bool:
-    return dest.is_symlink() and Path(os.readlink(dest)) == Path(src)
+    if not dest.is_symlink():
+        return False
+    return Path(_strip_extended_prefix(os.readlink(dest))) == Path(_strip_extended_prefix(src))
 
 
 # --- Classification (preflight) --------------------------------------------

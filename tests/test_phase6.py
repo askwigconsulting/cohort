@@ -263,10 +263,14 @@ def test_remove_specialist_prunes_source_compiled_and_manifest(tmp_path, source,
 
 def test_remove_specialist_leaves_siblings_and_global_untouched(tmp_path, source, home):
     repo = inited_repo(tmp_path, source, home)
-    add_specialist(repo, home, name="data-modeler")
-    add_specialist(repo, home, name="etl-advisor")
+    assert add_specialist(repo, home, name="data-modeler").returncode == 0
+    # The second add re-applies over the first's existing placed link; it must
+    # classify as ours (satisfied), not clobber — the Windows \\?\ regression.
+    assert add_specialist(repo, home, name="etl-advisor").returncode == 0
+    assert (repo / ".claude" / "agents" / "etl-advisor.md").exists()
     before_global = tree_hash(home / ".claude" / "agents")
-    run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
+    proc = run_cli("remove-specialist", "data-modeler", home=home, cwd=repo)
+    assert proc.returncode == 0
     assert (repo / ".cohort" / "agents" / "etl-advisor.md").exists()
     assert (repo / ".claude" / "agents" / "etl-advisor.md").exists()
     assert tree_hash(home / ".claude" / "agents") == before_global
