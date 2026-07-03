@@ -4,8 +4,8 @@
 
 A portable, self-improving, multi-IDE **agentic office** — a virtual organization of
 company-function specialist agents (HR, Legal, Compliance, Security, Finance, IT, Comms,
-Procurement, Privacy, Program, cloud architects, and a Chief-of-Staff orchestrator) you drop into any
-repository. Authored once in an IDE-agnostic **canonical** form, then compiled into **Claude, Codex,
+Procurement, Privacy, Program, cloud architects, and a Chief-of-Staff that triages requests to the
+right specialist) you drop into any repository. Authored once in an IDE-agnostic **canonical** form, then compiled into **Claude, Codex,
 and Cursor** layouts at install time.
 
 - **Canonical is law.** Every agent/skill/command/hook/memory/context is authored once and
