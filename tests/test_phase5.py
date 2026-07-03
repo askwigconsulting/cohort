@@ -272,3 +272,50 @@ def test_empty_window_is_well_formed(source, home, tmp_path):
     body = run_cli("weekly-report", "--until", "2020-01-01", "--dry-run", home=home, cwd=repo).stdout
     assert "Snapshots: 0" in body and "Commits: 0" in body
     assert "_none_" in body  # zero-count sections, not an error
+
+
+# === add-memory ==============================================================
+
+
+def test_add_memory_scaffolds_and_lands_in_corpus(source, home):
+    proc = run_cli(
+        "add-memory", "--name", "review-cadence", "--description", "Reviews happen weekly.",
+        "--source", str(source), home=home,
+    )
+    assert proc.returncode == 0, proc.stderr
+    art = source / "canonical" / "memories" / "review-cadence.md"
+    assert art.exists()
+    assert "scope: global" in art.read_text(encoding="utf-8")  # memories are global-only
+    corpus = home / ".claude" / "cohort" / "CLAUDE.cohort.md"
+    assert "review-cadence" in corpus.read_text(encoding="utf-8")  # recompiled into the corpus
+
+
+def test_add_memory_collision_refused(source, home):
+    proc = run_cli("add-memory", "--name", "office-routing", "--description", "x",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 1
+    assert "already exists" in proc.stderr
+
+
+def test_add_memory_body_file_replaces_template(source, home, tmp_path):
+    draft = tmp_path / "m.md"
+    draft.write_text("Ship on Fridays only, with sign-off.\n", encoding="utf-8")
+    proc = run_cli("add-memory", "--name", "ship-window", "--description", "Ship window.",
+                   "--body-file", str(draft), "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    corpus = (home / ".claude" / "cohort" / "CLAUDE.cohort.md").read_text(encoding="utf-8")
+    assert "Ship on Fridays only" in corpus
+
+
+def test_add_memory_bad_priority_refused(source, home):
+    proc = run_cli("add-memory", "--name", "x-mem", "--description", "d",
+                   "--priority", "urgent", "--source", str(source), home=home)
+    assert proc.returncode == 1
+    assert "priority" in proc.stderr
+
+
+def test_add_memory_real_source_untouched(source, home):
+    before = sorted((COHORT_SRC / "canonical" / "memories").glob("*.md"))
+    run_cli("add-memory", "--name", "scratch-mem", "--description", "d",
+            "--source", str(source), home=home)
+    assert sorted((COHORT_SRC / "canonical" / "memories").glob("*.md")) == before

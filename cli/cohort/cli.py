@@ -54,7 +54,13 @@ from .project import (
     staleness_check,
 )
 from .reports import do_report
-from .roster import AddAgentError, do_add_agent, prompt_add_agent_inputs
+from .roster import (
+    AddAgentError,
+    AddMemoryError,
+    do_add_agent,
+    do_add_memory,
+    prompt_add_agent_inputs,
+)
 from .schema import TreeResult, validate_tree
 from .source import SourceUnresolved, resolve_source
 from .specialists import (
@@ -290,6 +296,13 @@ def _print_compile_human(results: list[CompileResult]) -> None:
         for sf in result.staged:
             typer.echo(f"  staged  {result.ide}/{sf.staged_rel}")
         typer.echo(f"compiled: {result.ide} · staged: {len(result.staged)}")
+        if result.scope_filtered:
+            names = ", ".join(result.scope_filtered)
+            typer.echo(
+                f"note: not compiled at this tier (wrong scope): {names}. Move the "
+                f"artifact to the other tier's canonical, or fix its `scope:`.",
+                err=True,
+            )
 
 
 def _resolve_for_compile(ide: Optional[str], source: Optional[str]):
@@ -794,6 +807,51 @@ def add_agent(
     raise typer.Exit(code=0)
 
 
+@app.command("add-memory")
+def add_memory(
+    ctx: typer.Context,
+    name: Optional[str] = typer.Option(None, "--name", help="Memory slug (kebab-case)."),
+    description: Optional[str] = typer.Option(None, "--description"),
+    display_name: Optional[str] = typer.Option(None, "--display-name", help="Corpus heading."),
+    priority: str = typer.Option("normal", "--priority", help="low | normal | high (corpus order)."),
+    body_file: Optional[str] = typer.Option(
+        None, "--body-file", help="Markdown file supplying the memory body (replaces the template)."
+    ),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Author a new global office memory (compiled into every session's corpus), then recompile."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    if name is None or description is None:
+        typer.echo("error: --name and --description are required", err=True)
+        raise typer.Exit(code=2)
+    body = None
+    if body_file is not None:
+        body_path = Path(body_file)
+        if not body_path.is_file():
+            typer.echo(f"error: --body-file not found: {body_file}", err=True)
+            raise typer.Exit(code=2)
+        body = body_path.read_text(encoding="utf-8")
+    try:
+        report = do_add_memory(
+            source_path, Path.home(), name, description,
+            priority=priority, display_name=display_name, body=body,
+            dry_run=effective_dry_run,
+        )
+    except AddMemoryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"add-memory: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
+    raise typer.Exit(code=0)
+
+
 @app.command()
 def dashboard(
     port: int = typer.Option(8787, "--port", help="Localhost port to serve on."),
@@ -936,6 +994,13 @@ def add_specialist(
         typer.echo(
             f"warning: {report['name']} shares a name with a global roster agent; the project "
             f"specialist takes precedence over the global one in this repo.",
+            err=True,
+        )
+    if report.get("scope_filtered"):
+        typer.echo(
+            f"note: not compiled at the project tier (wrong scope): "
+            f"{', '.join(report['scope_filtered'])} — set `scope: project` or move the "
+            f"artifact to the global office.",
             err=True,
         )
     raise typer.Exit(code=0)

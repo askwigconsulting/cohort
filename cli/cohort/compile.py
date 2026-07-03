@@ -40,6 +40,9 @@ class CompileResult:
     ide: str
     staged: list[StagedFile] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)  # names skipped (wrong target / deferred kind)
+    # Excluded by the tier partition (valid scope, wrong tier) — surfaced so an
+    # artifact authored in the wrong tree never vanishes without a trace.
+    scope_filtered: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -47,11 +50,13 @@ class CompileResult:
             "ide": self.ide,
             "staged": [s.staged_rel for s in self.staged],
             "skipped": self.skipped,
+            "scope_filtered": self.scope_filtered,
         }
 
 
 def _load_irs(source: Path, scope: Optional[str] = None):
     irs = []
+    scope_filtered = []
     for p in discover_artifacts(source / "canonical"):
         result = load_artifact(p)
         if result.load_error is not None:
@@ -64,9 +69,10 @@ def _load_irs(source: Path, scope: Optional[str] = None):
         # guard — a scope:project artifact in the global canonical can never reach the
         # global office, and vice versa.
         if scope is not None and ir.scope != scope:
+            scope_filtered.append(f"{ir.name} (scope: {ir.scope})")
             continue
         irs.append(ir)
-    return irs
+    return irs, scope_filtered
 
 
 def compile_ide(
@@ -92,7 +98,7 @@ def compile_ide(
     renderer = RENDERERS.get(ide)
     if renderer is None:
         return result  # no renderer for this IDE
-    irs = _load_irs(source, scope)
+    irs, result.scope_filtered = _load_irs(source, scope)
     if only_agents is not None:
         excluded = [ir.name for ir in irs if ir.kind == "agent" and ir.name not in only_agents]
         irs = [ir for ir in irs if not (ir.kind == "agent" and ir.name not in only_agents)]

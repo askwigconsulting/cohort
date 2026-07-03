@@ -130,11 +130,11 @@ _MEMORY = ("---\nname: {n}\nkind: memory\nscope: project\ndescription: A project
            "targets: [claude]\n---\nRemember this.\n")
 
 
-@requires_symlinks
-def test_project_memory_never_overwrites_init_claude_md_wiring(tmp_path):
-    """C1: `cohort init` owns the CLAUDE.md managed block (the project_context
-    @import). A project memory artifact must not replace it, so the project tier
-    skips the memory→CLAUDE.md merge entirely."""
+def test_project_memory_refused_and_never_touches_init_claude_md_wiring(tmp_path):
+    """C1, fail-closed: `cohort init` owns the CLAUDE.md managed block (the
+    project_context @import) and the project tier has no memory merge, so a
+    project-scoped memory is refused at validation (E070) rather than silently
+    compiling nowhere — and the init wiring is never touched."""
     repo = tmp_path / "repo"
     ppaths = _project(repo)
     claude_md = repo / ".claude" / "CLAUDE.md"
@@ -142,10 +142,25 @@ def test_project_memory_never_overwrites_init_claude_md_wiring(tmp_path):
     claude_md.write_text(upsert_block("", IMPORT_LINE), encoding="utf-8")
     _add(ppaths, "memories", "notes", _MEMORY.format(n="notes"))
     _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
-    report = do_install_project(repo)
+    with pytest.raises(CompileError, match="scope: global"):
+        do_install_project(repo)
     assert extract_block(claude_md.read_text(encoding="utf-8")) == IMPORT_LINE
     assert not (repo / ".claude" / "cohort").exists()  # no orphaned memory corpus
-    assert all("CLAUDE" not in rel for rel in report["staged"])
+
+
+@requires_symlinks
+def test_wrong_scope_artifact_is_reported_not_silently_dropped(tmp_path):
+    """A scope:global artifact authored in a project canonical compiles nowhere at
+    the project tier — the tier partition must say so, not swallow it."""
+    repo = tmp_path / "repo"
+    ppaths = _project(repo)
+    _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
+    _add(ppaths, "commands", "oops",
+         _CMD.format(n="oops").replace("scope: project", "scope: global"))
+    report = do_install_project(repo)
+    assert any("oops" in s for s in report["scope_filtered"])
+    assert not (repo / ".claude" / "commands" / "oops.md").exists()
+    assert (repo / ".claude" / "commands" / "deploy.md").exists()
 
 
 @requires_symlinks

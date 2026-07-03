@@ -170,7 +170,7 @@ def do_add_specialist(
     return {
         "action": "add-specialist", "dry_run": False, "name": name, "shadow": shadow,
         "path": str(dest), "compiled": str(repo / ".claude" / "agents" / f"{name}.md"),
-        "applied": report["applied"],
+        "applied": report["applied"], "scope_filtered": report.get("scope_filtered", []),
     }
 
 

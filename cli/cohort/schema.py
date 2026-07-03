@@ -346,6 +346,18 @@ def _validate_hook(fm: dict[str, Any], errors: list[ArtifactError]) -> None:
 
 def _validate_memory(fm: dict[str, Any], errors: list[ArtifactError]) -> None:
     _check_enum(fm, "priority", ("low", "normal", "high"), errors)
+    # The project tier has no CLAUDE.md merge (init owns that managed block), so a
+    # project-scoped memory would validate and then silently compile nowhere.
+    # Fail closed at validation instead.
+    if fm.get("scope") == "project":
+        errors.append(
+            ArtifactError(
+                E070_SCOPE_CONSTRAINT,
+                "scope",
+                "memory artifacts must have scope: global "
+                "(the project tier has no CLAUDE.md merge)",
+            )
+        )
 
 
 def _validate_context(fm: dict[str, Any], errors: list[ArtifactError]) -> None:

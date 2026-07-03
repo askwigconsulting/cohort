@@ -171,3 +171,89 @@ def do_add_agent(
         "action": "add-agent", "dry_run": False, "name": name, "path": str(dest),
         "installed": report.summary,
     }
+
+
+# --- add-memory (global office memories) --------------------------------------
+
+
+class AddMemoryError(Exception):
+    """A refused add-memory request (collision, bad input)."""
+
+
+def _memory_scaffold(
+    name: str, display_name: str, description: str, priority: str, body: Optional[str]
+) -> str:
+    fm = dump_frontmatter(
+        [
+            ("name", name),
+            ("kind", "memory"),
+            ("scope", "global"),
+            ("description", description),
+            ("targets", ["claude"]),
+            ("priority", priority),
+            ("display_name", display_name),
+        ]
+    ).rstrip("\n")
+    text = body.strip() if body else f"_{description} One focused memory per file (edit me)._"
+    return f"{fm}\n{text}\n"
+
+
+def do_add_memory(
+    source: Path,
+    home: Path,
+    name: str,
+    description: str,
+    priority: str = "normal",
+    display_name: Optional[str] = None,
+    body: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Scaffold + (unless dry-run) validate and recompile a new office memory.
+
+    Memories are global-scope by construction (the project tier has no CLAUDE.md
+    merge) and land in the compiled corpus every session reads."""
+    if not re.fullmatch(NAME_PATTERN, name):
+        raise AddMemoryError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
+    if priority not in ("low", "normal", "high"):
+        raise AddMemoryError(f"priority must be low|normal|high, got {priority!r}")
+    display_name = display_name or name
+    try:
+        reject_control_chars(display_name=display_name, description=description)
+    except ValueError as exc:
+        raise AddMemoryError(str(exc))
+    if body is not None and not body.strip():
+        raise AddMemoryError("--body-file is empty")
+    dest = source / "canonical" / "memories" / f"{name}.md"
+    if dest.exists():
+        raise AddMemoryError(f"memory {name!r} already exists; refusing to overwrite")
+
+    content = _memory_scaffold(name, display_name, description, priority, body)
+    if dry_run:
+        return {
+            "action": "add-memory", "dry_run": True, "name": name, "path": str(dest),
+            "plan": ["scaffold " + str(dest), "validate", "recompile --ide claude"],
+        }
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    errors = validate_frontmatter(load_artifact(dest).frontmatter, name)
+    if errors:
+        dest.unlink()
+        raise AddMemoryError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
+
+    paths = CohortPaths.for_global(home)
+    # Honor a tailored roster: compile with the persisted subset so the recompile
+    # never prunes agents the user chose (memories are unaffected by only_agents).
+    manifest = load_manifest(paths.manifest)
+    only = frozenset(manifest.roster) if manifest and manifest.roster else None
+    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    write_staging(paths, result)
+    report = do_install(
+        home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,
+        source=source, dry_run=False,
+        prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
+    )
+    return {
+        "action": "add-memory", "dry_run": False, "name": name, "path": str(dest),
+        "installed": report.summary,
+    }

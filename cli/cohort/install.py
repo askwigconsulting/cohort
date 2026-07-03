@@ -442,6 +442,7 @@ def do_install_project(repo: Path, mode: Optional[str] = None) -> dict[str, Any]
         "staged": [s.staged_rel for s in result.staged],
         "applied": sum(1 for o in outcomes if o.status == "applied"),
         "pruned": sum(1 for o in stale_outcomes if o.status == "removed"),
+        "scope_filtered": result.scope_filtered,
     }
 
 
