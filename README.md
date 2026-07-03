@@ -110,6 +110,9 @@ no daemon.
 read-mostly server, excepted); installs/compiles are idempotent and reversible. `cohort --version`
 prints the release.
 
+Daily life happens in the IDE — `/feedback`, `/snapshot`, and `/update` wrap the same human-gated
+commands; the `cohort` CLI is the plumbing and scripting layer; the dashboard is a viewer.
+
 ## Versioning
 
 Releases follow [Semantic Versioning](https://semver.org/) and are recorded in
