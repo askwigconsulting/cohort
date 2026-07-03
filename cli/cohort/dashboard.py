@@ -238,7 +238,7 @@ def _recompile_claude(home: Path, source: Path, roster: Optional[list]) -> dict[
     manifest = load_manifest(gpaths.manifest)
     mode = (manifest.mode if manifest and manifest.mode else None) or resolve_mode(copy=False)
     only = frozenset(roster) if roster is not None else None
-    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=gpaths.my)
     write_staging(gpaths, result)
     report = do_install(
         home=home, selection=["claude"], mode=mode, force=False,

@@ -291,7 +291,10 @@ def _recompile_installed(source: Path, home: Path) -> tuple:
         mode = manifest.mode if (manifest and manifest.mode) else resolve_mode(copy=False)
         # A tailored roster (cohort setup / recompile --agents) survives updates.
         only = frozenset(manifest.roster) if manifest and manifest.roster else None
-        results = [compile_ide(source, ide, scope="global", only_agents=only) for ide in ides]
+        results = [
+            compile_ide(source, ide, scope="global", only_agents=only, overlay=paths.my)
+            for ide in ides
+        ]
         for result in results:
             write_staging(paths, result)
         # Prune an agent/artifact the pulled canonical no longer produces, so an

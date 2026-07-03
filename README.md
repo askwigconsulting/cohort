@@ -16,8 +16,11 @@ experimental** — the renderers are complete but doc-cited, not yet locked agai
 - **Advisory by default.** Every office agent is read-only and advisory: it recommends; a human
   decides. The renderer enforces this (Claude tool-strip, Codex `sandbox_mode = "read-only"`, Cursor
   `readonly: true`).
-- **Two scopes.** A **global** office roster installed once per machine, plus **project specialists**
-  isolated to a single repo.
+- **Three levels of config.** **The office** — the shared roster from the Cohort repo (or your
+  company's fork); it changes only via `cohort update` and pull requests. **My office** — your
+  personal overlay at `~/.cohort/my/`: agents and memories you add for yourself; updates never touch
+  it and proposals never include it. **This project** — specialists and context that live in one
+  repo (`<repo>/.cohort/`) and travel with it.
 - **Self-improving, human-gated.** Cohort observes its own usage and *proposes* changes to itself as
   **draft PRs a human reviews and merges** — it structurally cannot edit or merge the harness
   unattended.
@@ -108,11 +111,16 @@ dependencies), and dies with Ctrl-C — no daemon.
 
 ## Scope model
 
-| | Global (office roster) | Project (this repo) |
-|---|---|---|
-| Lives in | `~/.cohort/` + `~/.claude` / `~/.codex` / `~/.cursor` | `<repo>/.cohort/` + `<repo>/.claude` etc. |
-| Holds | the 17-agent roster, hooks, memories | `project_context.md`, `sessions/`, `reports/`, project specialists, `proposals/`, `feedback/` |
-| Git-tracked | the Cohort source repo | the consuming repo (except `state/`, `compiled/`) |
+| | The office | My office | This project |
+|---|---|---|---|
+| Lives in | the source clone's `canonical/` (placed via `~/.cohort/` + `~/.claude` etc.) | `~/.cohort/my/canonical/` | `<repo>/.cohort/` + `<repo>/.claude` |
+| Holds | the 17-agent roster, hooks, memories, skills | personal agents/memories (hand-authored today; `--to my` authoring lands next) | `project_context.md`, `sessions/`, project specialists, `proposals/`, `feedback/` |
+| Git-tracked | the Cohort source repo | no — yours to `git init` if you want history | the consuming repo (except `state/`, `compiled/`) |
+| Touched by update | fast-forwarded | never | never |
+
+A my-office artifact whose `(kind, name)` collides with an office artifact is refused at compile
+(additions-only for now; deliberate overrides arrive with `cohort personalize`). A tailored roster
+subset filters the office layer only — your own agents always install.
 
 Project specialists are invoked directly by name; the global Chief-of-Staff routes only the global
 roster for now (project-awareness routing is tracked in #24).
@@ -127,6 +135,8 @@ roster for now (project-awareness routing is tracked in #24).
   installs reversible.
 - **scope** (a.k.a. **tier** in code and PRs) — where an artifact lives: `global` (the machine-wide
   office) or `project` (one repo).
+- **layer** — within the global scope, whether an artifact comes from **the office** (the shared
+  source clone) or **my office** (`~/.cohort/my/`, the personal overlay).
 - **kind** — what an artifact is: agent, skill, command, hook, memory, or context.
 - **roster** — the set of installed office agents; a tailored subset persists across updates.
 - **topology** — `specialist` (advises on one function) or `generalist` (the single ChiefOfStaff,

@@ -201,7 +201,10 @@ def _rollback_failed_adopt(
 
         manifest = load_manifest(gpaths.manifest)
         subset = frozenset(manifest.roster) if manifest and manifest.roster else None
-        write_staging(gpaths, compile_ide(source, "claude", scope="global", only_agents=subset))
+        write_staging(
+            gpaths,
+            compile_ide(source, "claude", scope="global", only_agents=subset, overlay=gpaths.my),
+        )
     except Exception:  # noqa: BLE001 - staging rebuild is best-effort during rollback
         pass
     manifest = load_manifest(gpaths.manifest)
@@ -229,7 +232,7 @@ def _recompile_global_claude(home: Path, source: Path, gpaths: CohortPaths, kind
     if subset is not None and kind == "agent" and name not in subset:
         subset = subset + [name]
     only = frozenset(subset) if subset is not None else None
-    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=gpaths.my)
     write_staging(gpaths, result)
     report = do_install(
         home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,
