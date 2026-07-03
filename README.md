@@ -61,7 +61,8 @@ venv / `pip install -e .` setup lines put the `cohort` CLI on your PATH first.
 The office is built on **Claude Code's native subagents** (`~/.claude/agents/`), which the
 **Claude Code** CLI reads — install it first (`winget install Anthropic.ClaudeCode`, or
 `irm https://claude.ai/install.ps1 | iex`). Note: the **Claude Desktop chat app does not read
-subagents** — it only sees Cohort's compiled *skills*. To get the full office, use Claude Code.
+subagents** — it sees only Cohort's compiled *skills* (currently the `office-guide` skill,
+which explains the office and points at Claude Code). To get the full office, use Claude Code.
 
 A stock Windows PowerShell blocks local scripts (`Activate.ps1`, `bootstrap.ps1`) by default, so
 allow them once for your user first:

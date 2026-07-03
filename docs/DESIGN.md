@@ -113,7 +113,8 @@ explicitly so native Windows works:
   (Windows venv layout `\.venv\Scripts\`). `.gitattributes` forces LF checkout so the
   byte-stable golden trees hold cross-platform. CI runs the suite on `windows-latest`.
 - **Reach.** The office is Claude Code subagents; the Claude **Desktop chat** app reads only
-  the compiled *skills*, not subagents — Windows users get the full office via Claude Code.
+  the compiled *skills*, not subagents — Cohort ships `office-guide` so that path is not
+  empty — Windows users get the full office via Claude Code.
 
 ## The through-line
 
