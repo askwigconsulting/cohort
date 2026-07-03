@@ -93,16 +93,18 @@ sequence above.
 
 ## Dashboard
 
-`cohort dashboard` serves a local web view of the office at `http://127.0.0.1:8787`
-(`--port` to change, `--no-open` to skip the browser, Ctrl-C to stop). It shows what
-the office is wired to (IDE placement, source-link health, canonical↔compiled parity,
-version vs upstream), who is on the roster, and what it has recently done (sessions,
-feedback, proposals). Buttons for pruning a specialist, rating an agent, proposing an
-improvement, and snapshotting a session call the exact same human-gated commands as
-the CLI — the dashboard adds no new write paths, and submitting proposals as draft
-PRs deliberately stays in the terminal. It is loopback-only, token-guarded per
-launch, built on the Python stdlib (no extra dependencies), and dies with Ctrl-C —
-no daemon.
+`cohort dashboard` serves a local mission-control view of the office at
+`http://127.0.0.1:8787` (`--port` to change, `--no-open` to skip the browser, Ctrl-C to
+stop). It shows *how the office works* — the canonical → compiled → placed → in-session
+pipeline with live health at each stage — plus who is on the roster (grouped by
+department, with descriptions) and what the office has recently done (sessions,
+feedback, proposals). Day-to-day operations run from the UI: **update**, **recompile**,
+**re-init**, tailoring the global roster, adding/removing project specialists, rating
+agents, snapshots, and improvement proposals. Every button calls the exact same
+human-gated command as the CLI behind a confirm step — the dashboard adds no new write
+paths, and submitting proposals as draft PRs deliberately stays in the terminal. It is
+loopback-only, token-guarded per launch, built on the Python stdlib (no extra
+dependencies), and dies with Ctrl-C — no daemon.
 
 ## Scope model
 

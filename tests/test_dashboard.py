@@ -312,3 +312,86 @@ def test_update_cache_does_not_block_get(home, tmp_path, source):
     repo = inited_repo(tmp_path, source, home)
     val = cache.get(repo, home)  # first call: placeholder, background refresh kicked
     assert val == {"available": False, "upstream": ""}
+
+
+# === expanded action surface (dashboard v2) ==================================
+
+from cohort.dashboard import ActionError, run_action  # noqa: E402
+
+
+def test_state_includes_roster_catalog_cards(home, tmp_path, source):
+    state = collect_state(home, tmp_path)
+    agents = state["global"]["roster"]["agents"]
+    assert agents, "catalog must not be empty"
+    for a in agents:
+        assert {"name", "display_name", "department", "description", "installed"} <= set(a)
+    assert all(a["installed"] for a in agents)  # the fixture placed the full roster
+
+
+def test_action_set_roster_shrinks_persists_and_restores(server, home, source):
+    from cohort.office_setup import canonical_agents
+
+    srv, repo = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "set-roster", "args": {"agents": ["counsel", "chief-of-staff"]}})
+    assert status == 200, data
+    placed = sorted(p.stem for p in (home / ".claude" / "agents").glob("*.md"))
+    assert placed == ["chief-of-staff", "counsel"]  # shrunk + stale agents pruned
+    manifest = json.loads((home / ".cohort" / "state" / "manifest.json").read_text(encoding="utf-8"))
+    assert set(manifest["roster"]) == {"chief-of-staff", "counsel"}  # survives recompiles
+    # selecting the full catalog clears the subset (the office follows upstream again)
+    everyone = canonical_agents(source)
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "set-roster", "args": {"agents": everyone}})
+    assert status == 200, data
+    manifest = json.loads((home / ".cohort" / "state" / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest.get("roster") in (None, []) or "roster" not in manifest
+    assert len(list((home / ".claude" / "agents").glob("*.md"))) == len(everyone)
+
+
+def test_action_set_roster_refuses_bad_input(server):
+    srv, _ = server
+    for args in ({"agents": []}, {"agents": "counsel"}, {"agents": ["not-an-agent"]}):
+        status, data = request(srv, "POST", "/api/action", token=srv.token,
+                               body={"action": "set-roster", "args": args})
+        assert status == 400, data
+
+
+def test_action_add_specialist_places(server):
+    srv, repo = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "add-specialist",
+                                 "args": {"name": "growth-analyst", "description": "Growth metrics."}})
+    assert status == 200, data
+    assert (repo / ".cohort" / "canonical" / "agents" / "growth-analyst.md").exists()
+    assert (repo / ".claude" / "agents" / "growth-analyst.md").exists()
+    # bad slug is a clean refusal
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "add-specialist", "args": {"name": "Bad Name"}})
+    assert status == 400, data
+
+
+def test_action_init_force_restores_wiring(server, home):
+    srv, repo = server
+    claude_md = repo / ".claude" / "CLAUDE.md"
+    claude_md.write_text("user gutted this file\n", encoding="utf-8")
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "init", "args": {"force": True}})
+    assert status == 200, data
+    state = collect_state(home, repo)
+    assert state["project"]["wiring"]["state"] == "present"
+    assert "user gutted this file" in claude_md.read_text(encoding="utf-8")  # user content kept
+
+
+def test_action_update_degrades_gracefully_offline(server):
+    # the test source is not a git clone → a clean 400 refusal, never a 500
+    srv, _ = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "update", "args": {}})
+    assert status == 400, data
+    assert b"error" in data
+
+
+def test_action_init_refused_at_home(home, tmp_path, source):
+    with pytest.raises(ActionError, match="home directory"):
+        run_action(home, home, "init", {})
