@@ -4,8 +4,10 @@ Serves a single-file UI from the stdlib HTTP server (no new dependencies, no
 daemon: it runs in the foreground and dies with Ctrl-C). Reads are the same
 read-only aggregates the CLI exposes (`status`, signals, proposals, sessions);
 writes are the same human-gated command functions the CLI calls (`feedback`,
-`remove-specialist`, `propose-improvement`, `snapshot`) — the dashboard adds no
-new write paths and never touches canonical.
+`add-/remove-specialist`, `propose-improvement`, `snapshot`, `init`, `update`,
+`recompile`, roster subsets) — the dashboard adds no new write paths and never
+edits the global source canonical. Submitting proposals as draft PRs stays in
+the CLI.
 
 Hardening (the server is loopback-only but shares the machine with browsers):
 - binds 127.0.0.1 only, never 0.0.0.0;
@@ -28,8 +30,11 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from dataclasses import asdict
+
 from . import __version__
-from .compile import RENDERERS
+from .compile import RENDERERS, CompileError, compile_ide, planned_dests, write_staging
+from .executor import ClobberRefused
 from .improve import (
     FeedbackError,
     ProposeError,
@@ -37,14 +42,22 @@ from .improve import (
     do_feedback,
     do_propose_improvement,
 )
-from .install_model import CohortPaths
+from .install import UsageError, do_install
+from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
+from .manifest import load_manifest
+from .office_setup import SetupError, canonical_agents, effective_roster, persist_roster
 from .parity import check_parity
-from .project import do_snapshot, find_repo_root
+from .project import do_init, do_snapshot, find_repo_root
 from .source import SourceUnresolved, resolve_source
-from .specialists import RemoveSpecialistError, do_remove_specialist
+from .specialists import (
+    AddSpecialistError,
+    RemoveSpecialistError,
+    do_add_specialist,
+    do_remove_specialist,
+)
 from .status import do_status
-from .update import update_status
+from .update import do_update, update_status
 
 _UPDATE_TTL_SECONDS = 900  # update_status fetches the network; don't per-poll it
 _RECENT_LIMIT = 10
@@ -104,6 +117,13 @@ class _UpdateCache:
             self._at = time.monotonic()
             self._refreshing = False
 
+    def invalidate(self) -> None:
+        """Drop the cached value (e.g. right after a successful update action),
+        so the next poll re-fetches instead of showing a stale behind-count."""
+        with self._lock:
+            self._value = None
+            self._at = 0.0
+
 
 def _proposal_entry(path: Path) -> dict[str, Any]:
     fm = load_artifact(path).frontmatter or {}
@@ -147,6 +167,23 @@ def _recent(directory: Path, render: Callable[[Path], dict]) -> list[dict[str, A
     return [render(p) for p in files]
 
 
+def _agent_cards(agents_dir: Path) -> list[dict[str, Any]]:
+    """Display metadata per agent file (read-only frontmatter peek)."""
+    if not agents_dir.exists():
+        return []
+    cards = []
+    for p in sorted(agents_dir.glob("*.md")):
+        fm = load_artifact(p).frontmatter or {}
+        cards.append({
+            "name": p.stem,
+            "display_name": fm.get("display_name", p.stem),
+            "department": fm.get("department", ""),
+            "description": fm.get("description", ""),
+            "topology": fm.get("topology", "specialist"),
+        })
+    return cards
+
+
 def collect_state(home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = None) -> dict[str, Any]:
     """Everything the dashboard shows, as one JSON-safe dict. Read-only."""
     state = do_status(home, cwd)
@@ -160,8 +197,19 @@ def collect_state(home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = 
                 parity[ide] = check_parity(source, ide, RENDERERS).to_dict()
     state["global"]["parity"] = parity
 
+    # The full catalog (source canonical when reachable, else the installed one)
+    # with an installed flag — the roster editor's working set.
+    gpaths = CohortPaths.for_global(home)
+    catalog_dir = (source / "canonical" / "agents") if source else (gpaths.canonical / "agents")
+    installed = set(state["global"]["roster"]["names"])
+    cards = _agent_cards(catalog_dir)
+    for card in cards:
+        card["installed"] = card["name"] in installed
+    state["global"]["roster"]["agents"] = cards
+
     if "project" in state:
         ppaths = CohortPaths.for_project(Path(state["project"]["repo"]))
+        state["project"]["specialist_cards"] = _agent_cards(ppaths.canonical / "agents")
         state["project"]["signals"] = aggregate_signals(ppaths)
         state["project"]["proposals"] = _recent(ppaths.cohort_home / "proposals", _proposal_entry)
         state["project"]["feedback"] = _recent(ppaths.cohort_home / "feedback", _feedback_entry)
@@ -173,11 +221,51 @@ class ActionError(Exception):
     """A refused dashboard action (bad input or a command-level refusal)."""
 
 
+def _require_source(home: Path) -> Path:
+    source = _resolve_source_lenient(home)
+    if source is None:
+        raise ActionError("source clone not found; run `cohort relink` in a terminal")
+    return source
+
+
+def _recompile_claude(home: Path, source: Path, roster: Optional[list]) -> dict[str, Any]:
+    """The same compile → stage → install path `cohort recompile --ide claude` runs.
+
+    Claude-only while codex/cursor are experimental; a codex/cursor install picks
+    the roster up on its next `cohort update`/`recompile`. Honors the manifest's
+    recorded install mode so a --copy install is never converted to symlinks."""
+    gpaths = CohortPaths.for_global(home)
+    manifest = load_manifest(gpaths.manifest)
+    mode = (manifest.mode if manifest and manifest.mode else None) or resolve_mode(copy=False)
+    only = frozenset(roster) if roster is not None else None
+    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    write_staging(gpaths, result)
+    report = do_install(
+        home=home, selection=["claude"], mode=mode, force=False,
+        source=source, dry_run=False,
+        prune_stale=True, fresh_dests=planned_dests(gpaths, [result]),
+        fresh_ides={"claude"} if result.staged else set(),
+    )
+    return {
+        "action": "recompile", "ide": "claude", "staged": len(result.staged),
+        "summary": report.summary, "scope_filtered": result.scope_filtered,
+    }
+
+
+_ACTION_ERRORS = (
+    FeedbackError, ProposeError, RemoveSpecialistError, AddSpecialistError,
+    SetupError, CompileError, ClobberRefused, UsageError,
+)
+
+
 def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict[str, Any]:
     """Dispatch one human-initiated action to the same function the CLI uses.
 
-    Only this fixed allowlist exists; there is deliberately no action that edits
-    canonical, merges, or pushes — those stay in the CLI (`submit-proposals`).
+    Only this fixed allowlist exists — every entry is an existing human-gated
+    command, so the dashboard adds no new write paths. Nothing here edits the
+    global source canonical, merges, or pushes; `submit-proposals` (the draft-PR
+    gate) deliberately stays in the CLI. `add-specialist` authors the project's
+    own canonical, exactly as the CLI command does.
     """
     repo = find_repo_root(cwd)
     try:
@@ -188,13 +276,64 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
             )
         elif action == "remove-specialist":
             report = do_remove_specialist(repo, home, str(args.get("name", "")), dry_run=False)
+        elif action == "add-specialist":
+            name = str(args.get("name", "")).strip()
+            report = do_add_specialist(
+                repo, home, name,
+                str(args.get("display_name") or "").strip() or name,
+                str(args.get("department") or "").strip() or "Project",
+                str(args.get("description") or "").strip() or f"{name} (project specialist).",
+                dry_run=False,
+            )
         elif action == "propose-improvement":
             report = do_propose_improvement(repo, dry_run=False)
         elif action == "snapshot":
             report = do_snapshot(repo, dry_run=False, refresh_index=True)
+        elif action == "init":
+            if repo == home:
+                raise ActionError(
+                    "refusing to init the home directory as a project (it is the "
+                    "global office's home) — open the dashboard from a repository"
+                )
+            report = do_init(repo, _require_source(home), False, bool(args.get("force")))
+        elif action == "update":
+            result = do_update(_require_source(home), home)
+            if not result.ok:
+                raise ActionError(result.detail or f"update refused: {result.status}")
+            report = asdict(result)
+            report["action"] = "update"
+        elif action == "recompile":
+            source = _require_source(home)
+            report = _recompile_claude(home, source, effective_roster(home, None, source))
+        elif action == "set-roster":
+            names = args.get("agents")
+            if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+                raise ActionError("agents must be a list of names")
+            if not names:
+                raise ActionError("select at least one agent")
+            source = _require_source(home)
+            # Validate the list directly (never through the comma-string parser,
+            # whose "all" sentinel and comma-splitting don't belong in an API).
+            catalog = set(canonical_agents(source))
+            unknown = sorted(set(names) - catalog)
+            if unknown:
+                raise ActionError(f"unknown agents: {', '.join(unknown)}")
+            deduped = list(dict.fromkeys(names))
+            # the full catalog means "follow upstream" (no persisted subset)
+            roster = None if set(deduped) == catalog else deduped
+            report = _recompile_claude(home, source, roster)
+            # recompile-then-persist matches the CLI ordering; a persist failure
+            # self-heals on the next recompile (placements win, roster reverts)
+            persist_roster(home, roster)
+            report["action"] = "set-roster"
+            report["roster"] = roster if roster is not None else "all"
+            if roster is not None and "chief-of-staff" not in roster:
+                report["warning"] = (
+                    "chief-of-staff is not in the subset; the office loses its triage agent"
+                )
         else:
             raise ActionError(f"unknown action {action!r}")
-    except (FeedbackError, ProposeError, RemoveSpecialistError) as exc:
+    except _ACTION_ERRORS as exc:
         raise ActionError(str(exc))
     # Some command functions (e.g. do_snapshot outside a project) *return* an
     # error field rather than raising — surface it as a refusal, not a "done".
@@ -278,15 +417,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # read to EOF, defeating the cap and blocking the thread.
             length = max(0, min(int(self.headers.get("Content-Length", "0")), 65536))
             body = json.loads(self.rfile.read(length) or b"{}")
+        except (json.JSONDecodeError, ValueError):
+            self._send_json(400, {"error": "malformed request body"})
+            return
+        try:
             action = str(body.get("action", ""))
             args = body.get("args") or {}
             if not isinstance(args, dict):
                 raise ActionError("args must be an object")
             with self.server.action_lock:  # mutating commands never run concurrently
                 report = run_action(self.server.home, self.server.cwd, action, args)
+            if action == "update":
+                self.server.update_cache.invalidate()  # drop the stale behind-count
             self._send_json(200, report)
-        except (json.JSONDecodeError, ValueError):
-            self._send_json(400, {"error": "malformed request body"})
         except ActionError as exc:
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - never drop the connection: report as 500

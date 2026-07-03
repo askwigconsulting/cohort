@@ -251,9 +251,16 @@ def _changed_files(source: Path, upstream: str) -> list:
     return out.splitlines() if rc == 0 and out else []
 
 
+_PIP_TIMEOUT = 600  # a hung pip must never wedge a caller (the dashboard holds its
+# action lock across do_update); ten minutes dwarfs any healthy reinstall
+
+
 def _default_pip_run(args: list) -> int:
     """Run a pip command, returning its exit code. Isolated so tests fake it."""
-    return subprocess.run(args, capture_output=True, text=True).returncode
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=_PIP_TIMEOUT).returncode
+    except subprocess.TimeoutExpired:
+        return 1  # surfaces as pip_failed, a clean refusal
 
 
 def _recompile_installed(source: Path, home: Path) -> tuple:
