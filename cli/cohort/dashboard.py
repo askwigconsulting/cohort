@@ -205,7 +205,12 @@ def collect_state(home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = 
     cards = _agent_cards(catalog_dir)
     for card in cards:
         card["installed"] = card["name"] in installed
-    state["global"]["roster"]["agents"] = cards
+        card["layer"] = "office"
+    my_cards = _agent_cards(gpaths.my / "canonical" / "agents")
+    for card in my_cards:
+        card["installed"] = True  # my-layer agents always compile (#84)
+        card["layer"] = "my"
+    state["global"]["roster"]["agents"] = cards + my_cards
 
     if "project" in state:
         ppaths = CohortPaths.for_project(Path(state["project"]["repo"]))

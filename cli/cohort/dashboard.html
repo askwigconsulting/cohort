@@ -442,7 +442,7 @@ function renderRoster(g) {
     const d = document.createElement("div"); d.className = "dept";
     const h = document.createElement("h4"); h.textContent = entry[0]; d.appendChild(h);
     const grid = document.createElement("div"); grid.className = "grid";
-    for (const c of entry[1]) grid.appendChild(agentCard(c, { checkbox: EDIT_MODE }));
+    for (const c of entry[1]) grid.appendChild(agentCard(c, { checkbox: EDIT_MODE && c.layer !== "my" }));
     d.appendChild(grid); holder.appendChild(d);
   }
   $("rosterbar").hidden = !EDIT_MODE;

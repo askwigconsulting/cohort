@@ -142,9 +142,16 @@ def do_adopt(
         )
     except ValueError as exc:
         raise AdoptError(str(exc))
-    dest = source / "canonical" / f"{kind}s" / f"{name}.md"
-    if dest.exists():
-        raise AdoptError(f"{kind} {name!r} already exists in canonical; refusing to overwrite")
+    # Adoption is personal by definition — it lands in my office (#84), never in
+    # the shared clone; contributing upstream stays an explicit PR/proposal act.
+    gpaths = CohortPaths.for_global(home)
+    dest = gpaths.my / "canonical" / f"{kind}s" / f"{name}.md"
+    for layer_dir, where in (
+        (source / "canonical" / f"{kind}s", "the office layer"),
+        (gpaths.my / "canonical" / f"{kind}s", "my office"),
+    ):
+        if (layer_dir / f"{name}.md").exists():
+            raise AdoptError(f"{kind} {name!r} already exists in {where}; refusing to overwrite")
 
     content = _render_adopted(kind, name, description, department, display_name, body_text)
     if dry_run:
@@ -160,7 +167,6 @@ def do_adopt(
         dest.unlink()
         raise AdoptError(f"adopted artifact failed validation: {errors[0].code} {errors[0].message}")
 
-    gpaths = CohortPaths.for_global(home)
     backup_dir = gpaths.state / "adopt-backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     if backup_dir.is_symlink():
@@ -177,7 +183,7 @@ def do_adopt(
         raise AdoptError(f"recompile failed; nothing adopted ({where}): {exc}") from exc
     return {
         "action": "adopt", "dry_run": False, "kind": kind, "name": name,
-        "path": str(dest), "backup": str(backup),
+        "path": str(dest), "backup": str(backup), "layer": "my",
         "advisory_enforced": kind == "agent", "installed": report.summary,
     }
 

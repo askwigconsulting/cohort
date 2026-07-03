@@ -101,6 +101,27 @@ def _existing_generalist(agents_dir: Path) -> Optional[str]:
     return None
 
 
+def _layer_dirs(source: Path, home: Path, kind_dir: str) -> dict[str, Path]:
+    """The office and my roots for one artifact kind directory (#84)."""
+    return {
+        "office": source / "canonical" / kind_dir,
+        "my": CohortPaths.for_global(home).my / "canonical" / kind_dir,
+    }
+
+
+def _check_cross_layer(dirs: dict[str, Path], name: str, label: str, err) -> None:
+    """Refuse a name taken in either layer — the compile merge would refuse it
+    anyway (additions-only, #84); failing here is earlier and names the layer."""
+    for layer, d in dirs.items():
+        if (d / f"{name}.md").exists():
+            where = "the office layer" if layer == "office" else "my office"
+            raise err(f"{label} {name!r} already exists in {where}; refusing to overwrite")
+
+
+def _first_my_write(home: Path) -> bool:
+    return not (CohortPaths.for_global(home).my / "canonical").exists()
+
+
 def do_add_agent(
     source: Path,
     home: Path,
@@ -110,36 +131,48 @@ def do_add_agent(
     topology: str,
     description: str,
     dry_run: bool,
+    to: str = "my",
 ) -> dict[str, Any]:
-    """Scaffold + (unless dry-run) validate and recompile a new roster agent."""
+    """Scaffold + (unless dry-run) validate and recompile a new roster agent.
+
+    ``to`` picks the layer (#84): ``my`` (default — the personal overlay at
+    ``~/.cohort/my``, never touched by updates or included in proposals) or
+    ``office`` (the shared source clone; the explicit contribution path)."""
     if not re.fullmatch(NAME_PATTERN, name):
         raise AddAgentError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
     if topology not in ("specialist", "generalist"):
         raise AddAgentError(f"topology must be specialist|generalist, got {topology!r}")
+    if to not in ("my", "office"):
+        raise AddAgentError(f"--to must be my|office, got {to!r}")
     try:
         reject_control_chars(
             display_name=display_name, department=department, description=description
         )
     except ValueError as exc:
         raise AddAgentError(str(exc))
-    agents_dir = source / "canonical" / "agents"
+    dirs = _layer_dirs(source, home, "agents")
+    agents_dir = dirs[to]
     dest = agents_dir / f"{name}.md"
-    if dest.exists():
-        raise AddAgentError(f"agent {name!r} already exists; refusing to overwrite")
+    _check_cross_layer(dirs, name, "agent", AddAgentError)
     if topology == "generalist":
-        existing = _existing_generalist(agents_dir)
-        if existing is not None:
-            raise AddAgentError(
-                f"a generalist ({existing!r}) already exists; the roster allows exactly one"
-            )
+        # exactly one generalist across BOTH layers — two routers cannot coexist
+        for d in dirs.values():
+            if d.exists():
+                existing = _existing_generalist(d)
+                if existing is not None:
+                    raise AddAgentError(
+                        f"a generalist ({existing!r}) already exists; the roster allows exactly one"
+                    )
 
     content = _scaffold(name, display_name, department, topology, description)
     if dry_run:
         return {
             "action": "add-agent", "dry_run": True, "name": name, "path": str(dest),
+            "layer": to,
             "plan": ["scaffold " + str(dest), "validate", "recompile --ide claude"],
         }
 
+    first_my = to == "my" and _first_my_write(home)
     agents_dir.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
     errors = validate_frontmatter(load_artifact(dest).frontmatter, name)
@@ -148,12 +181,12 @@ def do_add_agent(
         raise AddAgentError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
 
     paths = CohortPaths.for_global(home)
-    # Honor a tailored roster: on a subset office, compile with roster+[name] and
-    # extend the persisted subset, so the new agent is placed AND survives the
-    # next recompile/update (which would otherwise prune it as "not in roster").
+    # Honor a tailored roster. Only an OFFICE-layer addition must extend the
+    # persisted subset (the subset filters the office layer only, #84); a
+    # my-layer agent always compiles regardless of the subset.
     manifest = load_manifest(paths.manifest)
     subset = list(manifest.roster) if manifest and manifest.roster else None
-    if subset is not None and name not in subset:
+    if to == "office" and subset is not None and name not in subset:
         subset = subset + [name]
     only = frozenset(subset) if subset is not None else None
     result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=paths.my)
@@ -163,7 +196,7 @@ def do_add_agent(
         source=source, dry_run=False,
         prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
     )
-    if subset is not None:
+    if to == "office" and subset is not None:
         # Reload: do_install persisted its own manifest instance, so extend the
         # roster on the current file rather than overwriting with a stale copy.
         fresh = load_manifest(paths.manifest)
@@ -172,6 +205,7 @@ def do_add_agent(
             fresh.persist(paths.manifest)
     return {
         "action": "add-agent", "dry_run": False, "name": name, "path": str(dest),
+        "layer": to, "first_my_write": first_my,
         "installed": report.summary,
     }
 
@@ -210,15 +244,19 @@ def do_add_memory(
     display_name: Optional[str] = None,
     body: Optional[str] = None,
     dry_run: bool = False,
+    to: str = "my",
 ) -> dict[str, Any]:
     """Scaffold + (unless dry-run) validate and recompile a new office memory.
 
     Memories are global-scope by construction (the project tier has no CLAUDE.md
-    merge) and land in the compiled corpus every session reads."""
+    merge) and land in the compiled corpus every session reads. ``to`` picks the
+    layer (#84): ``my`` (default) or ``office`` (the shared clone)."""
     if not re.fullmatch(NAME_PATTERN, name):
         raise AddMemoryError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
     if priority not in ("low", "normal", "high"):
         raise AddMemoryError(f"priority must be low|normal|high, got {priority!r}")
+    if to not in ("my", "office"):
+        raise AddMemoryError(f"--to must be my|office, got {to!r}")
     display_name = display_name or name
     try:
         reject_control_chars(display_name=display_name, description=description)
@@ -226,17 +264,19 @@ def do_add_memory(
         raise AddMemoryError(str(exc))
     if body is not None and not body.strip():
         raise AddMemoryError("--body-file is empty")
-    dest = source / "canonical" / "memories" / f"{name}.md"
-    if dest.exists():
-        raise AddMemoryError(f"memory {name!r} already exists; refusing to overwrite")
+    dirs = _layer_dirs(source, home, "memories")
+    dest = dirs[to] / f"{name}.md"
+    _check_cross_layer(dirs, name, "memory", AddMemoryError)
 
     content = _memory_scaffold(name, display_name, description, priority, body)
     if dry_run:
         return {
             "action": "add-memory", "dry_run": True, "name": name, "path": str(dest),
+            "layer": to,
             "plan": ["scaffold " + str(dest), "validate", "recompile --ide claude"],
         }
 
+    first_my = to == "my" and _first_my_write(home)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
     errors = validate_frontmatter(load_artifact(dest).frontmatter, name)
@@ -258,5 +298,6 @@ def do_add_memory(
     )
     return {
         "action": "add-memory", "dry_run": False, "name": name, "path": str(dest),
+        "layer": to, "first_my_write": first_my,
         "installed": report.summary,
     }

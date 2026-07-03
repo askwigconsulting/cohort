@@ -82,11 +82,13 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
     manifest = load_manifest(gpaths.manifest)
     agents_dir = gpaths.canonical / "agents"  # the installed canonical (R5)
     roster = sorted(p.stem for p in agents_dir.glob("*.md")) if agents_dir.exists() else []
+    my_dir = gpaths.my / "canonical" / "agents"  # the personal layer (#84)
+    my_names = sorted(p.stem for p in my_dir.glob("*.md")) if my_dir.exists() else []
     result: dict[str, Any] = {
         "action": "status",
         "global": {
             "ides": manifest.ides if manifest else [],
-            "roster": {"count": len(roster), "names": roster},
+            "roster": {"count": len(roster) + len(my_names), "names": roster, "my": my_names},
             "source": _source_health(gpaths),
             "unmanaged": _unmanaged_claude_files(home, manifest),
         },
@@ -113,7 +115,7 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
         wiring = _wiring_state(repo)
         if wiring["state"] != "present":
             wiring["restore"] = RESTORE_HINT
-        global_names = set(roster)
+        global_names = set(roster) | set(my_names)
         result["project"] = {
             "repo": str(repo),
             "specialists": specialists,

@@ -68,9 +68,10 @@ def test_add_agent_scaffolds_and_installs(source, home):
         "--source", str(source), home=home,
     )
     assert proc.returncode == 0, proc.stderr
-    art = source / "canonical" / "agents" / "devrel.md"
-    assert art.exists()
+    art = home / ".cohort" / "my" / "canonical" / "agents" / "devrel.md"
+    assert art.exists()  # my office by default (#84) — the clone stays clean
     assert "advisory: true" in art.read_text()
+    assert not (source / "canonical" / "agents" / "devrel.md").exists()
     assert (home / ".claude" / "agents" / "devrel.md").exists()  # recompiled in
 
 
@@ -283,8 +284,8 @@ def test_add_memory_scaffolds_and_lands_in_corpus(source, home):
         "--source", str(source), home=home,
     )
     assert proc.returncode == 0, proc.stderr
-    art = source / "canonical" / "memories" / "review-cadence.md"
-    assert art.exists()
+    art = home / ".cohort" / "my" / "canonical" / "memories" / "review-cadence.md"
+    assert art.exists()  # my office by default (#84)
     assert "scope: global" in art.read_text(encoding="utf-8")  # memories are global-only
     corpus = home / ".claude" / "cohort" / "CLAUDE.cohort.md"
     assert "review-cadence" in corpus.read_text(encoding="utf-8")  # recompiled into the corpus

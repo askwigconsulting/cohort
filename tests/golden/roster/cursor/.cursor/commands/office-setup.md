@@ -28,19 +28,14 @@ directory. Never adopt without asking.
 
 Interview briefly: role, domain/industry, primary stack, team size, and any
 constraints that should color every agent's advice (regulated industry,
-open-source, solo founder, …). Then draft
-`<source>/canonical/memories/office-context.md`:
+open-source, solo founder, …). Then draft the personal context memory — it
+belongs to *my office* (`~/.cohort/my/`), never the shared clone, and its name
+is reserved so it can never mask a company-shipped `office-context`:
 
-    ---
-    name: office-context
-    kind: memory
-    scope: global
-    description: Who this office advises — role, domain, stack, constraints.
-    targets: [all]
-    ---
-    <the distilled context, 5–10 lines, no secrets, no personal data beyond role>
+    cohort add-memory --name my-office-context --description 'Who this office advises.' --body-file <draft.md>
 
-Show the draft, apply their edits, then `cohort validate` and `cohort recompile`.
+with a body of 5–10 distilled lines (no secrets, no personal data beyond role).
+Show the draft and apply their edits before running the command.
 
 ## 3 — Custom global agents (optional)
 
@@ -50,12 +45,15 @@ clinical-data), draft it: name, department, description, and a four-part body
 
     cohort add-agent --name <slug> --display-name <Name> --department <Dept> --description '<desc>'
 
-then replace the scaffolded body in `<source>/canonical/agents/<slug>.md` with
-the approved draft (keep the generated frontmatter — agents stay `advisory: true`),
-and `cohort validate` + `cohort recompile`.
+It lands in my office (`~/.cohort/my/canonical/agents/<slug>.md`) — replace the
+scaffolded body there with the approved draft (keep the generated frontmatter —
+agents stay `advisory: true`), then `cohort recompile`. Only pass `--to office`
+if the user explicitly wants the agent in the shared clone for the whole org.
 
 ## 4 — Close out
 
-The clone is now dirty; `cohort update` refuses a dirty tree. Tell the user to
-commit the new canonical artifacts (their clone is theirs), or — on a company
-fork — to open a PR so the whole org benefits. Never commit or push for them.
+Tell the user: their personal setup lives in `~/.cohort/my/` — updates never
+touch it, proposals never include it, and `git init ~/.cohort/my` gives it
+history if they want that. To share an agent with their org later: author it
+with `--to office` on a company fork and open a PR. Never commit or push for
+them.
