@@ -54,6 +54,7 @@ from .project import (
     staleness_check,
 )
 from .reports import do_report
+from .adopt import AdoptError, do_adopt
 from .roster import (
     AddAgentError,
     AddMemoryError,
@@ -807,6 +808,52 @@ def add_agent(
     raise typer.Exit(code=0)
 
 
+@app.command("adopt")
+def adopt(
+    ctx: typer.Context,
+    path: str = typer.Argument(
+        ..., help="A loose file under ~/.claude/agents/ or ~/.claude/commands/ to adopt."
+    ),
+    description: Optional[str] = typer.Option(
+        None, "--description", help="Required if the file's frontmatter has none."
+    ),
+    department: Optional[str] = typer.Option(None, "--department", help="Agents only; default: Adopted."),
+    display_name: Optional[str] = typer.Option(None, "--display-name", help="Agents only."),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Lift a loose, unmanaged Claude agent/command into canonical and recompile.
+
+    The original is backed up under ~/.cohort/state/adopt-backups/, never deleted.
+    Adopted agents become advisory read-only like the rest of the roster.
+    """
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    try:
+        report = do_adopt(
+            Path.home(), source_path, Path(path),
+            description=description, department=department, display_name=display_name,
+            dry_run=effective_dry_run,
+        )
+    except AdoptError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"adopt: {'(dry-run) ' if r['dry_run'] else ''}{r['kind']} {r['name']} → {r['path']}"))
+    if report.get("advisory_enforced"):
+        typer.echo(
+            "note: adopted agents are advisory read-only (Cohort's v1 safety invariant), "
+            "even if the loose original inherited all tools.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
 @app.command("add-memory")
 def add_memory(
     ctx: typer.Context,
@@ -888,6 +935,12 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
             typer.echo(
                 f"  ! source link is broken (moved/deleted clone) — run "
                 f"`{src.get('restore', 'cohort relink')}`",
+                err=True,
+            )
+        for f in g.get("unmanaged", []):
+            typer.echo(
+                f"  ! unmanaged: {f} (invisible to the office directory) — "
+                f"`cohort adopt {f}`",
                 err=True,
             )
         if "project" in r:

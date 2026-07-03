@@ -54,6 +54,24 @@ def _wiring_state(repo: Path) -> dict[str, Any]:
     return {"state": "diverged"}
 
 
+def _unmanaged_claude_files(home: Path, manifest) -> list[str]:
+    """Files in Cohort's Claude destination dirs that Cohort did not place.
+
+    These form a shadow office: they live in the same discovery directories as
+    the roster but are invisible to the injected office directory — and become
+    a preflight CLOBBER if canonical ever ships the same name."""
+    recorded = {op.dest for op in manifest.ops} if manifest else set()
+    out = []
+    for sub in ("agents", "commands"):
+        d = home / ".claude" / sub
+        if not d.exists():
+            continue
+        out.extend(
+            str(p) for p in sorted(d.iterdir()) if p.is_file() and str(p) not in recorded
+        )
+    return out
+
+
 def do_status(home: Path, cwd: Path) -> dict[str, Any]:
     """Aggregate global + project state, read-only."""
     gpaths = CohortPaths.for_global(home)
@@ -66,6 +84,7 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
             "ides": manifest.ides if manifest else [],
             "roster": {"count": len(roster), "names": roster},
             "source": _source_health(gpaths),
+            "unmanaged": _unmanaged_claude_files(home, manifest),
         },
     }
 
