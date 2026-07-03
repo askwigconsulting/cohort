@@ -401,3 +401,27 @@ def test_session_capture_hook_targets_session_end_and_cli():
     event, entry = render_hook_entry(build_ir(r.frontmatter, r.body))
     assert event == "SessionEnd"
     assert entry["hooks"][0]["command"] == "cohort session-capture"  # CLI, not a script
+
+
+# === $HOME is never a project (#80) ==========================================
+
+
+def test_status_from_home_never_reads_global_as_project(home):
+    """$HOME's .cohort is the global office home; status run outside any repo
+    must not report it as a project of the home directory (#80)."""
+    run_cli("recompile", "--ide", "claude", "--source", str(COHORT_SRC), repo=home, home=home)
+    data = json.loads(run_cli("status", "--json", repo=home, home=home).stdout)
+    assert "project" not in data
+    assert data["global"]["roster"]["count"] > 0  # the global section still reports
+
+
+def test_init_refuses_the_home_directory(home):
+    """A project init at $HOME would rewire the global CLAUDE.md managed block
+    with the project import — refuse before any mutation (#80)."""
+    run_cli("recompile", "--ide", "claude", "--source", str(COHORT_SRC), repo=home, home=home)
+    before = (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+    proc = run_cli("init", "--source", str(COHORT_SRC), repo=home, home=home)
+    assert proc.returncode == 2
+    assert "home directory" in proc.stderr
+    assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == before
+    assert not (home / ".cohort" / "project_context.md").exists()

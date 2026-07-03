@@ -94,7 +94,11 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
 
     repo = find_repo_root(cwd)
     ppaths = CohortPaths.for_project(repo)
-    if ppaths.cohort_home.exists():
+    # A cwd under $HOME with no enclosing repo resolves to $HOME itself, whose
+    # .cohort is the GLOBAL office home — never report it as a project (the
+    # roster would read as self-shadowing specialists and the wiring check
+    # would advise an init --force that clobbers the global CLAUDE.md block).
+    if ppaths.cohort_home != gpaths.cohort_home and ppaths.cohort_home.exists():
         spec_dir = ppaths.canonical / "agents"
         specialists = sorted(p.stem for p in spec_dir.glob("*.md")) if spec_dir.exists() else []
         legacy_dir = ppaths.cohort_home / "agents"
