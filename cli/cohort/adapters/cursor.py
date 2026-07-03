@@ -126,7 +126,7 @@ class CursorRenderer:
                 hook_irs.append(ir)
             elif ir.kind == "memory":
                 memory_irs.append(ir)
-            else:  # context (deferred)
+            else:  # context (handled by `cohort init`, not the compile pipeline)
                 skipped.append(ir.name)
         if memory_irs:
             staged.append(render_memories(memory_irs))
