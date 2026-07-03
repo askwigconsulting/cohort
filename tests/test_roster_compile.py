@@ -107,3 +107,14 @@ def test_delegation_dod_chief_names_every_specialist(home):
     for display in SPECIALIST_DISPLAY:
         assert f"**{display}**" in chief, display
     assert "**ChiefOfStaff**" not in chief.split("Office directory.")[1]  # not itself
+
+
+# --- routing memory (the top-level agent is the real router) ----------------
+
+
+def test_office_routing_memory_reaches_global_claude_md(home):
+    assert recompile(home).returncode == 0
+    corpus = home / ".claude" / "cohort" / "CLAUDE.cohort.md"
+    assert "ChiefOfStaff" in corpus.read_text(encoding="utf-8")
+    claude_md = (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "@cohort/CLAUDE.cohort.md" in claude_md  # imported into top-level memory
