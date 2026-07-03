@@ -3,7 +3,7 @@ name: update-check
 kind: hook
 scope: global
 description: Notify at session start when a newer Cohort is available.
-targets: [all]
+targets: [claude]
 event: session_start
 action: cohort update-check
 ---

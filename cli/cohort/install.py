@@ -84,7 +84,8 @@ def prompt_ide_selection(
     sout = stdout or sys.stdout
     print("Select IDEs to install:", file=sout)
     for i, ide in enumerate(IDES, 1):
-        print(f"  {i}) {ide}", file=sout)
+        label = ide if ide == "claude" else f"{ide} (experimental)"
+        print(f"  {i}) {label}", file=sout)
     print("Enter numbers (space/comma separated); empty = none; q = cancel:", file=sout)
     line = sin.readline()
     if line == "":  # EOF

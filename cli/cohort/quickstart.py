@@ -11,7 +11,7 @@ from __future__ import annotations
 # Bare commands a new team runs, in order. (`git clone` precedes these; the e2e
 # starts at install since the checkout is the fixture.)
 QUICKSTART_STEPS = [
-    "cohort recompile --ide claude,codex,cursor",
+    "cohort recompile --ide claude",
     "cohort init",
     "cohort add-specialist --name data-modeler --display-name DataModeler --department Data --description 'Schema and data modeling.'",
     "cohort snapshot",
