@@ -812,6 +812,30 @@ def deinit(
     raise typer.Exit(code=0)
 
 
+def _echo_layer_note(report: dict) -> None:
+    """Say where an authored artifact landed and how to choose the other layer."""
+    if report.get("dry_run"):
+        return
+    if report.get("layer") == "my":
+        typer.echo(
+            "added to my office (~/.cohort/my) — updates and proposals never touch it; "
+            "use `--to office` to author into the shared clone instead.",
+            err=True,
+        )
+        if report.get("first_my_write"):
+            typer.echo(
+                "note: my office is not version-controlled — `git init ~/.cohort/my` "
+                "if you want history/backup.",
+                err=True,
+            )
+    elif report.get("layer") == "office":
+        typer.echo(
+            "added to the office layer (the shared source clone) — commit it, or open "
+            "a PR on your company fork so the whole org benefits.",
+            err=True,
+        )
+
+
 @app.command("add-agent")
 def add_agent(
     ctx: typer.Context,
@@ -820,11 +844,15 @@ def add_agent(
     department: Optional[str] = typer.Option(None, "--department"),
     topology: str = typer.Option("specialist", "--topology", help="specialist | generalist"),
     description: Optional[str] = typer.Option(None, "--description"),
+    to: str = typer.Option(
+        "my", "--to",
+        help="my (default: the personal layer, ~/.cohort/my) | office (the shared clone).",
+    ),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Author a new agent into the global roster, then recompile."""
+    """Author a new agent into the global roster (my office by default), then recompile."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -843,12 +871,14 @@ def add_agent(
         report = do_add_agent(
             source_path, Path.home(), inputs["name"], inputs["display_name"],
             inputs["department"], inputs["topology"], inputs["description"], effective_dry_run,
+            to=to,
         )
     except AddAgentError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
     _emit(report, json_output, lambda r: typer.echo(
         f"add-agent: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
+    _echo_layer_note(report)
     raise typer.Exit(code=0)
 
 
@@ -908,6 +938,10 @@ def add_memory(
     body_file: Optional[str] = typer.Option(
         None, "--body-file", help="Markdown file supplying the memory body (replaces the template)."
     ),
+    to: str = typer.Option(
+        "my", "--to",
+        help="my (default: the personal layer, ~/.cohort/my) | office (the shared clone).",
+    ),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
@@ -933,13 +967,14 @@ def add_memory(
         report = do_add_memory(
             source_path, Path.home(), name, description,
             priority=priority, display_name=display_name, body=body,
-            dry_run=effective_dry_run,
+            dry_run=effective_dry_run, to=to,
         )
     except AddMemoryError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
     _emit(report, json_output, lambda r: typer.echo(
         f"add-memory: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
+    _echo_layer_note(report)
     raise typer.Exit(code=0)
 
 
@@ -974,6 +1009,8 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
         g = r["global"]
         typer.echo(f"IDEs: {', '.join(g['ides']) or '-'}")
         typer.echo(f"Roster: {g['roster']['count']} agents")
+        if g["roster"].get("my"):
+            typer.echo(f"  my office: {', '.join(g['roster']['my'])}")
         src = g.get("source", {})
         if src.get("linked") and not src.get("ok"):
             typer.echo(

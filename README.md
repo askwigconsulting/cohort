@@ -114,7 +114,7 @@ dependencies), and dies with Ctrl-C — no daemon.
 | | The office | My office | This project |
 |---|---|---|---|
 | Lives in | the source clone's `canonical/` (placed via `~/.cohort/` + `~/.claude` etc.) | `~/.cohort/my/canonical/` | `<repo>/.cohort/` + `<repo>/.claude` |
-| Holds | the 17-agent roster, hooks, memories, skills | personal agents/memories (hand-authored today; `--to my` authoring lands next) | `project_context.md`, `sessions/`, project specialists, `proposals/`, `feedback/` |
+| Holds | the 17-agent roster, hooks, memories, skills | personal agents/memories (`add-agent`, `add-memory`, and `adopt` land here by default) | `project_context.md`, `sessions/`, project specialists, `proposals/`, `feedback/` |
 | Git-tracked | the Cohort source repo | no — yours to `git init` if you want history | the consuming repo (except `state/`, `compiled/`) |
 | Touched by update | fast-forwarded | never | never |
 

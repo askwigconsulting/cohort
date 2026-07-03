@@ -64,7 +64,7 @@ def test_adopt_agent_becomes_managed_and_advisory(source, home):
     loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     proc = run_cli("adopt", str(loose), "--source", str(source), home=home)
     assert proc.returncode == 0, proc.stderr
-    canonical = source / "canonical" / "agents" / "perf-auditor.md"
+    canonical = home / ".cohort" / "my" / "canonical" / "agents" / "perf-auditor.md"
     text = canonical.read_text(encoding="utf-8")
     assert "advisory: true" in text  # the v1 safety invariant applies to adoptees
     assert "You review code across correctness" in text  # body preserved
@@ -92,7 +92,8 @@ def test_adopt_command_requires_description_flag_when_file_has_none(source, home
                    "--source", str(source), home=home)
     assert proc.returncode == 0, proc.stderr
     assert (home / ".claude" / "commands" / "release-notes.md").exists()
-    text = (source / "canonical" / "commands" / "release-notes.md").read_text(encoding="utf-8")
+    text = (home / ".cohort" / "my" / "canonical" / "commands" /
+            "release-notes.md").read_text(encoding="utf-8")
     assert "Run the full build" in text
 
 
@@ -131,7 +132,7 @@ def test_adopt_dry_run_changes_nothing(source, home):
     loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     proc = run_cli("adopt", str(loose), "--dry-run", "--source", str(source), home=home)
     assert proc.returncode == 0, proc.stderr
-    assert not (source / "canonical" / "agents" / "perf-auditor.md").exists()
+    assert not (home / ".cohort" / "my" / "canonical" / "agents" / "perf-auditor.md").exists()
     assert loose.read_text(encoding="utf-8") == LOOSE_AGENT
 
 
@@ -169,7 +170,7 @@ def test_readopting_same_name_preserves_both_backups(source, home):
     loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     run_cli("adopt", str(loose), "--source", str(source), home=home)
     # simulate: user deletes the adopted canonical + recompiles, then writes a new loose file
-    (source / "canonical" / "agents" / "perf-auditor.md").unlink()
+    (home / ".cohort" / "my" / "canonical" / "agents" / "perf-auditor.md").unlink()
     run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
     loose2 = _loose(home, "agents", "perf-auditor", "---\ndescription: v2.\n---\nSecond body.\n")
     proc = run_cli("adopt", str(loose2), "--source", str(source), home=home)
@@ -196,7 +197,7 @@ def test_failed_recompile_rolls_back_consistently(source, home, monkeypatch):
     with pytest.raises(AdoptError, match="original restored"):
         do_adopt(home, source, loose)
     assert loose.read_text(encoding="utf-8") == LOOSE_AGENT  # original back in place
-    assert not (source / "canonical" / "agents" / "perf-auditor.md").exists()
+    assert not (home / ".cohort" / "my" / "canonical" / "agents" / "perf-auditor.md").exists()
     report = do_status(home, home)
     unmanaged = [e["path"] for e in report["global"]["unmanaged"]]
     assert str(loose) in unmanaged  # still visible, not a hidden shadow file
@@ -216,7 +217,7 @@ def test_broken_frontmatter_is_refused_not_embedded(source, home):
     proc = run_cli("adopt", str(loose), "--description", "x", "--source", str(source), home=home)
     assert proc.returncode == 1
     assert "frontmatter does not parse" in proc.stderr
-    assert not (source / "canonical" / "agents" / "brokenfm.md").exists()
+    assert not (home / ".cohort" / "my" / "canonical" / "agents" / "brokenfm.md").exists()
 
 
 def test_line_separator_in_description_is_refused(source, home):

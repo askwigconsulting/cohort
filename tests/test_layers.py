@@ -146,3 +146,58 @@ def test_office_artifact_bytes_unchanged_by_a_my_addition(source, tmp_path, home
         if rel == "agents/chief-of-staff.md":
             continue  # the office directory legitimately gains the new row
         assert layered[rel] == content, rel
+
+
+# === increment 2: the authoring surface targets my office ====================
+
+
+def test_add_agent_defaults_to_my_office_and_says_so(source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    proc = run_cli("add-agent", "--name", "clinical-data", "--display-name", "ClinicalData",
+                   "--department", "Health", "--description", "Clinical data advice.",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert (home / ".cohort" / "my" / "canonical" / "agents" / "clinical-data.md").exists()
+    assert not (source / "canonical" / "agents" / "clinical-data.md").exists()  # clone clean
+    assert "my office" in proc.stderr  # destination said out loud
+    assert "not version-controlled" in proc.stderr  # first-write notice
+    assert (home / ".claude" / "agents" / "clinical-data.md").exists()
+
+
+def test_add_agent_to_office_writes_the_clone(source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    proc = run_cli("add-agent", "--name", "clinical-data", "--display-name", "ClinicalData",
+                   "--department", "Health", "--description", "x.", "--to", "office",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert (source / "canonical" / "agents" / "clinical-data.md").exists()
+    assert "office layer" in proc.stderr
+
+
+def test_add_agent_cross_layer_collision_refused(source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    # counsel lives in the office layer; a my-layer twin must refuse early
+    proc = run_cli("add-agent", "--name", "counsel", "--display-name", "X",
+                   "--department", "Y", "--description", "z.",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 1
+    assert "office layer" in proc.stderr and "already exists" in proc.stderr
+
+
+def test_second_generalist_refused_across_layers(source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    proc = run_cli("add-agent", "--name", "boss", "--display-name", "Boss",
+                   "--department", "Exec", "--description", "x.", "--topology", "generalist",
+                   "--source", str(source), home=home)
+    assert proc.returncode == 1
+    assert "generalist" in proc.stderr  # chief-of-staff already holds the seat
+
+
+def test_status_reports_the_my_layer(source, home):
+    import json as _json
+
+    _my(home, "agents", "trading-compliance", MY_AGENT)
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    report = _json.loads(run_cli("status", "--json", home=home).stdout)
+    assert report["global"]["roster"]["my"] == ["trading-compliance"]
+    assert report["global"]["roster"]["count"] == 18  # 17 office + 1 my

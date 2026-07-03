@@ -337,8 +337,10 @@ def test_add_agent_on_subset_office_survives_recompile(home, source):
     )
     assert proc.returncode == 0
     assert "trading-compliance" in placed_agents(home)
+    # #84: the agent landed in MY office, so the subset (an office-layer filter)
+    # stays untouched — survival now comes from the layer rule, not roster growth.
     assert json.loads((home / ".cohort" / "state" / "manifest.json").read_text())["roster"] \
-        == ["counsel", "chief-of-staff", "trading-compliance"]
+        == ["counsel", "chief-of-staff"]
     # The mandated follow-up recompile must NOT remove the just-created agent.
     run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
     assert sorted(placed_agents(home)) == ["chief-of-staff", "counsel", "trading-compliance"]
