@@ -28,7 +28,10 @@ from .schema import NAME_PATTERN, validate_frontmatter
 READONLY_TOOLS_LIST = ["read", "grep", "glob"]
 READONLY_TOOLS = "[read, grep, glob]"
 
-_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# Includes NEL (\x85) and the U+2028/U+2029 line/paragraph separators:
+# yaml.safe_dump emits those verbatim, so they would survive round-trip and
+# fracture the rendered office-directory line exactly like a raw newline.
+_CONTROL_CHARS = re.compile("[\x00-\x1f\x7f\x85\u2028\u2029]")
 
 
 def reject_control_chars(**fields: str) -> None:

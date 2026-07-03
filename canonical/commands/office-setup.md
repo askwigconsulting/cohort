@@ -27,6 +27,12 @@ Then run the flags form (never the bare interactive form — you are the intervi
 
     cohort setup --ide <ides> --agents <subset|all> [--company-url <url> --company-branch <branch>]
 
+After it lands, run `cohort status` and look for `! unmanaged:` lines — pre-existing
+agents/commands sitting loose in `~/.claude/`. For each, ask whether to adopt it into
+the office (`cohort adopt <path>` — the original is backed up, and adopted agents
+become advisory read-only) or leave it unmanaged and invisible to ChiefOfStaff's
+directory. Never adopt without asking.
+
 ## 2 — Office context (who the advice is for)
 
 Interview briefly: role, domain/industry, primary stack, team size, and any

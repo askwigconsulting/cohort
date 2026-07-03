@@ -7,6 +7,7 @@ Commands map domain exceptions to the exit triad (0 success · 1 refused/failed 
 from __future__ import annotations
 
 import json as _json
+import re
 import sys
 import time
 from pathlib import Path
@@ -54,6 +55,7 @@ from .project import (
     staleness_check,
 )
 from .reports import do_report
+from .adopt import AdoptError, do_adopt
 from .roster import (
     AddAgentError,
     AddMemoryError,
@@ -101,6 +103,16 @@ def _version_callback(value: bool) -> None:
     if value:
         typer.echo(__version__)
         raise typer.Exit()
+
+
+# NEL + U+2028/U+2029 included alongside ASCII controls (matches roster.py).
+_UNTRUSTED_CONTROL = re.compile("[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _escape_untrusted(text: str) -> str:
+    """Escape control characters in untrusted text (e.g. filenames) before it
+    reaches the terminal, so a crafted name can't overwrite or forge output."""
+    return _UNTRUSTED_CONTROL.sub(lambda m: repr(m.group())[1:-1], text)
 
 
 @app.callback()
@@ -807,6 +819,52 @@ def add_agent(
     raise typer.Exit(code=0)
 
 
+@app.command("adopt")
+def adopt(
+    ctx: typer.Context,
+    path: str = typer.Argument(
+        ..., help="A loose file under ~/.claude/agents/ or ~/.claude/commands/ to adopt."
+    ),
+    description: Optional[str] = typer.Option(
+        None, "--description", help="Required if the file's frontmatter has none."
+    ),
+    department: Optional[str] = typer.Option(None, "--department", help="Agents only; default: Adopted."),
+    display_name: Optional[str] = typer.Option(None, "--display-name", help="Agents only."),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Lift a loose, unmanaged Claude agent/command into canonical and recompile.
+
+    The original is backed up under ~/.cohort/state/adopt-backups/, never deleted.
+    Adopted agents become advisory read-only like the rest of the roster.
+    """
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    try:
+        report = do_adopt(
+            Path.home(), source_path, Path(path),
+            description=description, department=department, display_name=display_name,
+            dry_run=effective_dry_run,
+        )
+    except AdoptError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"adopt: {'(dry-run) ' if r['dry_run'] else ''}{r['kind']} {r['name']} → {r['path']}"))
+    if report.get("advisory_enforced"):
+        typer.echo(
+            "note: adopted agents are advisory read-only (Cohort's v1 safety invariant), "
+            "even if the loose original inherited all tools.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
 @app.command("add-memory")
 def add_memory(
     ctx: typer.Context,
@@ -888,6 +946,18 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
             typer.echo(
                 f"  ! source link is broken (moved/deleted clone) — run "
                 f"`{src.get('restore', 'cohort relink')}`",
+                err=True,
+            )
+        for f in g.get("unmanaged", []):
+            # untrusted filename → escape control chars so it can't forge or
+            # overwrite terminal output (CR/ESC injection)
+            shown = _escape_untrusted(f["path"])
+            hint = (
+                f" — `cohort adopt {shown}`" if f.get("adoptable")
+                else " (nested; not directly adoptable)"
+            )
+            typer.echo(
+                f"  ! unmanaged: {shown} (invisible to the office directory){hint}",
                 err=True,
             )
         if "project" in r:
