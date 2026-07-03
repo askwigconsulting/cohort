@@ -242,6 +242,17 @@ def test_interview_commands_compile_into_claude(home, source):
         assert placed.exists(), command
 
 
+def test_daily_loop_commands_compile_into_claude(home, source):
+    # /feedback and /snapshot: the IDE is the primary surface for the daily loop
+    proc = run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    assert proc.returncode == 0
+    for command in ("feedback", "snapshot"):
+        placed = home / ".claude" / "commands" / f"{command}.md"
+        assert placed.exists(), command
+        text = placed.read_text(encoding="utf-8")
+        assert f"cohort {command}" in text  # wraps the CLI, adds no new write path
+
+
 def test_interview_commands_survive_roster_subset(home, source):
     run_cli("setup", "--ide", "claude", "--agents", "chief-of-staff",
             "--source", str(source), home=home)
