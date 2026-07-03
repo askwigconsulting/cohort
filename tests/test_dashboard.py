@@ -395,3 +395,33 @@ def test_action_update_degrades_gracefully_offline(server):
 def test_action_init_refused_at_home(home, tmp_path, source):
     with pytest.raises(ActionError, match="home directory"):
         run_action(home, home, "init", {})
+
+
+def test_action_wrong_token_is_401(server):
+    srv, _ = server
+    status, _ = request(srv, "POST", "/api/action", token="not-the-token",
+                        body={"action": "snapshot", "args": {}})
+    assert status == 401
+
+
+def test_action_set_roster_all_sentinel_is_an_unknown_name(server):
+    # "all" is a CLI-flag sentinel, not an agent — the API must refuse it
+    srv, _ = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "set-roster", "args": {"agents": ["all"]}})
+    assert status == 400, data
+    assert b"unknown agents" in data
+
+
+def test_action_recompile_preserves_copy_mode(tmp_path, source):
+    # a real --copy install: the dashboard recompile must honor the manifest's
+    # recorded mode, never silently converting copies to symlinks
+    home = tmp_path / "copyhome"
+    home.mkdir()
+    run_cli("recompile", "--ide", "claude", "--copy", "--source", str(source), home=home)
+    placed = home / ".claude" / "agents" / "counsel.md"
+    assert placed.exists() and not placed.is_symlink()
+    report = run_action(home, tmp_path, "recompile", {})
+    assert report["action"] == "recompile"
+    assert placed.exists()
+    assert not placed.is_symlink()  # still a copy after the dashboard recompile

@@ -45,7 +45,8 @@ from .improve import (
 from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
-from .office_setup import SetupError, canonical_agents, effective_roster, parse_roster, persist_roster
+from .manifest import load_manifest
+from .office_setup import SetupError, canonical_agents, effective_roster, persist_roster
 from .parity import check_parity
 from .project import do_init, do_snapshot, find_repo_root
 from .source import SourceUnresolved, resolve_source
@@ -115,6 +116,13 @@ class _UpdateCache:
             self._value = result
             self._at = time.monotonic()
             self._refreshing = False
+
+    def invalidate(self) -> None:
+        """Drop the cached value (e.g. right after a successful update action),
+        so the next poll re-fetches instead of showing a stale behind-count."""
+        with self._lock:
+            self._value = None
+            self._at = 0.0
 
 
 def _proposal_entry(path: Path) -> dict[str, Any]:
@@ -221,13 +229,19 @@ def _require_source(home: Path) -> Path:
 
 
 def _recompile_claude(home: Path, source: Path, roster: Optional[list]) -> dict[str, Any]:
-    """The same compile → stage → install path `cohort recompile --ide claude` runs."""
+    """The same compile → stage → install path `cohort recompile --ide claude` runs.
+
+    Claude-only while codex/cursor are experimental; a codex/cursor install picks
+    the roster up on its next `cohort update`/`recompile`. Honors the manifest's
+    recorded install mode so a --copy install is never converted to symlinks."""
     gpaths = CohortPaths.for_global(home)
+    manifest = load_manifest(gpaths.manifest)
+    mode = (manifest.mode if manifest and manifest.mode else None) or resolve_mode(copy=False)
     only = frozenset(roster) if roster is not None else None
     result = compile_ide(source, "claude", scope="global", only_agents=only)
     write_staging(gpaths, result)
     report = do_install(
-        home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,
+        home=home, selection=["claude"], mode=mode, force=False,
         source=source, dry_run=False,
         prune_stale=True, fresh_dests=planned_dests(gpaths, [result]),
         fresh_ides={"claude"} if result.staged else set(),
@@ -298,10 +312,18 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
             if not names:
                 raise ActionError("select at least one agent")
             source = _require_source(home)
+            # Validate the list directly (never through the comma-string parser,
+            # whose "all" sentinel and comma-splitting don't belong in an API).
+            catalog = set(canonical_agents(source))
+            unknown = sorted(set(names) - catalog)
+            if unknown:
+                raise ActionError(f"unknown agents: {', '.join(unknown)}")
+            deduped = list(dict.fromkeys(names))
             # the full catalog means "follow upstream" (no persisted subset)
-            roster = None if set(names) == set(canonical_agents(source)) \
-                else parse_roster(",".join(names), source)
+            roster = None if set(deduped) == catalog else deduped
             report = _recompile_claude(home, source, roster)
+            # recompile-then-persist matches the CLI ordering; a persist failure
+            # self-heals on the next recompile (placements win, roster reverts)
             persist_roster(home, roster)
             report["action"] = "set-roster"
             report["roster"] = roster if roster is not None else "all"
@@ -395,15 +417,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # read to EOF, defeating the cap and blocking the thread.
             length = max(0, min(int(self.headers.get("Content-Length", "0")), 65536))
             body = json.loads(self.rfile.read(length) or b"{}")
+        except (json.JSONDecodeError, ValueError):
+            self._send_json(400, {"error": "malformed request body"})
+            return
+        try:
             action = str(body.get("action", ""))
             args = body.get("args") or {}
             if not isinstance(args, dict):
                 raise ActionError("args must be an object")
             with self.server.action_lock:  # mutating commands never run concurrently
                 report = run_action(self.server.home, self.server.cwd, action, args)
+            if action == "update":
+                self.server.update_cache.invalidate()  # drop the stale behind-count
             self._send_json(200, report)
-        except (json.JSONDecodeError, ValueError):
-            self._send_json(400, {"error": "malformed request body"})
         except ActionError as exc:
             self._send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - never drop the connection: report as 500

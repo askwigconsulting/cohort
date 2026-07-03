@@ -324,13 +324,17 @@ function toast(msg, cls) {
   setTimeout(() => t.remove(), cls === "err" ? 9000 : 5000);
 }
 function confirmDlg(title, body, yesLabel) {
+  // Resolve through the dialog's close event so a native dismissal (Escape)
+  // settles the promise too — a pending promise with live listeners could
+  // otherwise fire a previously-dismissed action from a later dialog.
   return new Promise((resolve) => {
     $("cf-title").textContent = title; $("cf-body").textContent = body;
     $("cf-yes").textContent = yesLabel || "Confirm";
-    const dlg = $("dlg-confirm"), yes = $("cf-yes"), no = $("cf-no");
-    const done = (v) => { dlg.close(); yes.removeEventListener("click", ok); no.removeEventListener("click", cancel); resolve(v); };
-    const ok = () => done(true), cancel = () => done(false);
-    yes.addEventListener("click", ok); no.addEventListener("click", cancel);
+    const dlg = $("dlg-confirm");
+    dlg.returnValue = "";
+    $("cf-yes").addEventListener("click", () => dlg.close("yes"), { once: true });
+    $("cf-no").addEventListener("click", () => dlg.close("no"), { once: true });
+    dlg.addEventListener("close", () => resolve(dlg.returnValue === "yes"), { once: true });
     dlg.showModal();
   });
 }
@@ -354,7 +358,7 @@ async function runAction(btn, action, args, okMsg) {
 }
 
 /* ---------- rendering ---------- */
-const HUES = {};
+const HUES = Object.create(null); // null proto: a "__proto__" department stays cosmetic-safe
 function hue(dept) {
   if (!(dept in HUES)) {
     let h = 0; for (const c of dept) h = (h * 31 + c.charCodeAt(0)) % 360;
@@ -530,7 +534,8 @@ function render(s) {
   renderProject(s.project || null);
 }
 async function refresh() {
-  try { render(await api("/api/state")); } catch (e) { /* transient poll failure */ }
+  try { render(await api("/api/state")); }
+  catch (e) { console.error("refresh failed:", e); } // transient poll failure or render bug
 }
 
 /* ---------- wiring ---------- */
