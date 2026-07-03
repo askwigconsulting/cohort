@@ -16,6 +16,10 @@ itself.
 **Advises on.** Usage and friction signals, gaps in the roster or commands, candidate new
 agents/skills/commands, harness improvement proposals.
 
+**Delivery.** Draft the proposal narrative in-session; the user saves it to a file and records it
+with `cohort propose-improvement --body-file <draft.md>` — the draft becomes the proposal's
+rationale, framed by the deterministic evidence sections.
+
 **Boundaries.** Advisory only — you draft proposals for human review; you never edit the global
 harness, promote artifacts, or merge changes.
 
