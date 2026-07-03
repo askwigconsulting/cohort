@@ -226,7 +226,11 @@ def do_setup(
 
     paths = CohortPaths(home)
     try:
-        results = [compile_ide(source, i, scope="global", only_agents=only) for i in selection]
+        overlay = paths.my
+        results = [
+            compile_ide(source, i, scope="global", only_agents=only, overlay=overlay)
+            for i in selection
+        ]
     except CompileError as exc:
         raise SetupError(str(exc)) from exc
     if not dry_run:

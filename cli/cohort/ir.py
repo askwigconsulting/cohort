@@ -34,6 +34,10 @@ class IRArtifact:
     owner: Optional[str]
     fields: dict[str, Any] = field(default_factory=dict)
     source_path: Optional[Path] = None
+    # Provenance within the global scope: "office" (the shared source clone) or
+    # "my" (the machine-local ~/.cohort/my overlay). Never affects rendered
+    # bytes — display/diagnostics only (proven by the byte-golden tests).
+    layer: str = "office"
 
     def targets_ide(self, ide: str) -> bool:
         """Whether this artifact should compile for the given IDE."""

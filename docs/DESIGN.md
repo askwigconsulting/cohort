@@ -55,6 +55,18 @@ structural and testable.
   generalist's routing. When added, inject a "Project specialists" list into the
   already-loaded project memory (the Phase-3 directory injection at project scope) —
   **not** a per-repo clone/override of the global generalist.
+- **[P] The global scope is two layers: the office and my office (#84).** Personal
+  content lives in the machine-local overlay `~/.cohort/my/canonical/`, merged
+  *additively* over the source clone's canonical at compile time — a `(kind, name)`
+  collision refuses; override-by-name is deferred to an explicit `cohort personalize`.
+  The overlay is passed to `compile_ide` explicitly by callers, never derived from
+  `Path.home()` inside compile (in-process goldens stay hermetic); the project tier
+  never receives one. The roster subset filters the **office layer only** — a personal
+  agent was opted in by authoring it, so an update-driven recompile with a tailored
+  roster can never prune it. `update` and `uninstall` never touch `my/`. Precedence is
+  honest: my-over-office is resolved at compile into one flat `~/.claude/agents/`;
+  only project-over-user is resolved by Claude Code at runtime. This is the
+  machine-local overlay #42 deferred — it ends personal authoring dirtying the clone.
 
 ## Other load-bearing rules
 

@@ -156,7 +156,7 @@ def do_add_agent(
     if subset is not None and name not in subset:
         subset = subset + [name]
     only = frozenset(subset) if subset is not None else None
-    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=paths.my)
     write_staging(paths, result)
     report = do_install(
         home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,
@@ -249,7 +249,7 @@ def do_add_memory(
     # never prunes agents the user chose (memories are unaffected by only_agents).
     manifest = load_manifest(paths.manifest)
     only = frozenset(manifest.roster) if manifest and manifest.roster else None
-    result = compile_ide(source, "claude", scope="global", only_agents=only)
+    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=paths.my)
     write_staging(paths, result)
     report = do_install(
         home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,

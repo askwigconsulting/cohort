@@ -148,6 +148,15 @@ class CohortPaths:
         return self.cohort_home / "state"
 
     @property
+    def my(self) -> Path:
+        """The machine-local personal layer root (``~/.cohort/my``, #84).
+
+        Meaningful for the global install only; may not exist. Never touched by
+        update/uninstall (a non-op path — reverse's rmdir-if-empty preserves it).
+        """
+        return self.cohort_home / "my"
+
+    @property
     def manifest(self) -> Path:
         return self.state / "manifest.json"
 

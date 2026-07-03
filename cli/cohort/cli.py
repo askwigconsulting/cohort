@@ -355,7 +355,11 @@ def compile(  # noqa: A001 - matches the user-facing command name
     only = frozenset(roster) if roster is not None else None
     start = time.perf_counter()
     try:
-        results = [compile_ide(source_path, i, scope="global", only_agents=only) for i in selection]
+        overlay = paths.my
+        results = [
+            compile_ide(source_path, i, scope="global", only_agents=only, overlay=overlay)
+            for i in selection
+        ]
     except CompileError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -406,7 +410,11 @@ def recompile(
     paths = CohortPaths(Path.home())
     only = frozenset(roster) if roster is not None else None
     try:
-        results = [compile_ide(source_path, i, scope="global", only_agents=only) for i in selection]
+        overlay = paths.my
+        results = [
+            compile_ide(source_path, i, scope="global", only_agents=only, overlay=overlay)
+            for i in selection
+        ]
     except CompileError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -415,6 +423,15 @@ def recompile(
     if not effective_dry_run:
         for result in results:
             write_staging(paths, result)
+    for result in results:
+        if result.scope_filtered:
+            typer.echo(
+                f"note: not compiled at this tier (wrong scope): "
+                f"{', '.join(result.scope_filtered)}. Move the artifact to the other "
+                f"tier's canonical, or fix its `scope:`.",
+                err=True,
+            )
+            break  # the same set repeats per IDE; say it once
 
     mode = resolve_mode(copy)
     if mode == "copy" and not copy:

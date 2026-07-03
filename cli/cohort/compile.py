@@ -54,7 +54,7 @@ class CompileResult:
         }
 
 
-def _load_irs(source: Path, scope: Optional[str] = None):
+def _load_irs(source: Path, scope: Optional[str] = None, layer: str = "office"):
     irs = []
     scope_filtered = []
     for p in discover_artifacts(source / "canonical"):
@@ -65,9 +65,11 @@ def _load_irs(source: Path, scope: Optional[str] = None):
         if errors:
             raise CompileError(f"{p}: {errors[0].code} {errors[0].message}")
         ir = build_ir(result.frontmatter, result.body, p)
+        ir.layer = layer
         # Tier partition: a tier only ever compiles its own scope. This is the leak
         # guard — a scope:project artifact in the global canonical can never reach the
-        # global office, and vice versa.
+        # global office, and vice versa. Runs per layer, BEFORE any merge, so a
+        # mis-scoped my-layer artifact can never displace an office original.
         if scope is not None and ir.scope != scope:
             scope_filtered.append(f"{ir.name} (scope: {ir.scope})")
             continue
@@ -75,9 +77,33 @@ def _load_irs(source: Path, scope: Optional[str] = None):
     return irs, scope_filtered
 
 
+def merge_layers(office_irs: list, my_irs: list) -> list:
+    """Merge the my layer over the office layer — additions-only (v1, #84).
+
+    A ``(kind, name)`` collision is a hard error, not a silent mask: override-
+    by-name arrives later via the explicit ``cohort personalize`` affordance,
+    together with its provenance badges and advisories. Order is deterministic:
+    office artifacts (discovery order) then my artifacts (discovery order);
+    renderers sort by name/department downstream.
+    """
+    taken = {(ir.kind, ir.name) for ir in office_irs}
+    collisions = sorted(
+        f"{ir.kind} {ir.name!r}" for ir in my_irs if (ir.kind, ir.name) in taken
+    )
+    if collisions:
+        raise CompileError(
+            "my-office artifacts collide with office artifacts: "
+            + ", ".join(collisions)
+            + " — rename yours (overriding an office artifact by name will arrive "
+            "with `cohort personalize`)"
+        )
+    return office_irs + my_irs
+
+
 def compile_ide(
     source: Path, ide: str, scope: Optional[str] = None,
     only_agents: Optional[frozenset[str]] = None, project_tier: bool = False,
+    overlay: Optional[Path] = None,
 ) -> CompileResult:
     """Render every targeting canonical artifact of ``scope`` into staged files for
     ``ide``. The global install passes ``scope="global"`` (the leak guard — project
@@ -86,9 +112,17 @@ def compile_ide(
     no CLAUDE.md memory merge); ``None`` (default) compiles all scopes, for
     direct/test use.
 
-    ``only_agents`` restricts *agent* artifacts to the named subset (a tailored
-    roster); every other kind still compiles. Filtering happens before the
-    renderer, so an injected office directory lists only the installed subset.
+    ``overlay`` is the my-office layer root (``~/.cohort/my``): its canonical/ is
+    loaded additively over the office layer (collisions refuse — see
+    ``merge_layers``). Callers pass it explicitly; compile never derives it from
+    ``Path.home()``, so in-process tests and goldens stay hermetic. The project
+    tier never passes an overlay.
+
+    ``only_agents`` restricts *office-layer* agent artifacts to the named subset
+    (a tailored roster); my-layer agents always compile — the subset exists to
+    tailor the company roster, and a personal agent was opted in by authoring
+    it. Every other kind still compiles. Filtering happens before the renderer,
+    so an injected office directory lists only the installed set.
 
     Generic over the renderer descriptor (P7-R1): ``renderer.compile(irs)`` owns
     the IDE-specific 1:1 + aggregate staging; this function just loads/validates
@@ -99,9 +133,19 @@ def compile_ide(
     if renderer is None:
         return result  # no renderer for this IDE
     irs, result.scope_filtered = _load_irs(source, scope)
+    if overlay is not None and (overlay / "canonical").exists():
+        my_irs, my_filtered = _load_irs(overlay, scope, layer="my")
+        result.scope_filtered.extend(f"{entry} [my]" for entry in my_filtered)
+        irs = merge_layers(irs, my_irs)
     if only_agents is not None:
-        excluded = [ir.name for ir in irs if ir.kind == "agent" and ir.name not in only_agents]
-        irs = [ir for ir in irs if not (ir.kind == "agent" and ir.name not in only_agents)]
+        excluded = [
+            ir.name for ir in irs
+            if ir.kind == "agent" and ir.layer == "office" and ir.name not in only_agents
+        ]
+        irs = [
+            ir for ir in irs
+            if not (ir.kind == "agent" and ir.layer == "office" and ir.name not in only_agents)
+        ]
         result.skipped.extend(sorted(excluded))
     try:
         staged, skipped = renderer.compile(irs, project_tier=project_tier)
