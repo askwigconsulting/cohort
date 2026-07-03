@@ -118,3 +118,11 @@ def test_office_routing_memory_reaches_global_claude_md(home):
     assert "ChiefOfStaff" in corpus.read_text(encoding="utf-8")
     claude_md = (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
     assert "@cohort/CLAUDE.cohort.md" in claude_md  # imported into top-level memory
+
+
+def test_office_guide_skill_places(home):
+    # the one surface the Claude Desktop app can read — must never be empty
+    assert recompile(home).returncode == 0
+    placed = home / ".claude" / "skills" / "office-guide" / "SKILL.md"
+    assert placed.exists()
+    assert "ChiefOfStaff" in placed.read_text(encoding="utf-8")
