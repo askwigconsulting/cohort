@@ -4,7 +4,13 @@
   "title": "Cohort shared frontmatter",
   "type": "object",
   "additionalProperties": false,
-  "required": ["name", "kind", "scope", "description", "targets"],
+  "required": [
+    "name",
+    "kind",
+    "scope",
+    "description",
+    "targets"
+  ],
   "properties": {
     "name": {
       "type": "string",
@@ -13,11 +19,21 @@
     },
     "kind": {
       "type": "string",
-      "enum": ["agent", "skill", "command", "hook", "memory", "context"]
+      "enum": [
+        "agent",
+        "skill",
+        "command",
+        "hook",
+        "memory",
+        "context"
+      ]
     },
     "scope": {
       "type": "string",
-      "enum": ["global", "project"]
+      "enum": [
+        "global",
+        "project"
+      ]
     },
     "description": {
       "type": "string",
@@ -30,7 +46,12 @@
       "uniqueItems": true,
       "items": {
         "type": "string",
-        "enum": ["claude", "codex", "cursor", "all"]
+        "enum": [
+          "claude",
+          "codex",
+          "cursor",
+          "all"
+        ]
       }
     },
     "version": {
@@ -43,6 +64,14 @@
     },
     "display_name": {
       "type": "string"
+    },
+    "overrides": {
+      "type": "boolean",
+      "description": "My-layer only: deliberately overrides the office artifact of the same (kind, name). Set by `cohort personalize`."
+    },
+    "office_sha256": {
+      "type": "string",
+      "description": "Content hash of the office artifact at personalize time (stale-override detection)."
     }
   }
 }

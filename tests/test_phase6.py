@@ -230,7 +230,8 @@ def test_deinit_purge_removes_specialist_sources(tmp_path, source, home):
 def test_promote_stages_proposal(tmp_path, source, home):
     repo = inited_repo(tmp_path, source, home)
     add_specialist(repo, home)
-    assert run_cli("promote", "data-modeler", home=home, cwd=repo).returncode == 0
+    assert run_cli("promote", "data-modeler", "--to", "office",
+                   home=home, cwd=repo).returncode == 0
     proposal = repo / ".cohort" / "proposals" / "data-modeler.md"
     assert proposal.exists()
     fm = proposal.read_text()
@@ -242,14 +243,17 @@ def test_promote_never_writes_global(tmp_path, source, home):
     add_specialist(repo, home)
     before_canon = tree_hash(source / "canonical")
     before_global = tree_hash(home / ".cohort" / "canonical")
-    run_cli("promote", "data-modeler", home=home, cwd=repo)
+    run_cli("promote", "data-modeler", "--to", "office", home=home, cwd=repo)
     assert tree_hash(source / "canonical") == before_canon  # source untouched
+    # the default (--to my) writes only ~/.cohort/my — the clone stays untouched too
+    run_cli("promote", "data-modeler", "--source", str(source), home=home, cwd=repo)
+    assert tree_hash(source / "canonical") == before_canon
     assert tree_hash(home / ".cohort" / "canonical") == before_global
 
 
 def test_promote_invalid_specialist_errors(tmp_path, source, home):
     repo = inited_repo(tmp_path, source, home)
-    proc = run_cli("promote", "nonexistent", home=home, cwd=repo)
+    proc = run_cli("promote", "nonexistent", "--to", "office", home=home, cwd=repo)
     assert proc.returncode == 1
     assert not (repo / ".cohort" / "proposals").exists()  # no proposal written
 
@@ -257,7 +261,7 @@ def test_promote_invalid_specialist_errors(tmp_path, source, home):
 def test_promote_dry_run_writes_nothing(tmp_path, source, home):
     repo = inited_repo(tmp_path, source, home)
     add_specialist(repo, home)
-    proc = run_cli("promote", "data-modeler", "--dry-run", home=home, cwd=repo)
+    proc = run_cli("promote", "data-modeler", "--to", "office", "--dry-run", home=home, cwd=repo)
     assert proc.returncode == 0
     assert not (repo / ".cohort" / "proposals").exists()
 
@@ -265,7 +269,7 @@ def test_promote_dry_run_writes_nothing(tmp_path, source, home):
 def test_proposals_is_git_tracked(tmp_path, source, home):
     repo = inited_repo(tmp_path, source, home)
     add_specialist(repo, home)
-    run_cli("promote", "data-modeler", home=home, cwd=repo)
+    run_cli("promote", "data-modeler", "--to", "office", home=home, cwd=repo)
     ignored = subprocess.run(["git", "check-ignore", "-q", ".cohort/proposals"], cwd=repo)
     assert ignored.returncode == 1  # not ignored
 

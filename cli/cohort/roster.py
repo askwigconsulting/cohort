@@ -9,6 +9,7 @@ tree so tests run against a copy and never mutate the real roster (R3).
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -17,7 +18,7 @@ from .compile import compile_ide, planned_dests, write_staging
 from .frontmatter import dump_frontmatter
 from .install import do_install
 from .install_model import CohortPaths, resolve_mode
-from .loader import load_artifact
+from .loader import load_artifact, load_artifact_text
 from .manifest import load_manifest
 from .schema import NAME_PATTERN, validate_frontmatter
 
@@ -300,4 +301,76 @@ def do_add_memory(
         "action": "add-memory", "dry_run": False, "name": name, "path": str(dest),
         "layer": to, "first_my_write": first_my,
         "installed": report.summary,
+    }
+
+
+# --- personalize (deliberate my-over-office override, #84 increment 4) --------
+
+
+class PersonalizeError(Exception):
+    """A refused personalize request (missing artifact, already personalized)."""
+
+
+_PERSONALIZE_DIRS = {
+    "agent": "agents", "command": "commands", "memory": "memories",
+    "hook": "hooks", "skill": "skills",
+}
+
+
+def do_personalize(
+    source: Path, home: Path, kind: str, name: str, dry_run: bool = False
+) -> dict[str, Any]:
+    """Copy an office artifact into my office as a deliberate override.
+
+    The copy carries ``overrides: true`` (the merge marker — an unmarked
+    collision still refuses) and ``office_sha256`` (the office content hash at
+    personalize time, so ``status`` can flag the override as *stale* when the
+    office version later changes, or *dangling* when it disappears)."""
+    if kind not in _PERSONALIZE_DIRS:
+        raise PersonalizeError(
+            f"kind must be one of {', '.join(sorted(_PERSONALIZE_DIRS))}, got {kind!r}"
+        )
+    sub = _PERSONALIZE_DIRS[kind]
+    office = source / "canonical" / sub / f"{name}.md"
+    if not office.exists():
+        raise PersonalizeError(f"no office {kind} named {name!r} to personalize")
+    my_dir = CohortPaths.for_global(home).my / "canonical" / sub
+    dest = my_dir / f"{name}.md"
+    if dest.exists():
+        raise PersonalizeError(f"{name!r} is already personalized — edit {dest}")
+    raw = office.read_bytes()
+    parsed = load_artifact(office)
+    if parsed.load_error is not None:
+        raise PersonalizeError(f"office {kind} {name!r} does not parse: {parsed.load_error.message}")
+    fm = dict(parsed.frontmatter or {})
+    fm["overrides"] = True
+    fm["office_sha256"] = hashlib.sha256(raw).hexdigest()
+    content = dump_frontmatter(list(fm.items())).rstrip("\n") + "\n" + (parsed.body or "").strip() + "\n"
+    check = load_artifact_text(content, name_stem=name)
+    errors = validate_frontmatter(check.frontmatter, name)
+    if errors:
+        raise PersonalizeError(
+            f"personalized copy failed validation: {errors[0].code} {errors[0].message}"
+        )
+    if dry_run:
+        return {"action": "personalize", "dry_run": True, "kind": kind, "name": name,
+                "path": str(dest)}
+    first_my = _first_my_write(home)
+    my_dir.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+
+    paths = CohortPaths.for_global(home)
+    manifest = load_manifest(paths.manifest)
+    only = frozenset(manifest.roster) if manifest and manifest.roster else None
+    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=paths.my)
+    write_staging(paths, result)
+    report = do_install(
+        home=home, selection=["claude"], mode=resolve_mode(copy=False), force=False,
+        source=source, dry_run=False,
+        prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
+    )
+    return {
+        "action": "personalize", "dry_run": False, "kind": kind, "name": name,
+        "path": str(dest), "layer": "my", "first_my_write": first_my,
+        "overridden": result.overridden, "installed": report.summary,
     }

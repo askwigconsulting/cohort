@@ -118,9 +118,11 @@ dependencies), and dies with Ctrl-C — no daemon.
 | Git-tracked | the Cohort source repo | no — yours to `git init` if you want history | the consuming repo (except `state/`, `compiled/`) |
 | Touched by update | fast-forwarded | never | never |
 
-A my-office artifact whose `(kind, name)` collides with an office artifact is refused at compile
-(additions-only for now; deliberate overrides arrive with `cohort personalize`). A tailored roster
-subset filters the office layer only — your own agents always install.
+A my-office artifact whose `(kind, name)` collides with an office artifact is refused at compile —
+unless it is a deliberate override created with `cohort personalize <kind> <name>`, which copies the
+office artifact into my office with an override marker (and `status` flags the override if the
+office version later changes or disappears). A tailored roster subset filters the office layer only
+— your own agents always install.
 
 Project specialists are invoked directly by name; the global Chief-of-Staff routes only the global
 roster for now (project-awareness routing is tracked in #24).

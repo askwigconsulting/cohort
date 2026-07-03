@@ -59,8 +59,10 @@ from .adopt import AdoptError, do_adopt
 from .roster import (
     AddAgentError,
     AddMemoryError,
+    PersonalizeError,
     do_add_agent,
     do_add_memory,
+    do_personalize,
     prompt_add_agent_inputs,
 )
 from .schema import TreeResult, validate_tree
@@ -308,6 +310,10 @@ def _print_compile_human(results: list[CompileResult]) -> None:
         for sf in result.staged:
             typer.echo(f"  staged  {result.ide}/{sf.staged_rel}")
         typer.echo(f"compiled: {result.ide} · staged: {len(result.staged)}")
+        if result.overridden:
+            typer.echo(
+                f"note: my office overrides: {', '.join(result.overridden)}", err=True
+            )
         if result.scope_filtered:
             names = ", ".join(result.scope_filtered)
             typer.echo(
@@ -432,6 +438,12 @@ def recompile(
                 err=True,
             )
             break  # the same set repeats per IDE; say it once
+    for result in results:
+        if result.overridden:
+            typer.echo(
+                f"note: my office overrides: {', '.join(result.overridden)}", err=True
+            )
+            break
 
     mode = resolve_mode(copy)
     if mode == "copy" and not copy:
@@ -928,6 +940,49 @@ def adopt(
     raise typer.Exit(code=0)
 
 
+@app.command()
+def personalize(
+    ctx: typer.Context,
+    kind: str = typer.Argument(..., help="agent | command | memory | hook | skill"),
+    name: str = typer.Argument(..., help="The office artifact to copy into my office."),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Copy an office artifact into my office as a deliberate override, then recompile.
+
+    The copy carries the override marker, so it replaces the office version at
+    compile time; `cohort status` flags it if the office version later changes
+    (stale) or disappears (dangling).
+    """
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    try:
+        report = do_personalize(source_path, Path.home(), kind, name, effective_dry_run)
+    except PersonalizeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"personalize: {'(dry-run) ' if r['dry_run'] else ''}{r['kind']} {r['name']} → {r['path']}"))
+    if not report.get("dry_run"):
+        typer.echo(
+            "your copy now overrides the office version — edit it, then `cohort recompile`. "
+            "status will flag it if the office version changes or disappears.",
+            err=True,
+        )
+    if report.get("first_my_write"):
+        typer.echo(
+            "note: my office is not version-controlled — `git init ~/.cohort/my` "
+            "if you want history/backup.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
 @app.command("add-memory")
 def add_memory(
     ctx: typer.Context,
@@ -1016,6 +1071,25 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
             typer.echo(
                 f"  ! source link is broken (moved/deleted clone) — run "
                 f"`{src.get('restore', 'cohort relink')}`",
+                err=True,
+            )
+        for o in g.get("overrides", []):
+            if o["state"] == "dangling":
+                typer.echo(
+                    f"  ! override {o['name']} is dangling — its office counterpart is gone "
+                    f"(renamed/removed upstream?); consider retiring or renaming your copy",
+                    err=True,
+                )
+            else:
+                typer.echo(
+                    f"  ! override {o['name']} is stale — the office version changed since "
+                    f"you personalized; compare and re-personalize if you want the update",
+                    err=True,
+                )
+        for f in g.get("office_local_only", []):
+            typer.echo(
+                f"  ! local-only in the office clone: {f} — personal? move it to "
+                f"~/.cohort/my/ (or PR it to your org's fork)",
                 err=True,
             )
         for f in g.get("unmanaged", []):
@@ -1173,20 +1247,47 @@ def remove_specialist(
 @app.command()
 def promote(
     ctx: typer.Context,
-    specialist: str = typer.Argument(..., help="The project specialist to propose for global."),
+    specialist: str = typer.Argument(..., help="The project specialist to lift up a level."),
+    to: str = typer.Option(
+        "my", "--to",
+        help="my (default: direct copy into your personal layer) | office (a human-gated "
+        "proposal for the shared roster — consumed by submit-proposals).",
+    ),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Stage a proposal to promote a project specialist to the global roster (human-gated)."""
+    """Lift a project specialist to my office (direct) or propose it for the shared office."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    source_path = None
+    if to == "my":
+        try:
+            source_path = resolve_source(source)
+        except SourceUnresolved as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2)
     try:
-        report = do_promote(find_repo_root(Path.cwd()), specialist, effective_dry_run)
+        report = do_promote(
+            find_repo_root(Path.cwd()), Path.home(), specialist, effective_dry_run,
+            to=to, source=source_path,
+        )
     except PromoteError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
-    _emit(report, json_output, lambda r: typer.echo(
-        f"promote: {'(dry-run) ' if r['dry_run'] else ''}proposal staged at {r['proposal']} "
-        f"(human-reviewed; no direct global write)"))
+
+    def human(r: dict) -> None:
+        if r["to"] == "office":
+            typer.echo(
+                f"promote: {'(dry-run) ' if r['dry_run'] else ''}proposal staged at "
+                f"{r['proposal']} (human-reviewed; no direct global write)"
+            )
+        else:
+            typer.echo(
+                f"promote: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']} "
+                f"(my office — the project copy remains and still wins inside its repo)"
+            )
+
+    _emit(report, json_output, human)
     raise typer.Exit(code=0)
 
 

@@ -201,3 +201,126 @@ def test_status_reports_the_my_layer(source, home):
     report = _json.loads(run_cli("status", "--json", home=home).stdout)
     assert report["global"]["roster"]["my"] == ["trading-compliance"]
     assert report["global"]["roster"]["count"] == 18  # 17 office + 1 my
+
+
+# === increment 3: sharing affordances ========================================
+
+
+def _project_with_specialist(tmp_path, source, home, name="data-modeler"):
+    import subprocess as sp
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sp.run(["git", "init", "-q"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    sp.run(["git", "config", "user.email", "t@e.st"], cwd=repo, check=True)
+    run_cli("init", "--source", str(source), home=home, cwd=repo)
+    run_cli("add-specialist", "--name", name, "--display-name", name.title(),
+            "--department", "Data", "--description", "x.", home=home, cwd=repo)
+    return repo
+
+
+def test_promote_defaults_to_my_office_direct_copy(tmp_path, source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    repo = _project_with_specialist(tmp_path, source, home)
+    proc = run_cli("promote", "data-modeler", "--source", str(source), home=home, cwd=repo)
+    assert proc.returncode == 0, proc.stderr
+    lifted = home / ".cohort" / "my" / "canonical" / "agents" / "data-modeler.md"
+    assert lifted.exists()
+    assert "scope: global" in lifted.read_text(encoding="utf-8")  # re-scoped for the tier
+    assert (home / ".claude" / "agents" / "data-modeler.md").exists()  # placed globally
+    assert (repo / ".cohort" / "canonical" / "agents" / "data-modeler.md").exists()  # copy stays
+    assert not (repo / ".cohort" / "proposals").exists()  # no proposal for a personal lift
+
+
+def test_promote_to_my_refuses_office_name(tmp_path, source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    repo = _project_with_specialist(tmp_path, source, home, name="counsel")  # shadow name
+    proc = run_cli("promote", "counsel", "--source", str(source), home=home, cwd=repo)
+    assert proc.returncode == 1
+    assert "office layer" in proc.stderr and "already exists" in proc.stderr
+
+
+def test_status_flags_local_only_office_content(tmp_path, monkeypatch):
+    import json as _json
+    import subprocess as sp
+
+    from cohort.status import do_status
+
+    up = tmp_path / "up"
+    up.mkdir()
+    sp.run(["git", "init", "-q", "-b", "main"], cwd=up, check=True)
+    sp.run(["git", "config", "user.name", "T"], cwd=up, check=True)
+    sp.run(["git", "config", "user.email", "t@e.st"], cwd=up, check=True)
+    (up / "canonical" / "agents").mkdir(parents=True)
+    (up / "canonical" / "agents" / "shared.md").write_text("x\n", encoding="utf-8")
+    sp.run(["git", "add", "-A"], cwd=up, check=True)
+    sp.run(["git", "commit", "-qm", "init"], cwd=up, check=True)
+    src = tmp_path / "clone"
+    sp.run(["git", "clone", "-q", str(up), str(src)], check=True)
+    (src / "canonical" / "agents" / "personal.md").write_text("mine\n", encoding="utf-8")
+    monkeypatch.setenv("COHORT_SOURCE", str(src))
+    h = tmp_path / "h"
+    h.mkdir()
+    report = do_status(h, h)
+    assert "canonical/agents/personal.md" in report["global"]["office_local_only"]
+
+
+# === increment 4: personalize + deliberate overrides =========================
+
+
+def test_personalize_copies_and_overrides(source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    proc = run_cli("personalize", "agent", "counsel", "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    copy = home / ".cohort" / "my" / "canonical" / "agents" / "counsel.md"
+    text = copy.read_text(encoding="utf-8")
+    assert "overrides: true" in text and "office_sha256:" in text
+    # edit the personal copy; the recompiled office must carry MY version
+    copy.write_text(text + "\n**House rule.** Always cite the clause.\n", encoding="utf-8")
+    proc = run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert "my office overrides: counsel" in proc.stderr
+    placed = (home / ".claude" / "agents" / "counsel.md").read_text(encoding="utf-8")
+    assert "Always cite the clause" in placed  # my copy won
+    chief = (home / ".claude" / "agents" / "chief-of-staff.md").read_text(encoding="utf-8")
+    assert chief.count("**Counsel**") == 1  # one directory row, not two
+
+
+def test_personalize_refusals(source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    proc = run_cli("personalize", "agent", "not-real", "--source", str(source), home=home)
+    assert proc.returncode == 1 and "no office agent" in proc.stderr
+    assert run_cli("personalize", "agent", "counsel", "--source", str(source),
+                   home=home).returncode == 0
+    proc = run_cli("personalize", "agent", "counsel", "--source", str(source), home=home)
+    assert proc.returncode == 1 and "already personalized" in proc.stderr
+
+
+def test_status_flags_stale_and_dangling_overrides(source, home, monkeypatch):
+    import json as _json
+
+    from cohort.status import do_status
+
+    monkeypatch.setenv("COHORT_SOURCE", str(source))
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    run_cli("personalize", "agent", "counsel", "--source", str(source), home=home)
+    report = do_status(home, home)
+    assert report["global"]["overrides"] == []  # fresh override: healthy
+    assert report["global"]["roster"]["count"] == 17  # override never double-counts
+    office = source / "canonical" / "agents" / "counsel.md"
+    office.write_text(office.read_text(encoding="utf-8") + "\nupstream improved this\n",
+                      encoding="utf-8")
+    report = do_status(home, home)
+    assert report["global"]["overrides"] == [{"name": "counsel", "state": "stale"}]
+    office.unlink()
+    report = do_status(home, home)
+    assert report["global"]["overrides"] == [{"name": "counsel", "state": "dangling"}]
+
+
+def test_dangling_override_still_compiles(source, home):
+    run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    run_cli("personalize", "agent", "counsel", "--source", str(source), home=home)
+    (source / "canonical" / "agents" / "counsel.md").unlink()  # upstream removed it
+    proc = run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    assert (home / ".claude" / "agents" / "counsel.md").exists()  # the user's copy survives

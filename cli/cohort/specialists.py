@@ -245,7 +245,44 @@ def _render_proposal(name: str, body: str) -> str:
     return f"{fm}{body.strip()}\n"
 
 
-def do_promote(repo: Path, name: str, dry_run: bool) -> dict[str, Any]:
+def _recompile_global(home: Path, source: Path) -> dict[str, Any]:
+    """Recompile + place the global Claude tier (subset- and mode-honoring) —
+    the same path recompile/update run, with the my-office overlay."""
+    from .compile import compile_ide, planned_dests, write_staging  # lazy: cycle
+    from .install import do_install
+    from .install_model import resolve_mode
+
+    gpaths = CohortPaths.for_global(home)
+    manifest = load_manifest(gpaths.manifest)
+    only = frozenset(manifest.roster) if manifest and manifest.roster else None
+    mode = (manifest.mode if manifest and manifest.mode else None) or resolve_mode(copy=False)
+    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=gpaths.my)
+    write_staging(gpaths, result)
+    report = do_install(
+        home=home, selection=["claude"], mode=mode, force=False, source=source,
+        dry_run=False, prune_stale=True, fresh_dests=planned_dests(gpaths, [result]),
+        fresh_ides={"claude"} if result.staged else set(),
+    )
+    return report.summary
+
+
+def do_promote(
+    repo: Path, home: Path, name: str, dry_run: bool,
+    to: str = "my", source: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Lift a project specialist up a level (#84).
+
+    ``--to my`` (default): a direct copy into ``~/.cohort/my/canonical/agents/``
+    — your machine, your layer, no gate needed; the artifact is re-scoped to
+    global and recompiled in. The project copy stays (and still wins inside its
+    own repo — Claude Code's project-over-user precedence).
+
+    ``--to office``: the human-gated path, unchanged — writes a promotion
+    *proposal* consumed by ``submit-proposals`` (a draft PR someone reviews).
+    Promote never writes the shared clone directly.
+    """
+    if to not in ("my", "office"):
+        raise PromoteError(f"--to must be my|office, got {to!r}")
     paths = CohortPaths.for_project(repo)
     spec = paths.canonical / "agents" / f"{name}.md"
     if not spec.exists():
@@ -258,9 +295,40 @@ def do_promote(repo: Path, name: str, dry_run: bool) -> dict[str, Any]:
     errors = validate_frontmatter(loaded.frontmatter, name)
     if errors:
         raise PromoteError(f"{name!r} is invalid: {errors[0].code} {errors[0].message}")
-    dest = paths.cohort_home / "proposals" / f"{name}.md"
+
+    if to == "office":
+        dest = paths.cohort_home / "proposals" / f"{name}.md"
+        if dry_run:
+            return {"action": "promote", "dry_run": True, "name": name, "to": to,
+                    "proposal": str(dest)}
+        dest.parent.mkdir(parents=True, exist_ok=True)  # proposals/ on demand
+        dest.write_text(_render_proposal(name, loaded.body), encoding="utf-8")
+        return {"action": "promote", "dry_run": False, "name": name, "to": to,
+                "proposal": str(dest)}
+
+    if source is None:
+        raise PromoteError("promoting to my office needs the source clone (pass --source)")
+    gpaths = CohortPaths.for_global(home)
+    my_dir = gpaths.my / "canonical" / "agents"
+    for d, where in ((source / "canonical" / "agents", "the office layer"), (my_dir, "my office")):
+        if (d / f"{name}.md").exists():
+            raise PromoteError(f"agent {name!r} already exists in {where}")
+    fm = dict(loaded.frontmatter or {})
+    fm["scope"] = "global"  # the copy lives at the global tier now
+    content = dump_frontmatter(list(fm.items())).rstrip("\n") + "\n" + (loaded.body or "").strip() + "\n"
+    parsed = load_artifact_text(content, name_stem=name)
+    errors = validate_frontmatter(parsed.frontmatter, name)
+    if errors:
+        raise PromoteError(f"promoted copy failed validation: {errors[0].code} {errors[0].message}")
+    dest = my_dir / f"{name}.md"
     if dry_run:
-        return {"action": "promote", "dry_run": True, "name": name, "proposal": str(dest)}
-    dest.parent.mkdir(parents=True, exist_ok=True)  # proposals/ on demand
-    dest.write_text(_render_proposal(name, loaded.body), encoding="utf-8")
-    return {"action": "promote", "dry_run": False, "name": name, "proposal": str(dest)}
+        return {"action": "promote", "dry_run": True, "name": name, "to": to, "path": str(dest)}
+    my_dir.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    try:
+        summary = _recompile_global(home, source)
+    except (CompileError, ClobberRefused) as exc:
+        dest.unlink()  # don't leave a my artifact the global tier can't compile
+        raise PromoteError(str(exc))
+    return {"action": "promote", "dry_run": False, "name": name, "to": to,
+            "path": str(dest), "installed": summary}

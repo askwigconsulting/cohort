@@ -232,8 +232,9 @@ def _validate_shared(
         _validate_targets(fm["targets"], errors)
 
     # Optional string fields: type only (version is free-form in v0.1).
-    for field in ("version", "owner", "display_name"):
+    for field in ("version", "owner", "display_name", "office_sha256"):
         _check_type(fm, field, "string", errors)
+    _check_type(fm, "overrides", "boolean", errors)
 
 
 def _validate_targets(targets: list[Any], errors: list[ArtifactError]) -> None:
