@@ -41,6 +41,7 @@ HOOKS_FRAGMENT_REL = f"{MERGE_SUBDIR}/codex-hooks.json"
 # canonical hook event → Codex event name. ‹verify› exact names before golden-lock.
 HOOK_EVENT_MAP = {
     "session_start": "sessionStart",
+    "session_end": "sessionEnd",
     "pre_write": "preToolUse",
     "post_write": "postToolUse",
     "pre_command": "preToolUse",

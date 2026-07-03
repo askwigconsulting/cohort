@@ -39,6 +39,7 @@ MEMORIES_REL = ".cursor/rules/cohort-memories.mdc"
 # canonical hook event → Cursor event name. ‹verify› exact names before golden-lock.
 HOOK_EVENT_MAP = {
     "session_start": "sessionStart",
+    "session_end": "sessionEnd",
     "pre_write": "preToolUse",
     "post_write": "postToolUse",
     "pre_command": "beforeShellExecution",
