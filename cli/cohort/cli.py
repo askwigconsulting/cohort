@@ -50,6 +50,7 @@ from .project import (
     do_init,
     do_snapshot,
     find_repo_root,
+    session_capture,
     staleness_check,
 )
 from .reports import do_report
@@ -1119,6 +1120,18 @@ def staleness_check_cmd() -> None:
     message = staleness_check(Path.cwd())
     if message:
         typer.echo(message, err=True)
+    raise typer.Exit(code=0)
+
+
+@app.command("session-capture", hidden=True)
+def session_capture_cmd() -> None:
+    """Internal: the session_end capture hook target (opt-in per repo). Always exits 0."""
+    try:
+        written = session_capture(Path.cwd())
+        if written:
+            typer.echo(f"cohort: session captured → {written}", err=True)
+    except Exception:  # noqa: BLE001 - a capture must never break session end
+        pass
     raise typer.Exit(code=0)
 
 

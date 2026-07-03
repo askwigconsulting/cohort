@@ -50,6 +50,7 @@ _TOOL_ORDER = (
 # canonical hook event → (Claude event, default matcher)
 HOOK_EVENT_MAP = {
     "session_start": ("SessionStart", ""),
+    "session_end": ("SessionEnd", ""),
     "pre_write": ("PreToolUse", "Write|Edit|MultiEdit"),
     "post_write": ("PostToolUse", "Write|Edit|MultiEdit"),
     "pre_command": ("PreToolUse", "Bash"),

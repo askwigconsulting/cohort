@@ -9,6 +9,7 @@
       "type": "string",
       "enum": [
         "session_start",
+        "session_end",
         "pre_write",
         "post_write",
         "pre_command",

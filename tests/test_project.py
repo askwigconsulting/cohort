@@ -346,3 +346,58 @@ def test_staleness_hook_invokes_cli_not_a_script():
     event, entry = render_hook_entry(build_ir(r.frontmatter, r.body))
     assert event == "SessionStart"
     assert entry["hooks"][0]["command"] == "cohort staleness-check"  # CLI, not a script
+
+
+# === session capture (opt-in session_end observation) =======================
+
+
+def _opt_in(repo: Path) -> None:
+    # the real user flow: flip the scaffolded default in cohort.toml
+    paths = CohortPaths.for_project(repo)
+    toml = paths.cohort_home / "cohort.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace("auto_capture = false", "auto_capture = true"),
+        encoding="utf-8",
+    )
+
+
+def test_session_capture_is_silent_noop_without_opt_in(repo, home):
+    init(repo, home)
+    assert project.session_capture(repo) is None
+    sessions = CohortPaths.for_project(repo).cohort_home / "sessions"
+    assert not list(sessions.glob("*-auto.md")) if sessions.exists() else True
+
+
+def test_session_capture_writes_auto_record_when_opted_in(repo, home):
+    init(repo, home)
+    _opt_in(repo)
+    written = project.session_capture(repo)
+    assert written is not None and written.startswith("sessions/")
+    record = CohortPaths.for_project(repo).cohort_home / written
+    text = record.read_text(encoding="utf-8")
+    assert "captured: auto" in text  # machine-generated, distinguishable from snapshots
+    assert "## Changed" in text
+    assert "_What was decided and why._" not in text  # no human-fill placeholders
+
+
+def test_session_capture_noop_outside_cohort_repo(tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert project.session_capture(plain) is None
+
+
+def test_session_capture_cli_always_exits_zero(repo, home):
+    proc = run_cli("session-capture", repo=repo, home=home)  # not even a Cohort project
+    assert proc.returncode == 0
+    init(repo, home)
+    _opt_in(repo)
+    proc = run_cli("session-capture", repo=repo, home=home)
+    assert proc.returncode == 0
+    assert "session captured" in proc.stderr
+
+
+def test_session_capture_hook_targets_session_end_and_cli():
+    r = load_artifact(COHORT_SRC / "canonical" / "hooks" / "session-capture.md")
+    event, entry = render_hook_entry(build_ir(r.frontmatter, r.body))
+    assert event == "SessionEnd"
+    assert entry["hooks"][0]["command"] == "cohort session-capture"  # CLI, not a script

@@ -25,7 +25,13 @@ from .manifest import Manifest, load_manifest, new_install_id, now_iso
 PROJECT_IDE = "project"
 IMPORT_LINE = "@import ../.cohort/project_context.md"
 GITIGNORE_CONTENT = "# Cohort machine-local bookkeeping (do not commit)\nstate/\ncompiled/\n"
-COHORT_TOML_CONTENT = "# Cohort project config (git-tracked, shared)\nstaleness_hours = 24\n"
+COHORT_TOML_CONTENT = (
+    "# Cohort project config (git-tracked, shared)\n"
+    "staleness_hours = 24\n"
+    "# Opt-in: write a minimal session record at session end (fuels weekly-report\n"
+    "# and propose-improvement). Off by default; observation stays explicit.\n"
+    "auto_capture = false\n"
+)
 INDEX_EMPTY = "_No sessions yet._"
 INDEX_LIMIT = 10
 
@@ -318,3 +324,50 @@ def staleness_check(cwd: Path) -> Optional[str]:
         f"cohort: project context is stale (>{_read_staleness_hours(paths):g}h since last "
         f"activity). Consider `cohort snapshot`."
     )
+
+
+# --- session capture (opt-in observation) ------------------------------------
+
+
+def _read_auto_capture(paths: CohortPaths) -> bool:
+    toml_path = paths.cohort_home / "cohort.toml"
+    if not toml_path.exists():
+        return False
+    try:
+        import tomllib
+
+        with open(toml_path, "rb") as fh:
+            return bool(tomllib.load(fh).get("auto_capture", False))
+    except Exception:  # noqa: BLE001 - bad config means not opted in
+        return False
+
+
+def render_auto_capture_entry(repo: Path) -> str:
+    """A machine-generated session record: frontmatter + the change summary only.
+
+    No placeholder sections a human must fill — `cohort snapshot` remains the
+    rich, human-authored entry."""
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "unknown"
+    changed = _git(repo, "diff", "--stat") or _git(repo, "status", "--short") or "(no changes)"
+    fm = dump_frontmatter(
+        [("timestamp", now_iso()), ("branch", branch), ("captured", "auto")]
+    ).rstrip("\n")
+    return f"{fm}\n## Changed\n```\n{changed}\n```\n"
+
+
+def session_capture(cwd: Path) -> Optional[str]:
+    """Write an automatic session record if this repo opted in; else do nothing.
+
+    The compiled ``session_end`` hook calls this on every session end; the
+    ``auto_capture = true`` gate in ``.cohort/cohort.toml`` is what keeps
+    observation explicit per repo. Returns the relative path written, else None.
+    """
+    repo = find_repo_root(cwd)
+    paths = CohortPaths.for_project(repo)
+    if not paths.cohort_home.exists() or not _read_auto_capture(paths):
+        return None
+    sessions_dir = paths.cohort_home / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{_utc_compact()}-{_short_id()}-auto.md"
+    (sessions_dir / filename).write_text(render_auto_capture_entry(repo), encoding="utf-8")
+    return f"sessions/{filename}"
