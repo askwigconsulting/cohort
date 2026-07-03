@@ -24,12 +24,24 @@ experimental** — the renderers are complete but doc-cited, not yet locked agai
 
 ## Quickstart
 
-Clone the harness, then walk the new-team journey — each line is a real command:
+**The guided path** (recommended): clone, run `./installer/bootstrap.sh --ide claude` (venv +
+install + compile in one step), then `cohort setup` — it interviews you: *is there a company Cohort
+repo to point to* (your org's fork becomes the office's upstream for updates and proposals), *which
+IDEs*, and *which agents* (a tailored subset persists across updates; `--agents all` restores the
+full roster). Every question has a flag (`--ide`, `--agents`, `--company-url`, `--non-interactive`)
+so scripted installs skip the interview. Then, inside your IDE, `/office-setup` (Claude/Cursor)
+tailors the office to what you actually do (office context + custom drafted agents,
+human-reviewed), and `/project-setup` interviews the team about a repo — filling
+`project_context.md` and scaffolding specialists with real content via
+`add-specialist --body-file`.
+
+**The scripted journey** — each line is a real command:
 
 ```bash
 git clone https://github.com/askwigconsulting/cohort cohort && cd cohort
 python3 -m venv .venv && . .venv/bin/activate   # isolated environment
 pip install -e .                                 # puts the `cohort` CLI on PATH
+mkdir -p ~/.local/bin && ln -sf "$PWD/.venv/bin/cohort" ~/.local/bin/cohort  # durable PATH (hooks need it)
 cohort recompile --ide claude                    # compile the roster + place it into Claude Code
 cohort init
 cohort add-specialist --name data-modeler --display-name DataModeler --department Data --description 'Schema and data modeling.'
@@ -40,23 +52,19 @@ cohort propose-improvement
 cohort submit-proposals
 ```
 
-Prefer a guided first run? `cohort setup` interviews you instead — *is there a company Cohort repo
-to point to* (your org's fork becomes the office's upstream for updates and proposals), *which
-IDEs*, and *which agents* (a tailored subset persists across updates; `--agents all` restores the
-full roster). Every question has a flag (`--ide`, `--agents`, `--company-url`, `--non-interactive`)
-so scripted installs skip the interview. Then, inside your IDE, `/office-setup` tailors the office
-to what you actually do (office context + custom drafted agents, human-reviewed), and
-`/project-setup` interviews the team about a repo — filling `project_context.md` and scaffolding
-specialists with real content via `add-specialist --body-file`.
+The `ln -sf` line matters beyond this shell: Cohort's session-start hooks run `cohort` from inside
+your IDE, so the CLI must be durably invocable — a venv activated in one terminal isn't. Any
+equivalent works (`pipx install .`, or adding the venv `bin/` to your shell rc).
 
 `recompile` compiles the office roster from canonical and places it into each selected IDE (it's
 compile-then-install; plain `install` only places already-compiled output); `init` scaffolds the per-repo shared context
 (`<repo>/.cohort/`) and wires it into project memory; `add-specialist` adds a repo-local advisor;
 `snapshot`/`weekly-report` capture and roll up sessions; `feedback` → `propose-improvement` →
 `submit-proposals` is the human-gated self-improvement loop (proposals become **draft PRs** — you
-review and merge). The `cohort …` command sequence above is asserted equal to the steps the
-full-system end-to-end test executes, so the *journey* can't drift from the tool; the `git clone` /
-venv / `pip install -e .` setup lines put the `cohort` CLI on your PATH first.
+review and merge; on a fresh clone of the public repo, submitting needs push access or your own
+fork: `cohort submit-proposals --repo <you>/cohort`, see CONTRIBUTING). The `cohort …` command
+sequence above is asserted equal to the steps the full-system end-to-end test executes, so the
+*journey* can't drift from the tool.
 
 ### Windows (PowerShell)
 
@@ -104,14 +112,33 @@ no daemon.
 | Holds | the 15-agent roster, hooks, memories | `project_context.md`, `sessions/`, `reports/`, project specialists, `proposals/`, `feedback/` |
 | Git-tracked | the Cohort source repo | the consuming repo (except `state/`, `compiled/`) |
 
+Project specialists are invoked directly by name; the global Chief-of-Staff routes only the global
+roster for now (project-awareness routing is tracked in #24).
+
+## Vocabulary
+
+- **canonical** — the IDE-agnostic source artifacts under `canonical/`; the only thing you edit.
+- **compiled / staged** — the per-IDE files rendered from canonical (`~/.cohort/compiled/<ide>/`);
+  derived output, never hand-edited.
+- **placed** — a staged file linked or copied into the IDE's own directory (`~/.claude/…`).
+- **manifest** — the per-tier record of everything Cohort placed (`state/manifest.json`); what makes
+  installs reversible.
+- **scope** (a.k.a. **tier** in code and PRs) — where an artifact lives: `global` (the machine-wide
+  office) or `project` (one repo).
+- **kind** — what an artifact is: agent, skill, command, hook, memory, or context.
+- **roster** — the set of installed office agents; a tailored subset persists across updates.
+- **topology** — `specialist` (advises on one function) or `generalist` (the single ChiefOfStaff,
+  which carries the office directory and triages).
+- **department** — a display label grouping agents in the office directory.
+
 ## Commands
 
-`validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `update` · `init` / `deinit` ·
-`add-agent` (global) / `add-specialist` / `remove-specialist` (project) · `promote` · `snapshot` ·
-`context refresh` · `status` · `dashboard` · `weekly-report` / `monthly-report` · `feedback` /
-`propose-improvement` / `submit-proposals`. Every command supports `--dry-run` (`dashboard`, a
-read-mostly server, excepted); installs/compiles are idempotent and reversible. `cohort --version`
-prints the release.
+`validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` ·
+`init` / `deinit` · `add-agent` / `add-memory` / `adopt` (global) · `add-specialist` /
+`remove-specialist` (project) · `promote` · `snapshot` · `context refresh` · `status` · `dashboard` ·
+`weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
+command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a repair command,
+excepted); installs/compiles are idempotent and reversible. `cohort --version` prints the release.
 
 Daily life happens in the IDE — `/feedback`, `/snapshot`, and `/update` wrap the same human-gated
 commands; the `cohort` CLI is the plumbing and scripting layer; the dashboard is a viewer.

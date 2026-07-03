@@ -127,12 +127,13 @@ not because anyone promised it wouldn't, but because a test fails if it tries.
 
 ## Tracked execution gaps (outside the design)
 
-1. **No git remote.** CI is committed but can't run; there's no backup. Standing item:
-   `gh repo create cohort --private --source=. --remote=origin --push`, then push all
-   branches. This also unblocks the loop's live PRs.
-2. **Codex/Cursor golden-lock.** The renderer *structure* is tested; the concrete bytes
-   are doc-cited, not locked against a real install. Field-level `‹verify›` remaining:
-   the canonical→Codex/Cursor hook-event names and the exact Cursor frontmatter/skills
-   dir. CI runs coverage/structure/stability until the bytes lock.
+1. **No git remote — RESOLVED (2026-06).** The repo lives at
+   `github.com/askwigconsulting/cohort`; CI (ubuntu + windows) runs on every push/PR and
+   the loop's draft PRs are live. Kept as context for gap 2.
+2. **Codex/Cursor golden-lock (#23).** The renderer *structure* is tested and the bytes
+   are regression-locked against the renderers' own output, but they are doc-cited, not
+   validated against a real install. Field-level `‹verify›` remaining: the canonical→
+   Codex/Cursor hook-event names and the exact Cursor frontmatter/skills dir. Until the
+   lock, codex/cursor are labeled experimental and shipped hooks target `[claude]` only.
 
 The fitting first trip through Cohort's own loop is the proposal that closes gap (2).

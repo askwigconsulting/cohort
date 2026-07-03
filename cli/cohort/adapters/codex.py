@@ -131,7 +131,7 @@ class CodexRenderer:
                 hook_irs.append(ir)
             elif ir.kind == "memory":
                 memory_irs.append(ir)
-            else:  # command (gap), context (deferred)
+            else:  # command (declared gap), context (handled by `cohort init`)
                 skipped.append(ir.name)
         if memory_irs:
             corpus = render_memory_corpus(memory_irs)

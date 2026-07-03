@@ -685,6 +685,12 @@ def init(
             typer.echo(f"{op['status']:>8}  {op['op']} {op['dest']}")
         s = r["summary"]
         typer.echo(f"init: applied {s['applied']} · skipped {s['skipped']}")
+        if not r.get("dry_run"):
+            typer.echo(
+                "project office ready: .cohort/project_context.md is now loaded into this "
+                "repo's Claude memory; the global roster is unchanged. Next: /project-setup "
+                "(in your IDE) or `cohort add-specialist`."
+            )
 
     _emit(report, json_output, human)
     if report.get("diverged"):

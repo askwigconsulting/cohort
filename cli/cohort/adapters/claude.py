@@ -316,7 +316,9 @@ class ClaudeRenderer:
                 else:
                     memory_irs.append(ir)
             elif ir.kind == "context":
-                skipped.append(ir.name)  # deferred to Phase 4
+                # handled by `cohort init` (the project_context scaffold + managed
+                # block), deliberately NOT by the compile pipeline
+                skipped.append(ir.name)
             else:
                 sf = self.render_one_to_one(ir, directory)
                 if sf is not None:
