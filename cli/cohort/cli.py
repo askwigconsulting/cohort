@@ -690,7 +690,17 @@ def init(
     except SourceUnresolved as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
-    report = do_init(find_repo_root(Path.cwd()), source_path, effective_dry_run, force)
+    repo = find_repo_root(Path.cwd())
+    if repo == Path.home():
+        # $HOME's .cohort is the global office home; a project init here would
+        # rewire the global CLAUDE.md managed block with the project import.
+        typer.echo(
+            "error: refusing to init the home directory as a Cohort project "
+            "(it is the global office's home) — run init inside a repository",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    report = do_init(repo, source_path, effective_dry_run, force)
 
     def human(r: dict) -> None:
         for op in r["ops"]:
