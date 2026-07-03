@@ -32,6 +32,7 @@ from .improve import (
     do_feedback,
     do_propose_improvement,
     do_submit_proposals,
+    validate_enrichment_body,
 )
 from .install_model import CohortPaths, resolve_mode
 from .office_setup import (
@@ -1008,15 +1009,35 @@ def feedback(
 @app.command("propose-improvement")
 def propose_improvement(
     ctx: typer.Context,
+    body_file: Optional[str] = typer.Option(
+        None, "--body-file",
+        help="Markdown draft (e.g. Steward-written) that becomes the proposal's rationale, "
+        "replacing the deterministic summary.",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Synthesize a structured improvement proposal from feedback + sessions (deterministic core)."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    enrich = None
+    if body_file is not None:
+        body_path = Path(body_file)
+        if not body_path.is_file():
+            typer.echo(f"error: --body-file not found: {body_file}", err=True)
+            raise typer.Exit(code=2)
+        draft = body_path.read_text(encoding="utf-8")
+
+        def enrich(ev: dict, _draft: str = draft) -> str:
+            # The Steward's in-IDE draft, delivered through the existing enrichment
+            # seam; the deterministic evidence sections still frame it.
+            return _draft
+
     try:
-        # The CLI uses the deterministic core (no enrichment seam → no LLM dependency);
-        # the real Steward enriches in-IDE.
-        report = do_propose_improvement(find_repo_root(Path.cwd()), effective_dry_run)
+        if body_file is not None:
+            validate_enrichment_body(draft)
+        report = do_propose_improvement(
+            find_repo_root(Path.cwd()), effective_dry_run, enrich=enrich
+        )
     except FeedbackError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)

@@ -141,6 +141,44 @@ def test_propose_improvement_enrichment_seam(repo, home):
     assert "ENRICHED RATIONALE" in report["body"]  # seam output replaces the summary
 
 
+def test_propose_improvement_body_file_becomes_rationale(repo, home, tmp_path):
+    _seed_feedback(repo)
+    draft = tmp_path / "draft.md"
+    draft.write_text(
+        "The roster needs a data-analyst; three sessions stalled on CSV work.\n", encoding="utf-8"
+    )
+    proc = run_cli("propose-improvement", "--body-file", str(draft), home=home, cwd=repo)
+    assert proc.returncode == 0
+    proposals = list((repo / ".cohort" / "proposals").glob("improvement-*.md"))
+    assert len(proposals) == 1
+    text = proposals[0].read_text(encoding="utf-8")
+    assert "data-analyst" in text  # the draft is the rationale
+    assert "Feedback entries: 3" in text  # deterministic evidence still frames it
+
+
+def test_propose_improvement_body_file_missing_is_refused(repo, home):
+    proc = run_cli("propose-improvement", "--body-file", str(repo / "nope.md"), home=home, cwd=repo)
+    assert proc.returncode == 2
+    assert "not found" in proc.stderr
+
+
+def test_propose_improvement_body_file_empty_is_refused(repo, home, tmp_path):
+    draft = tmp_path / "draft.md"
+    draft.write_text("   \n", encoding="utf-8")
+    proc = run_cli("propose-improvement", "--body-file", str(draft), home=home, cwd=repo)
+    assert proc.returncode == 1
+    assert "empty" in proc.stderr
+    assert not list((repo / ".cohort" / "proposals").glob("*.md"))  # nothing written
+
+
+def test_propose_improvement_body_file_control_chars_refused(repo, home, tmp_path):
+    draft = tmp_path / "draft.md"
+    draft.write_text("looks fine\x1b[31m but is not\n", encoding="utf-8")
+    proc = run_cli("propose-improvement", "--body-file", str(draft), home=home, cwd=repo)
+    assert proc.returncode == 1
+    assert "control characters" in proc.stderr
+
+
 def test_propose_improvement_never_writes_canonical(repo, home, source):
     _seed_feedback(repo)
     before_src = tree_hash(source / "canonical")

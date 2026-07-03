@@ -258,6 +258,22 @@ def do_feedback(
 
 # --- propose-improvement: deterministic core + optional enrichment seam ------
 
+# Multi-line markdown is fine in an enrichment draft; NUL/escape bytes are not.
+_ENRICHMENT_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def validate_enrichment_body(text: str) -> str:
+    """Refuse an empty or control-character-bearing enrichment draft (--body-file).
+
+    The draft lands verbatim in the proposal's Rationale section, so it needs no
+    single-line restriction — but reject raw control bytes at the input boundary
+    the same way add-specialist metadata is rejected. Raises ``FeedbackError``."""
+    if not text.strip():
+        raise FeedbackError("--body-file is empty")
+    if _ENRICHMENT_CONTROL.search(text):
+        raise FeedbackError("--body-file must not contain control characters")
+    return text
+
 
 def aggregate_signals(paths: CohortPaths) -> dict[str, Any]:
     """Deterministic evidence from feedback/ + sessions/ — no LLM, no network."""
