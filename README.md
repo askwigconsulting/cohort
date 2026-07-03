@@ -4,7 +4,7 @@
 
 A portable, self-improving, multi-IDE **agentic office** — a virtual organization of
 company-function specialist agents (HR, Legal, Compliance, Security, Finance, IT, Comms,
-Procurement, Privacy, Program, cloud architects, and a Chief-of-Staff that triages requests to the
+Procurement, Privacy, Program, cloud architects, Engineering reviewers, and a Chief-of-Staff that triages requests to the
 right specialist) you drop into any repository. Authored once in an IDE-agnostic **canonical** form, then compiled into **Claude, Codex,
 and Cursor** layouts at install time. Claude Code is the reference target; **Codex/Cursor support is
 experimental** — the renderers are complete but doc-cited, not yet locked against live installs
@@ -109,7 +109,7 @@ no daemon.
 | | Global (office roster) | Project (this repo) |
 |---|---|---|
 | Lives in | `~/.cohort/` + `~/.claude` / `~/.codex` / `~/.cursor` | `<repo>/.cohort/` + `<repo>/.claude` etc. |
-| Holds | the 15-agent roster, hooks, memories | `project_context.md`, `sessions/`, `reports/`, project specialists, `proposals/`, `feedback/` |
+| Holds | the 17-agent roster, hooks, memories | `project_context.md`, `sessions/`, `reports/`, project specialists, `proposals/`, `feedback/` |
 | Git-tracked | the Cohort source repo | the consuming repo (except `state/`, `compiled/`) |
 
 Project specialists are invoked directly by name; the global Chief-of-Staff routes only the global

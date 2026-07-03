@@ -178,7 +178,7 @@ def test_status_groups_and_flags_shadow(tmp_path, source, home):
     add_specialist(repo, home, name="counsel")  # shadow
     add_specialist(repo, home, name="data-modeler")
     data = json.loads(run_cli("status", "--json", home=home, cwd=repo).stdout)
-    assert data["global"]["roster"]["count"] == 15  # separate group
+    assert data["global"]["roster"]["count"] == 17  # separate group
     assert set(data["project"]["specialists"]) == {"counsel", "data-modeler"}
     assert data["project"]["shadowed"] == ["counsel"]
 

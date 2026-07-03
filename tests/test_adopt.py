@@ -20,7 +20,7 @@ from conftest import requires_symlinks
 COHORT_SRC = Path(__file__).resolve().parents[1]
 
 LOOSE_AGENT = (
-    "---\nname: code-reviewer\ndescription: Reviews diffs for defects.\n---\n"
+    "---\nname: perf-auditor\ndescription: Reviews diffs for defects.\n---\n"
     "# Code Reviewer\n\nYou review code across correctness and readability.\n"
 )
 LOOSE_COMMAND = "Run the full build and report failures.\n"
@@ -61,38 +61,38 @@ def _loose(home: Path, sub: str, name: str, text: str) -> Path:
 
 
 def test_adopt_agent_becomes_managed_and_advisory(source, home):
-    loose = _loose(home, "agents", "code-reviewer", LOOSE_AGENT)
+    loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     proc = run_cli("adopt", str(loose), "--source", str(source), home=home)
     assert proc.returncode == 0, proc.stderr
-    canonical = source / "canonical" / "agents" / "code-reviewer.md"
+    canonical = source / "canonical" / "agents" / "perf-auditor.md"
     text = canonical.read_text(encoding="utf-8")
     assert "advisory: true" in text  # the v1 safety invariant applies to adoptees
     assert "You review code across correctness" in text  # body preserved
-    placed = home / ".claude" / "agents" / "code-reviewer.md"
+    placed = home / ".claude" / "agents" / "perf-auditor.md"
     assert placed.exists()
     assert "advisory read-only" in proc.stderr  # the enforcement is said out loud
-    backups = list((home / ".cohort" / "state" / "adopt-backups").glob("agent-code-reviewer-*.md"))
+    backups = list((home / ".cohort" / "state" / "adopt-backups").glob("agent-perf-auditor-*.md"))
     assert len(backups) == 1
     assert backups[0].read_text(encoding="utf-8") == LOOSE_AGENT  # original kept, never deleted
 
 
 def test_adopted_agent_appears_in_chief_directory(source, home):
-    loose = _loose(home, "agents", "code-reviewer", LOOSE_AGENT)
+    loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     run_cli("adopt", str(loose), "--source", str(source), home=home)
     chief = (home / ".claude" / "agents" / "chief-of-staff.md").read_text(encoding="utf-8")
-    assert "**CodeReviewer**" in chief  # no longer invisible to the router
+    assert "**PerfAuditor**" in chief  # no longer invisible to the router
 
 
 def test_adopt_command_requires_description_flag_when_file_has_none(source, home):
-    loose = _loose(home, "commands", "build", LOOSE_COMMAND)
+    loose = _loose(home, "commands", "release-notes", LOOSE_COMMAND)
     proc = run_cli("adopt", str(loose), "--source", str(source), home=home)
     assert proc.returncode == 1
     assert "--description" in proc.stderr
     proc = run_cli("adopt", str(loose), "--description", "Build and report.",
                    "--source", str(source), home=home)
     assert proc.returncode == 0, proc.stderr
-    assert (home / ".claude" / "commands" / "build.md").exists()
-    text = (source / "canonical" / "commands" / "build.md").read_text(encoding="utf-8")
+    assert (home / ".claude" / "commands" / "release-notes.md").exists()
+    text = (source / "canonical" / "commands" / "release-notes.md").read_text(encoding="utf-8")
     assert "Run the full build" in text
 
 
@@ -128,15 +128,15 @@ def test_adopt_refuses_canonical_name_collision(source, home):
 
 
 def test_adopt_dry_run_changes_nothing(source, home):
-    loose = _loose(home, "agents", "code-reviewer", LOOSE_AGENT)
+    loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     proc = run_cli("adopt", str(loose), "--dry-run", "--source", str(source), home=home)
     assert proc.returncode == 0, proc.stderr
-    assert not (source / "canonical" / "agents" / "code-reviewer.md").exists()
+    assert not (source / "canonical" / "agents" / "perf-auditor.md").exists()
     assert loose.read_text(encoding="utf-8") == LOOSE_AGENT
 
 
 def test_status_lists_unmanaged_then_clean_after_adopt(source, home):
-    loose = _loose(home, "agents", "code-reviewer", LOOSE_AGENT)
+    loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     report = json.loads(run_cli("status", "--json", home=home).stdout)
     entries = {e["path"]: e for e in report["global"]["unmanaged"]}
     assert str(loose) in entries and entries[str(loose)]["adoptable"] is True
@@ -150,14 +150,14 @@ def test_adopt_extends_a_persisted_roster_subset(source, home, tmp_path):
     fresh_home.mkdir()
     run_cli("setup", "--ide", "claude", "--agents", "counsel,chief-of-staff",
             "--source", str(source), home=fresh_home)
-    loose = _loose(fresh_home, "agents", "code-reviewer", LOOSE_AGENT)
+    loose = _loose(fresh_home, "agents", "perf-auditor", LOOSE_AGENT)
     proc = run_cli("adopt", str(loose), "--source", str(source), home=fresh_home)
     assert proc.returncode == 0, proc.stderr
     manifest = json.loads(
         (fresh_home / ".cohort" / "state" / "manifest.json").read_text(encoding="utf-8")
     )
-    assert "code-reviewer" in manifest["roster"]  # survives the next recompile
-    assert (fresh_home / ".claude" / "agents" / "code-reviewer.md").exists()
+    assert "perf-auditor" in manifest["roster"]  # survives the next recompile
+    assert (fresh_home / ".claude" / "agents" / "perf-auditor.md").exists()
 
 
 # === review findings: failure paths locked in ================================
@@ -166,15 +166,15 @@ def test_adopt_extends_a_persisted_roster_subset(source, home, tmp_path):
 def test_readopting_same_name_preserves_both_backups(source, home):
     """Critical review finding: the backup name must be uniquified, so adopting
     the same name twice can never destroy the first original."""
-    loose = _loose(home, "agents", "code-reviewer", LOOSE_AGENT)
+    loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
     run_cli("adopt", str(loose), "--source", str(source), home=home)
     # simulate: user deletes the adopted canonical + recompiles, then writes a new loose file
-    (source / "canonical" / "agents" / "code-reviewer.md").unlink()
+    (source / "canonical" / "agents" / "perf-auditor.md").unlink()
     run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
-    loose2 = _loose(home, "agents", "code-reviewer", "---\ndescription: v2.\n---\nSecond body.\n")
+    loose2 = _loose(home, "agents", "perf-auditor", "---\ndescription: v2.\n---\nSecond body.\n")
     proc = run_cli("adopt", str(loose2), "--source", str(source), home=home)
     assert proc.returncode == 0, proc.stderr
-    backups = sorted((home / ".cohort" / "state" / "adopt-backups").glob("agent-code-reviewer-*.md"))
+    backups = sorted((home / ".cohort" / "state" / "adopt-backups").glob("agent-perf-auditor-*.md"))
     assert len(backups) == 2  # both originals survive
     contents = {b.read_text(encoding="utf-8") for b in backups}
     assert LOOSE_AGENT in contents and any("Second body." in c for c in contents)
@@ -187,7 +187,7 @@ def test_failed_recompile_rolls_back_consistently(source, home, monkeypatch):
     from cohort.adopt import AdoptError, do_adopt
     from cohort.status import do_status
 
-    loose = _loose(home, "agents", "code-reviewer", LOOSE_AGENT)
+    loose = _loose(home, "agents", "perf-auditor", LOOSE_AGENT)
 
     def boom(home, source, gpaths, kind, name):
         raise RuntimeError("simulated install failure")
@@ -196,7 +196,7 @@ def test_failed_recompile_rolls_back_consistently(source, home, monkeypatch):
     with pytest.raises(AdoptError, match="original restored"):
         do_adopt(home, source, loose)
     assert loose.read_text(encoding="utf-8") == LOOSE_AGENT  # original back in place
-    assert not (source / "canonical" / "agents" / "code-reviewer.md").exists()
+    assert not (source / "canonical" / "agents" / "perf-auditor.md").exists()
     report = do_status(home, home)
     unmanaged = [e["path"] for e in report["global"]["unmanaged"]]
     assert str(loose) in unmanaged  # still visible, not a hidden shadow file
