@@ -35,6 +35,8 @@ EXPECTED_ROSTER = [
     ("azure-architect", "AzureArchitect", "Cloud", "specialist"),
     ("gcp-architect", "GCPArchitect", "Cloud", "specialist"),
     ("steward", "Steward", "Continuous Improvement", "specialist"),
+    ("code-reviewer", "CodeReviewer", "Engineering", "specialist"),
+    ("test-engineer", "TestEngineer", "Engineering", "specialist"),
 ]
 CLOUD_AGENTS = {"aws-architect", "azure-architect", "gcp-architect"}
 

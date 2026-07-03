@@ -145,7 +145,7 @@ def test_status_global_outside_repo(source, home, tmp_path):
     plain.mkdir()
     proc = run_cli("status", "--json", home=home, cwd=plain)
     data = json.loads(proc.stdout)
-    assert data["global"]["roster"]["count"] == 15
+    assert data["global"]["roster"]["count"] == 17
     assert "claude" in data["global"]["ides"]
     assert "project" not in data  # outside a cohort repo
 
