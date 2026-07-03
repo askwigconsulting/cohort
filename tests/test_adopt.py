@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
+
 COHORT_SRC = Path(__file__).resolve().parents[1]
 
 LOOSE_AGENT = (
@@ -102,7 +104,10 @@ def test_adopt_refuses_files_outside_claude_dirs(source, home, tmp_path):
     assert "adopt" in proc.stderr.lower() or "not under" in proc.stderr
 
 
+@requires_symlinks
 def test_adopt_refuses_a_cohort_managed_symlink(source, home):
+    # Link-mode installs only; on Windows copy-mode the same adopt attempt is
+    # refused by the canonical name collision instead.
     managed = home / ".claude" / "agents" / "counsel.md"
     assert managed.is_symlink()  # placed by the fixture recompile
     proc = run_cli("adopt", str(managed), "--source", str(source), home=home)
