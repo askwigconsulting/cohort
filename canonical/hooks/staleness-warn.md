@@ -3,7 +3,7 @@ name: staleness-warn
 kind: hook
 scope: global
 description: Warn at session start when the project context is stale.
-targets: [all]
+targets: [claude]
 event: session_start
 action: cohort staleness-check
 ---

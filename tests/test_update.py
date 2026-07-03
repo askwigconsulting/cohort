@@ -179,17 +179,29 @@ def _session_start_commands(hooks_json: bytes) -> list[str]:
 
 def test_update_check_routes_into_session_start():
     """The hook must land as a *SessionStart* entry (not merely appear somewhere
-    in the blob) and be appended alongside staleness-check, not replace it."""
+    in the blob) and be appended alongside staleness-check, not replace it.
+
+    Claude-only: the shipped hooks target [claude] until the codex/cursor
+    event-name mappings are locked against a real install (#23/#61)."""
     from cohort.compile import compile_ide
 
-    for ide in ("claude", "codex", "cursor"):
-        hooks = next(
-            sf for sf in compile_ide(REPO_ROOT, ide).staged
-            if sf.staged_rel.endswith(("settings.hooks.json", "-hooks.json"))
-        )
-        cmds = _session_start_commands(hooks.content)
-        assert "cohort update-check" in cmds, f"{ide}: not routed to SessionStart"
-        assert "cohort staleness-check" in cmds, f"{ide}: must coexist with staleness"
+    hooks = next(
+        sf for sf in compile_ide(REPO_ROOT, "claude").staged
+        if sf.staged_rel.endswith("settings.hooks.json")
+    )
+    cmds = _session_start_commands(hooks.content)
+    assert "cohort update-check" in cmds, "not routed to SessionStart"
+    assert "cohort staleness-check" in cmds, "must coexist with staleness"
+
+
+def test_unverified_ides_stage_no_hook_fragment():
+    """codex/cursor event names are doc-cited, not verified — no hook may ship
+    on them until the golden-lock (#23)."""
+    from cohort.compile import compile_ide
+
+    for ide in ("codex", "cursor"):
+        rels = [sf.staged_rel for sf in compile_ide(REPO_ROOT, ide).staged]
+        assert not [r for r in rels if r.endswith("-hooks.json")], ide
 
 
 def test_resolve_upstream_falls_back_when_tomllib_absent(tmp_path, monkeypatch):

@@ -6,7 +6,9 @@ A portable, self-improving, multi-IDE **agentic office** — a virtual organizat
 company-function specialist agents (HR, Legal, Compliance, Security, Finance, IT, Comms,
 Procurement, Privacy, Program, cloud architects, and a Chief-of-Staff that triages requests to the
 right specialist) you drop into any repository. Authored once in an IDE-agnostic **canonical** form, then compiled into **Claude, Codex,
-and Cursor** layouts at install time.
+and Cursor** layouts at install time. Claude Code is the reference target; **Codex/Cursor support is
+experimental** — the renderers are complete but doc-cited, not yet locked against live installs
+(pass `--ide codex,cursor` to opt in).
 
 - **Canonical is law.** Every agent/skill/command/hook/memory/context is authored once and
   schema-validated; per-IDE adapters compile it into each IDE's native files. Never hand-edit a
@@ -28,7 +30,7 @@ Clone the harness, then walk the new-team journey — each line is a real comman
 git clone https://github.com/askwigconsulting/cohort cohort && cd cohort
 python3 -m venv .venv && . .venv/bin/activate   # isolated environment
 pip install -e .                                 # puts the `cohort` CLI on PATH
-cohort recompile --ide claude,codex,cursor       # compile the roster + place it into each IDE
+cohort recompile --ide claude                    # compile the roster + place it into Claude Code
 cohort init
 cohort add-specialist --name data-modeler --display-name DataModeler --department Data --description 'Schema and data modeling.'
 cohort snapshot
