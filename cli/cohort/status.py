@@ -8,13 +8,19 @@ Never mutates the filesystem.
 
 from __future__ import annotations
 
+import hashlib
 import os
+import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+
+from .gitutil import GIT_ENV, GIT_TIMEOUT
 
 from . import merge
 from .install_model import CohortPaths
+from .loader import load_artifact
 from .manifest import load_manifest
+from .source import resolve_source_lenient
 
 RELINK_HINT = "cohort relink"
 
@@ -76,6 +82,59 @@ def _unmanaged_claude_files(home: Path, manifest) -> list[dict[str, Any]]:
     return out
 
 
+def _office_local_only(source: Optional[Path]) -> list[str]:
+    """Canonical files in the office clone that upstream doesn't have — personal
+    content candidates for ``~/.cohort/my`` (or a PR to the org fork).
+
+    Read-only (git status/log against tracking refs); degrades to [] without a
+    git repo, an upstream, or git itself."""
+    if source is None or not (source / ".git").exists():
+        return []
+    env = {**os.environ, **GIT_ENV}
+    out: set = set()
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(source), "status", "--porcelain", "--", "canonical"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT, env=env,
+        )
+        if r.returncode == 0:
+            out.update(line[3:].strip() for line in r.stdout.splitlines() if line[3:].strip())
+        r = subprocess.run(
+            ["git", "-C", str(source), "log", "--name-only", "--pretty=format:",
+             "@{upstream}..HEAD", "--", "canonical"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT, env=env,
+        )
+        if r.returncode == 0:
+            out.update(line.strip() for line in r.stdout.splitlines() if line.strip())
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return sorted(out)
+
+
+def _override_health(source: Optional[Path], gpaths: CohortPaths) -> list[dict[str, str]]:
+    """Personalized overrides whose office counterpart changed or vanished (#84).
+
+    ``stale``: the office version moved since personalize (the recorded
+    ``office_sha256`` no longer matches) — the user is pinned to an old copy.
+    ``dangling``: the office counterpart is gone (renamed/removed upstream)."""
+    my_root = gpaths.my / "canonical"
+    if source is None or not my_root.exists():
+        return []
+    out = []
+    for p in sorted(my_root.rglob("*.md")):
+        fm = load_artifact(p).frontmatter or {}
+        if fm.get("overrides") is not True:
+            continue
+        office = source / "canonical" / p.relative_to(my_root)
+        if not office.exists():
+            out.append({"name": p.stem, "state": "dangling"})
+        else:
+            recorded = fm.get("office_sha256")
+            if recorded and hashlib.sha256(office.read_bytes()).hexdigest() != recorded:
+                out.append({"name": p.stem, "state": "stale"})
+    return out
+
+
 def do_status(home: Path, cwd: Path) -> dict[str, Any]:
     """Aggregate global + project state, read-only."""
     gpaths = CohortPaths.for_global(home)
@@ -84,13 +143,18 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
     roster = sorted(p.stem for p in agents_dir.glob("*.md")) if agents_dir.exists() else []
     my_dir = gpaths.my / "canonical" / "agents"  # the personal layer (#84)
     my_names = sorted(p.stem for p in my_dir.glob("*.md")) if my_dir.exists() else []
+    source = resolve_source_lenient(home)
     result: dict[str, Any] = {
         "action": "status",
         "global": {
             "ides": manifest.ides if manifest else [],
-            "roster": {"count": len(roster) + len(my_names), "names": roster, "my": my_names},
+            # union: a personalized override shares its office name — never double-count
+            "roster": {"count": len(set(roster) | set(my_names)), "names": roster,
+                       "my": my_names},
             "source": _source_health(gpaths),
             "unmanaged": _unmanaged_claude_files(home, manifest),
+            "office_local_only": _office_local_only(source),
+            "overrides": _override_health(source, gpaths),
         },
     }
 

@@ -49,3 +49,19 @@ def resolve_source(explicit: Optional[str] = None, env: Optional[dict] = None) -
     raise SourceUnresolved(
         "could not resolve a source root; pass --source or set COHORT_SOURCE"
     )
+
+
+def resolve_source_lenient(home: Path) -> Optional[Path]:
+    """The source clone via normal resolution, else the installed symlink, else None.
+
+    For advisory/read-only callers (status, dashboard) that must degrade quietly
+    when the source cannot be resolved."""
+    from .install_model import CohortPaths  # lazy: avoid import cycle
+
+    try:
+        return resolve_source(None)
+    except SourceUnresolved:
+        canonical = CohortPaths.for_global(home).canonical
+        if canonical.is_symlink() and canonical.exists():
+            return canonical.resolve().parent
+        return None

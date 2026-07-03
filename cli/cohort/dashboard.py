@@ -49,7 +49,7 @@ from .manifest import load_manifest
 from .office_setup import SetupError, canonical_agents, effective_roster, persist_roster
 from .parity import check_parity
 from .project import do_init, do_snapshot, find_repo_root
-from .source import SourceUnresolved, resolve_source
+from .source import SourceUnresolved, resolve_source, resolve_source_lenient
 from .specialists import (
     AddSpecialistError,
     RemoveSpecialistError,
@@ -63,15 +63,7 @@ _UPDATE_TTL_SECONDS = 900  # update_status fetches the network; don't per-poll i
 _RECENT_LIMIT = 10
 
 
-def _resolve_source_lenient(home: Path) -> Optional[Path]:
-    """The source clone, via the normal resolution or the installed symlink."""
-    try:
-        return resolve_source(None)
-    except SourceUnresolved:
-        canonical = CohortPaths.for_global(home).canonical
-        if canonical.is_symlink() and canonical.exists():
-            return canonical.resolve().parent
-        return None
+_resolve_source_lenient = resolve_source_lenient  # shared with status (source.py)
 
 
 _UPDATE_UNKNOWN = {"available": False, "upstream": ""}
@@ -180,6 +172,7 @@ def _agent_cards(agents_dir: Path) -> list[dict[str, Any]]:
             "department": fm.get("department", ""),
             "description": fm.get("description", ""),
             "topology": fm.get("topology", "specialist"),
+            "overrides": fm.get("overrides") is True,
         })
     return cards
 
@@ -210,6 +203,9 @@ def collect_state(home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = 
     for card in my_cards:
         card["installed"] = True  # my-layer agents always compile (#84)
         card["layer"] = "my"
+    # a personalized override replaces its office card — one entry per placed name
+    my_names = {c["name"] for c in my_cards}
+    cards = [c for c in cards if c["name"] not in my_names]
     state["global"]["roster"]["agents"] = cards + my_cards
 
     if "project" in state:

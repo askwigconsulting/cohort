@@ -207,7 +207,7 @@ def _stage_proposals(repo, home, source):
     # one promotion (via promote) + one improvement
     run_cli("add-specialist", "--name", "data-modeler", "--display-name", "DM",
             "--department", "Data", "--description", "x", home=home, cwd=repo)
-    run_cli("promote", "data-modeler", home=home, cwd=repo)
+    run_cli("promote", "data-modeler", "--to", "office", home=home, cwd=repo)
     _seed_feedback(repo)
     run_cli("propose-improvement", home=home, cwd=repo)
 
@@ -275,7 +275,7 @@ def test_submit_dry_run_creates_nothing(repo, home, source):
 def test_promotion_proposal_carries_kind(repo, home, source):
     run_cli("add-specialist", "--name", "data-modeler", "--display-name", "DM",
             "--department", "Data", "--description", "x", home=home, cwd=repo)
-    run_cli("promote", "data-modeler", home=home, cwd=repo)
+    run_cli("promote", "data-modeler", "--to", "office", home=home, cwd=repo)
     text = (repo / ".cohort" / "proposals" / "data-modeler.md").read_text()
     assert "kind: promotion" in text  # R7 retrofit
 
@@ -365,7 +365,7 @@ def test_submit_restores_original_branch_on_success(tmp_path, home):
     run_cli("init", "--source", str(src), home=home, cwd=repo)
     run_cli("add-specialist", "--name", "dm", "--display-name", "DM",
             "--department", "D", "--description", "x", home=home, cwd=repo)
-    run_cli("promote", "dm", home=home, cwd=repo)
+    run_cli("promote", "dm", "--to", "office", home=home, cwd=repo)
     start = _current(src)
     runner = RecordingRunner()
     improve.do_submit_proposals(repo, src, dry_run=False, run=runner, gh_ok=True)
@@ -381,7 +381,7 @@ def test_submit_restores_branch_on_failure(tmp_path, home):
     run_cli("init", "--source", str(src), home=home, cwd=repo)
     run_cli("add-specialist", "--name", "dm", "--display-name", "DM",
             "--department", "D", "--description", "x", home=home, cwd=repo)
-    run_cli("promote", "dm", home=home, cwd=repo)
+    run_cli("promote", "dm", "--to", "office", home=home, cwd=repo)
     start = _current(src)
     seen: list[list] = []
 
@@ -403,7 +403,7 @@ def test_submit_targets_explicit_repo(tmp_path, home):
     run_cli("init", "--source", str(src), home=home, cwd=repo)
     run_cli("add-specialist", "--name", "dm", "--display-name", "DM",
             "--department", "D", "--description", "x", home=home, cwd=repo)
-    run_cli("promote", "dm", home=home, cwd=repo)
+    run_cli("promote", "dm", "--to", "office", home=home, cwd=repo)
     runner = RecordingRunner()
     improve.do_submit_proposals(
         repo, src, dry_run=False, run=runner, gh_ok=True, target_repo="me/myfork"

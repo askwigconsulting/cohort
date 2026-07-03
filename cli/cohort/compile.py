@@ -43,6 +43,8 @@ class CompileResult:
     # Excluded by the tier partition (valid scope, wrong tier) — surfaced so an
     # artifact authored in the wrong tree never vanishes without a trace.
     scope_filtered: list[str] = field(default_factory=list)
+    # Office artifacts deliberately replaced by a personalized my-layer copy.
+    overridden: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +53,7 @@ class CompileResult:
             "staged": [s.staged_rel for s in self.staged],
             "skipped": self.skipped,
             "scope_filtered": self.scope_filtered,
+            "overridden": self.overridden,
         }
 
 
@@ -77,27 +80,43 @@ def _load_irs(source: Path, scope: Optional[str] = None, layer: str = "office"):
     return irs, scope_filtered
 
 
-def merge_layers(office_irs: list, my_irs: list) -> list:
-    """Merge the my layer over the office layer — additions-only (v1, #84).
+def merge_layers(office_irs: list, my_irs: list) -> tuple[list, list]:
+    """Merge the my layer over the office layer (#84).
 
-    A ``(kind, name)`` collision is a hard error, not a silent mask: override-
-    by-name arrives later via the explicit ``cohort personalize`` affordance,
-    together with its provenance badges and advisories. Order is deterministic:
-    office artifacts (discovery order) then my artifacts (discovery order);
-    renderers sort by name/department downstream.
+    An unmarked ``(kind, name)`` collision is a hard error, not a silent mask.
+    A my artifact carrying ``overrides: true`` (set by ``cohort personalize``)
+    deliberately REPLACES its office counterpart in place — surfaced on
+    ``CompileResult.overridden`` so status/dashboard can badge it. Order is
+    deterministic: office artifacts (discovery order, overrides swapped in
+    place) then my additions (discovery order); renderers sort downstream.
+    Returns ``(merged, overridden_names)``.
     """
-    taken = {(ir.kind, ir.name) for ir in office_irs}
-    collisions = sorted(
-        f"{ir.kind} {ir.name!r}" for ir in my_irs if (ir.kind, ir.name) in taken
-    )
+    position = {(ir.kind, ir.name): i for i, ir in enumerate(office_irs)}
+    merged = list(office_irs)
+    additions = []
+    collisions = []
+    overridden = []
+    for ir in my_irs:
+        key = (ir.kind, ir.name)
+        marked = ir.fields.get("overrides") is True
+        if key in position:
+            if marked:
+                merged[position[key]] = ir  # deliberate override, my wins
+                overridden.append(ir.name)
+            else:
+                collisions.append(f"{ir.kind} {ir.name!r}")
+        else:
+            # includes a dangling override (office counterpart gone): still the
+            # user's content — compile it; `cohort status` flags the dangle
+            additions.append(ir)
     if collisions:
         raise CompileError(
             "my-office artifacts collide with office artifacts: "
-            + ", ".join(collisions)
-            + " — rename yours (overriding an office artifact by name will arrive "
-            "with `cohort personalize`)"
+            + ", ".join(sorted(collisions))
+            + " — rename yours, or make the override deliberate with "
+            "`cohort personalize`"
         )
-    return office_irs + my_irs
+    return merged + additions, sorted(overridden)
 
 
 def compile_ide(
@@ -136,7 +155,7 @@ def compile_ide(
     if overlay is not None and (overlay / "canonical").exists():
         my_irs, my_filtered = _load_irs(overlay, scope, layer="my")
         result.scope_filtered.extend(f"{entry} [my]" for entry in my_filtered)
-        irs = merge_layers(irs, my_irs)
+        irs, result.overridden = merge_layers(irs, my_irs)
     if only_agents is not None:
         excluded = [
             ir.name for ir in irs
