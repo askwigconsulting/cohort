@@ -54,21 +54,25 @@ def _wiring_state(repo: Path) -> dict[str, Any]:
     return {"state": "diverged"}
 
 
-def _unmanaged_claude_files(home: Path, manifest) -> list[str]:
+def _unmanaged_claude_files(home: Path, manifest) -> list[dict[str, Any]]:
     """Files in Cohort's Claude destination dirs that Cohort did not place.
 
     These form a shadow office: they live in the same discovery directories as
     the roster but are invisible to the injected office directory — and become
-    a preflight CLOBBER if canonical ever ships the same name."""
-    recorded = {op.dest for op in manifest.ops} if manifest else set()
-    out = []
+    a preflight CLOBBER if canonical ever ships the same name. Recursion matters:
+    Claude Code reads namespaced commands from subdirectories. Comparison is by
+    realpath so a re-spelled $HOME (e.g. /home vs /var/home) can't flag every
+    managed file as unmanaged."""
+    recorded = {os.path.realpath(op.dest) for op in manifest.ops} if manifest else set()
+    out: list[dict[str, Any]] = []
     for sub in ("agents", "commands"):
         d = home / ".claude" / sub
         if not d.exists():
             continue
-        out.extend(
-            str(p) for p in sorted(d.iterdir()) if p.is_file() and str(p) not in recorded
-        )
+        for p in sorted(d.rglob("*.md")):
+            if p.is_file() and os.path.realpath(p) not in recorded:
+                # adopt only handles files directly under the dir (flat names)
+                out.append({"path": str(p), "adoptable": p.parent == d})
     return out
 
 

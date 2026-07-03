@@ -7,6 +7,7 @@ Commands map domain exceptions to the exit triad (0 success · 1 refused/failed 
 from __future__ import annotations
 
 import json as _json
+import re
 import sys
 import time
 from pathlib import Path
@@ -102,6 +103,16 @@ def _version_callback(value: bool) -> None:
     if value:
         typer.echo(__version__)
         raise typer.Exit()
+
+
+# NEL + U+2028/U+2029 included alongside ASCII controls (matches roster.py).
+_UNTRUSTED_CONTROL = re.compile("[\x00-\x1f\x7f\x85\u2028\u2029]")
+
+
+def _escape_untrusted(text: str) -> str:
+    """Escape control characters in untrusted text (e.g. filenames) before it
+    reaches the terminal, so a crafted name can't overwrite or forge output."""
+    return _UNTRUSTED_CONTROL.sub(lambda m: repr(m.group())[1:-1], text)
 
 
 @app.callback()
@@ -938,9 +949,15 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
                 err=True,
             )
         for f in g.get("unmanaged", []):
+            # untrusted filename → escape control chars so it can't forge or
+            # overwrite terminal output (CR/ESC injection)
+            shown = _escape_untrusted(f["path"])
+            hint = (
+                f" — `cohort adopt {shown}`" if f.get("adoptable")
+                else " (nested; not directly adoptable)"
+            )
             typer.echo(
-                f"  ! unmanaged: {f} (invisible to the office directory) — "
-                f"`cohort adopt {f}`",
+                f"  ! unmanaged: {shown} (invisible to the office directory){hint}",
                 err=True,
             )
         if "project" in r:

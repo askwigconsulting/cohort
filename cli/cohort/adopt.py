@@ -19,6 +19,7 @@ from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
 from .manifest import load_manifest
+from .project import _short_id, _utc_compact
 from .roster import READONLY_TOOLS_LIST, reject_control_chars
 from .schema import NAME_PATTERN, validate_frontmatter
 
@@ -102,20 +103,37 @@ def do_adopt(
     path = path.resolve()
     if not path.is_file():
         raise AdoptError(f"{path} not found")
+    if path.stat().st_nlink > 1:
+        # a pre-planted hardlink would copy some other file's content into the
+        # (typically git-tracked) canonical tree — refuse the ambiguity
+        raise AdoptError(f"{path} has multiple hard links; copy it to a fresh file first")
     kind, name = _infer_kind_and_name(path, home)
     if not re.fullmatch(NAME_PATTERN, name):
         raise AdoptError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
+    raw = path.read_text(encoding="utf-8")
     parsed = load_artifact(path)
-    if parsed.load_error is not None or parsed.frontmatter is None:
-        # a plain-markdown file (no frontmatter) — the whole text is the body
+    if parsed.load_error is not None:
+        if raw.lstrip().startswith("---"):
+            # frontmatter was intended but doesn't parse — embedding it as body
+            # text would silently bake the breakage in; refuse instead
+            raise AdoptError(
+                f"{path.name}: frontmatter does not parse "
+                f"({parsed.load_error.message}) — fix it or strip it, then re-adopt"
+            )
         fm: dict[str, Any] = {}
-        body_text = path.read_text(encoding="utf-8")
+        body_text = raw  # plain markdown: the whole text is the body
+    elif parsed.frontmatter is None:
+        fm = {}
+        body_text = raw
     else:
         fm = parsed.frontmatter
         body_text = parsed.body or ""
     description = description or fm.get("description")
     if not description:
         raise AdoptError(f"{path.name} has no description in frontmatter; pass --description")
+    if not isinstance(description, str):
+        # frontmatter YAML may hand back a dict/list/int — untrusted input, refuse
+        raise AdoptError(f"{path.name}: description must be a string, got {type(description).__name__}")
     department = department or "Adopted"
     display_name = display_name or _default_display_name(name)
     try:
@@ -145,19 +163,59 @@ def do_adopt(
     gpaths = CohortPaths.for_global(home)
     backup_dir = gpaths.state / "adopt-backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    backup = backup_dir / f"{kind}-{name}.md"
+    if backup_dir.is_symlink():
+        raise AdoptError(f"{backup_dir} is a symlink; refusing to write backups through it")
+    # Uniquified so a re-adopt of the same name can never replace an earlier
+    # backup ("never delete user data" — mirrors the executor's backups/<id>/).
+    backup = backup_dir / f"{kind}-{name}-{_utc_compact()}-{_short_id()}.md"
     shutil.move(str(path), str(backup))
     try:
         report = _recompile_global_claude(home, source, gpaths, kind, name)
-    except Exception:
-        shutil.move(str(backup), str(path))  # restore the loose original
-        dest.unlink()
-        raise
+    except Exception as exc:
+        restored = _rollback_failed_adopt(gpaths, source, dest, path, backup)
+        where = "original restored" if restored else f"original kept at {backup}"
+        raise AdoptError(f"recompile failed; nothing adopted ({where}): {exc}") from exc
     return {
         "action": "adopt", "dry_run": False, "kind": kind, "name": name,
         "path": str(dest), "backup": str(backup),
         "advisory_enforced": kind == "agent", "installed": report.summary,
     }
+
+
+def _rollback_failed_adopt(
+    gpaths: CohortPaths, source: Path, dest: Path, path: Path, backup: Path
+) -> bool:
+    """Return the install to its pre-adopt shape after a failed recompile.
+
+    The recompile may have partially applied before failing: a placed link at the
+    original's dest and a recorded manifest op would otherwise outlive the adopt
+    (a ghost op that blocks future installs and hides the restored file from the
+    unmanaged scan). Order matters: drop the canonical source, rebuild staging
+    without it, drop the op, clear the placed link, then restore the original.
+    Returns True when the original was moved back into place; False when the
+    dest was occupied and the backup was kept instead (never clobber).
+    """
+    dest.unlink(missing_ok=True)
+    try:
+        from .compile import compile_ide, write_staging  # lazy: import cycle
+
+        manifest = load_manifest(gpaths.manifest)
+        subset = frozenset(manifest.roster) if manifest and manifest.roster else None
+        write_staging(gpaths, compile_ide(source, "claude", scope="global", only_agents=subset))
+    except Exception:  # noqa: BLE001 - staging rebuild is best-effort during rollback
+        pass
+    manifest = load_manifest(gpaths.manifest)
+    if manifest is not None:
+        kept = [op for op in manifest.ops if op.dest != str(path)]
+        if len(kept) != len(manifest.ops):
+            manifest.ops = kept
+            manifest.persist(gpaths.manifest)
+    if path.is_symlink():
+        path.unlink()  # the link this attempt placed
+    if not path.exists():
+        shutil.move(str(backup), str(path))
+        return True
+    return False
 
 
 def _recompile_global_claude(home: Path, source: Path, gpaths: CohortPaths, kind: str, name: str):
