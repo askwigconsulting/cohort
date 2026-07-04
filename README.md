@@ -148,7 +148,7 @@ roster for now (project-awareness routing is tracked in #24).
 ## Commands
 
 `validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` /
-`rollback` · `init` / `deinit` · `add-agent` / `add-memory` / `adopt` / `personalize` (global) · `add-specialist` /
+`rollback` · `init` / `deinit` · `add-agent` / `add-memory` / `adopt` / `personalize` / `try` (global) · `add-specialist` /
 `remove-specialist` (project) · `promote` · `snapshot` · `context refresh` · `status` · `dashboard` ·
 `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
 command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a repair command,
