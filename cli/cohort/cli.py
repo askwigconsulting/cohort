@@ -43,7 +43,7 @@ from .office_setup import (
     persist_roster,
     prompt_setup_inputs,
 )
-from .update import UpdateResult, do_relink, do_update, do_update_check
+from .update import UpdateResult, do_relink, do_rollback, do_update, do_update_check
 from .logconf import emit_log
 from .project import (
     do_context_refresh,
@@ -577,7 +577,10 @@ def _warn_divergence(report: InstallReport) -> None:
         )
 
 
-_UPDATE_FAILED = ("unavailable", "diverged", "dirty", "pull_failed", "pip_failed")
+_UPDATE_FAILED = (
+    "unavailable", "diverged", "dirty", "pull_failed", "pip_failed",
+    "reset_failed", "no_rollback_point", "unknown_ref", "not_earlier",
+)
 
 
 def _printable(line: str) -> str:
@@ -624,6 +627,73 @@ def _print_update_human(result: UpdateResult) -> None:
         typer.echo(f"Recompiled: {', '.join(result.recompiled_ides)}")
     else:
         typer.echo("No installed IDEs to recompile (run `cohort install`).")
+
+
+def _print_rollback_human(result: UpdateResult) -> None:
+    if result.status == "up_to_date":
+        typer.echo(result.detail or "Already at that version.")
+        return
+    if result.status in _UPDATE_FAILED:
+        typer.echo(f"error: {result.detail}", err=True)
+        return
+    if result.status == "recompile_refused":
+        pip = " (package reinstalled)" if result.pip_reinstalled else ""
+        typer.echo(f"Rolled Cohort back to {result.target}{pip}.")
+        typer.echo(f"warning: {result.detail}", err=True)
+        return
+    n = len(result.commits)
+    head = "Would roll back" if result.status == "dry_run" else "Rolled back"
+    typer.echo(
+        f"{head} Cohort: {result.current} → {result.target} "
+        f"(discards {n} commit{'s' if n != 1 else ''})."
+    )
+    if result.commits:
+        typer.echo("Discarded commits:")
+        for line in result.commits[:15]:
+            typer.echo(f"  {_printable(line)}")
+        if len(result.commits) > 15:
+            typer.echo(f"  … and {len(result.commits) - 15} more")
+    if result.status == "dry_run":
+        typer.echo("Dry run — nothing changed. Re-run `cohort rollback` to apply. "
+                   "(A later `cohort update` restores what a rollback discards.)")
+        return
+    if result.pip_reinstalled:
+        typer.echo("Reinstalled the cohort package (pyproject.toml changed).")
+    if result.recompiled_ides:
+        typer.echo(f"Recompiled: {', '.join(result.recompiled_ides)}")
+
+
+@app.command()
+def rollback(
+    ctx: typer.Context,
+    to: Optional[str] = typer.Option(
+        None, "--to", help="Tag or ref to roll back to (e.g. v0.2.0); "
+        "default: the version before the last `cohort update`.",
+    ),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview the rollback; change nothing."),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Roll the Cohort clone back to an earlier version and recompile (reversible)."""
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+
+    start = time.perf_counter()
+    result = do_rollback(source_path, Path.home(), to=to, dry_run=effective_dry_run)
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    emit_log(
+        component="update", action="rollback", scope="global", ide="-",
+        artifact=str(source_path), status=result.status, duration_ms=elapsed_ms,
+    )
+    if json_output:
+        typer.echo(_json.dumps(result.to_dict(), indent=2))
+    else:
+        _print_rollback_human(result)
+    raise typer.Exit(code=0 if result.ok else 1)
 
 
 @app.command()

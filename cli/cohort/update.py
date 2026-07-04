@@ -193,9 +193,10 @@ PipRunner = Callable[[list], int]
 class UpdateResult:
     """Outcome of :func:`do_update`. ``status`` drives the CLI exit code.
 
-    Statuses: ``up_to_date`` / ``dry_run`` / ``updated`` (success, exit 0);
-    ``unavailable`` / ``diverged`` / ``dirty`` / ``pull_failed`` / ``pip_failed`` /
-    ``recompile_refused`` (refused/failed, exit 1).
+    Statuses: ``up_to_date`` / ``dry_run`` / ``updated`` / ``rolled_back``
+    (success, exit 0); ``unavailable`` / ``diverged`` / ``dirty`` / ``pull_failed``
+    / ``reset_failed`` / ``pip_failed`` / ``recompile_refused`` / ``no_rollback_point``
+    / ``unknown_ref`` / ``not_earlier`` (refused/failed, exit 1).
     """
 
     status: str
@@ -211,7 +212,7 @@ class UpdateResult:
 
     @property
     def ok(self) -> bool:
-        return self.status in ("up_to_date", "dry_run", "updated")
+        return self.status in ("up_to_date", "dry_run", "updated", "rolled_back")
 
     def to_dict(self) -> dict:
         return {
@@ -249,6 +250,61 @@ def _changed_files(source: Path, upstream: str) -> list:
     """Repo-relative paths changed between HEAD and the upstream tip."""
     rc, out = _git(source, "diff", "--name-only", f"HEAD..{upstream}")
     return out.splitlines() if rc == 0 and out else []
+
+
+def _range_files(source: Path, rng: str) -> list:
+    """Repo-relative paths changed across an ``a..b`` range (refs are resolved
+    SHAs, so ``rng`` can never be read as a git option)."""
+    rc, out = _git(source, "diff", "--name-only", rng)
+    return out.splitlines() if rc == 0 and out else []
+
+
+def _range_commits(source: Path, rng: str) -> list:
+    """One-line summaries across an ``a..b`` range."""
+    rc, out = _git(source, "log", "--oneline", rng)
+    return out.splitlines() if rc == 0 and out else []
+
+
+# --- update history (the rollback ledger) -----------------------------------
+
+
+def _history_path(home: Path) -> Path:
+    return CohortPaths(home).state / "update-history.json"
+
+
+def _record_update(home: Path, from_sha: str, to_sha: str, action: str, *, at: str) -> None:
+    """Append one clone-move to the history ledger (kept to the last 20). Advisory
+    state only — a write failure never fails the update/rollback itself."""
+    import json
+
+    path = _history_path(home)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        entries = data.get("entries", []) if isinstance(data, dict) else []
+    except Exception:  # noqa: BLE001 - a corrupt ledger must not block the operation
+        entries = []
+    entries.append({"from": from_sha, "to": to_sha, "action": action, "at": at})
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"entries": entries[-20:]}, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _last_rollback_point(home: Path) -> Optional[str]:
+    """The pre-update SHA of the most recent recorded *update* — where a bare
+    ``cohort rollback`` returns to. None if nothing has been updated."""
+    import json
+
+    path = _history_path(home)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        for entry in reversed(data.get("entries", [])):
+            if entry.get("action") == "update" and entry.get("from"):
+                return str(entry["from"])
+    except Exception:  # noqa: BLE001 - missing/corrupt ledger → nothing to roll back to
+        return None
+    return None
 
 
 _PIP_TIMEOUT = 600  # a hung pip must never wedge a caller (the dashboard holds its
@@ -373,6 +429,9 @@ def do_update(
             target=target, commits=commits, changed_files=changed_files,
         )
 
+    # Capture the pre-merge HEAD so the update is reversible (cohort rollback).
+    _, pre_sha = _git(source, "rev-parse", "HEAD")
+
     # Fast-forward only: refuses (rc != 0) rather than ever creating a merge commit.
     # ``--`` keeps this call self-defending — an option-like upstream ref can never
     # be read as a git flag here, independent of the fetch gate in update_status.
@@ -384,6 +443,11 @@ def do_update(
             detail="git merge --ff-only failed (the tree changed under us). "
             "Run `git status` in the Cohort source and retry.",
         )
+    # The clone moved — record the rollback point before any downstream step.
+    _, post_sha = _git(source, "rev-parse", "HEAD")
+    if pre_sha and post_sha:
+        _record_update(home, pre_sha, post_sha, "update",
+                       at=datetime.now(timezone.utc).isoformat())
 
     pip_reinstalled = False
     if "pyproject.toml" in changed_files:
@@ -410,4 +474,113 @@ def do_update(
         status="updated", upstream=upstream, behind=behind, current=current, target=target,
         commits=commits, changed_files=changed_files, pip_reinstalled=pip_reinstalled,
         recompiled_ides=recompiled,
+    )
+
+
+def do_rollback(
+    source: Path,
+    home: Path,
+    *,
+    to: Optional[str] = None,
+    dry_run: bool = False,
+    pip_run: Optional[PipRunner] = None,
+) -> UpdateResult:
+    """Move the clone back to an earlier version and recompile — the inverse of
+    ``do_update``. With no ``to``, returns to the pre-update SHA of the most recent
+    update (the recorded rollback point); with ``to``, to that tag/ref.
+
+    Rollback only ever goes *backward*: the target must be an ancestor of HEAD
+    (moving forward is ``cohort update``). Reset-then-recompile is fully reversible
+    — the discarded commits still live upstream, so a later ``cohort update`` brings
+    them right back. Refuses on a dirty tree; never touches ``~/.cohort/my``.
+    """
+    pip_run = pip_run or _default_pip_run
+    rc, current = _git(source, "rev-parse", "--short", "HEAD")
+    if rc != 0 or not current:
+        return UpdateResult(
+            status="unavailable",
+            detail="Not a git checkout, or git is unavailable — cannot roll back.",
+        )
+    if _is_dirty(source):
+        return UpdateResult(
+            status="dirty", current=current,
+            detail="Working tree has uncommitted changes; commit or stash them "
+            "before rolling back.",
+        )
+
+    if to:
+        rc, target_full = _git(source, "rev-parse", "--verify", f"{to}^{{commit}}")
+        if rc != 0 or not target_full:
+            return UpdateResult(
+                status="unknown_ref", current=current,
+                detail=f"no such tag or ref {to!r} in the Cohort source.",
+            )
+    else:
+        target_full = _last_rollback_point(home)
+        if not target_full:
+            return UpdateResult(
+                status="no_rollback_point", current=current,
+                detail="No recorded update to roll back. Pass `--to <tag>` to pick a "
+                "version (see the CHANGELOG / `git tag` in the Cohort source).",
+            )
+
+    _, head_full = _git(source, "rev-parse", "HEAD")
+    _, target = _git(source, "rev-parse", "--short", target_full)
+    if head_full and head_full == target_full:
+        return UpdateResult(
+            status="up_to_date", current=current, target=target,
+            detail="Already at that version — nothing to roll back.",
+        )
+    # Backward-only: the target must be reachable from HEAD.
+    rc_anc, _ = _git(source, "merge-base", "--is-ancestor", target_full, "HEAD")
+    if rc_anc != 0:
+        return UpdateResult(
+            status="not_earlier", current=current, target=target,
+            detail=f"{to or target!r} is not an earlier version of this checkout; "
+            "use `cohort update` to move forward.",
+        )
+
+    rng = f"{target_full}..HEAD"
+    undone = _range_commits(source, rng)  # the commits this rollback discards
+    changed = _range_files(source, rng)
+    if dry_run:
+        return UpdateResult(
+            status="dry_run", current=current, target=target,
+            commits=undone, changed_files=changed,
+        )
+
+    rc, _ = _git(source, "reset", "--hard", target_full, timeout=_PULL_TIMEOUT)
+    if rc != 0:
+        return UpdateResult(
+            status="reset_failed", current=current, target=target,
+            detail="git reset --hard failed; inspect the Cohort source manually.",
+        )
+    if head_full and target_full:
+        _record_update(home, head_full, target_full, "rollback",
+                       at=datetime.now(timezone.utc).isoformat())
+
+    pip_reinstalled = False
+    if "pyproject.toml" in changed:
+        if pip_run([sys.executable, "-m", "pip", "install", "-e", str(source)]) != 0:
+            return UpdateResult(
+                status="pip_failed", current=current, target=target,
+                commits=undone, changed_files=changed,
+                detail="Rolled the clone back but `pip install -e` failed; run it "
+                "manually from the Cohort source, then `cohort recompile`.",
+            )
+        pip_reinstalled = True
+
+    recompiled, refused = _recompile_installed(source, home)
+    if refused is not None:
+        return UpdateResult(
+            status="recompile_refused", current=current, target=target,
+            commits=undone, changed_files=changed, pip_reinstalled=pip_reinstalled,
+            recompiled_ides=recompiled,
+            detail="Rolled the clone back, but recompile found foreign files at a "
+            "managed path. Run `cohort recompile --force` to back up and replace "
+            "them. " + refused,
+        )
+    return UpdateResult(
+        status="rolled_back", current=current, target=target, commits=undone,
+        changed_files=changed, pip_reinstalled=pip_reinstalled, recompiled_ides=recompiled,
     )
