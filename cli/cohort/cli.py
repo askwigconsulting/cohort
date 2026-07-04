@@ -78,6 +78,7 @@ from .specialists import (
 )
 from .dashboard import do_dashboard
 from .status import do_status
+from .trial import TryError, do_try
 
 app = typer.Typer(
     add_completion=False,
@@ -1048,6 +1049,57 @@ def personalize(
         typer.echo(
             "note: my office is not version-controlled — `git init ~/.cohort/my` "
             "if you want history/backup.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command("try")
+def try_agent(
+    ctx: typer.Context,
+    agent: str = typer.Argument(
+        ..., help="Agent name (office roster or my office) or a path to a draft .md file."
+    ),
+    place: bool = typer.Option(
+        False, "--place",
+        help="Also install it as a trial project specialist in the current repo "
+        "(project agents override the global roster) so you can invoke it live.",
+    ),
+    source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Preview a compiled agent (the exact system prompt Claude loads) before installing it."""
+    try:
+        source_path = resolve_source(source)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    repo = find_repo_root(Path.cwd()) if place else None
+    try:
+        report = do_try(source_path, Path.home(), agent, place=place, repo=repo)
+    except TryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if json_output:
+        typer.echo(_json.dumps(report, indent=2))
+        raise typer.Exit(code=0)
+    layer = {"office": "the office roster", "my": "my office", "file": "a draft file"}[report["layer"]]
+    typer.echo(f"── {report['name']} (from {layer}) ───────────────")
+    typer.echo(report["rendered"].rstrip("\n"))
+    typer.echo("─────────────────────────────────────────────")
+    typer.echo(f"read-only tools: {report['tools']}", err=True)
+    if report.get("placed"):
+        typer.echo(
+            f"sandboxed as a project specialist → {report['placed']}. Invoke it in this "
+            f"repo's Claude session; keep it with `cohort add-agent`, or drop it with "
+            f"`cohort remove-specialist {report['name']}`.",
+            err=True,
+        )
+    else:
+        typer.echo(
+            "preview only — nothing installed. Add it for real with `cohort add-agent` "
+            "(global/my office) or `--place` to sandbox it in this repo.",
             err=True,
         )
     raise typer.Exit(code=0)
