@@ -24,6 +24,7 @@ complete.
 - **GCPArchitect** (Cloud) — GCP service selection, patterns, cost-awareness.
 - **Comms** (Communications) — Internal/external messaging, announcements, tone.
 - **Steward** (Continuous Improvement) — Observes Cohort's own usage; drafts improvement proposals.
+- **DataAnalyst** (Data) — Reading and interpreting data — CSVs, logs, reports, metrics.
 - **CodeReviewer** (Engineering) — Senior code reviewer that evaluates changes across five dimensions — correctness, readability, architecture, security, and performance. Use for thorough code review before merge.
 - **TestEngineer** (Engineering) — QA engineer specialized in test strategy, test writing, and coverage analysis. Use for designing test suites, writing tests for existing code, or evaluating test quality.
 - **FinanceAnalyst** (Finance) — Budgeting, cost modeling, FP&A.
@@ -33,6 +34,7 @@ complete.
 - **Procurement** (Operations) — Vendor/tooling selection and tradeoffs.
 - **ProgramManager** (PMO) — Planning, status, risk/dependency tracking.
 - **HRPartner** (People) — People, policy, and org guidance.
+- **Researcher** (Research) — Gathering and synthesizing external information into sourced findings.
 - **Compliance** (Risk) — Policy/regulatory adherence and proximity-to-limit checks.
 - **SecurityEngineer** (Security) — Threat modeling, secure-by-default review, secret hygiene, and security audits of specific changes. Use for a security-focused pass on a diff, file, or design.
 
