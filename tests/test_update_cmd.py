@@ -350,3 +350,102 @@ def test_update_cli_dirty_tree_exits_1(tmp_path):
         capture_output=True, text=True, env=env,
     )
     assert proc.returncode == 1
+
+
+# === rollback (#65) ==========================================================
+
+from cohort.update import do_rollback  # noqa: E402
+
+
+def test_rollback_returns_to_pre_update_head(tmp_path):
+    up, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    before = _head(src)
+    _commit(up, "a.txt", "1\n")
+    assert do_update(src, home, pip_run=_no_pip).status == "updated"
+    assert _head(src) != before
+    res = do_rollback(src, home, pip_run=_no_pip)
+    assert res.status == "rolled_back"
+    assert _head(src) == before  # back to the pre-update commit
+
+
+def test_rollback_then_update_is_reversible(tmp_path):
+    up, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    _commit(up, "a.txt", "1\n")
+    do_update(src, home, pip_run=_no_pip)
+    tip = _head(src)
+    do_rollback(src, home, pip_run=_no_pip)
+    assert _head(src) != tip
+    # a rollback discards nothing permanently — the commit still lives upstream
+    assert do_update(src, home, pip_run=_no_pip).status == "updated"
+    assert _head(src) == tip
+
+
+def test_rollback_no_history_and_no_target_refuses(tmp_path):
+    _, src = _make_upstream_and_clone(tmp_path)
+    res = do_rollback(src, tmp_path / "home", pip_run=_no_pip)
+    assert res.status == "no_rollback_point"
+
+
+def test_rollback_to_tag(tmp_path):
+    up, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    _git(src, "tag", "v0.1.0")  # tag the base version
+    base = _head(src)
+    _commit(up, "a.txt", "1\n")
+    do_update(src, home, pip_run=_no_pip)
+    res = do_rollback(src, home, to="v0.1.0", pip_run=_no_pip)
+    assert res.status == "rolled_back"
+    assert _head(src) == base
+
+
+def test_rollback_unknown_ref(tmp_path):
+    _, src = _make_upstream_and_clone(tmp_path)
+    res = do_rollback(src, tmp_path / "home", to="v9.9.9", pip_run=_no_pip)
+    assert res.status == "unknown_ref"
+
+
+def test_rollback_forward_ref_refused(tmp_path):
+    up, src = _make_upstream_and_clone(tmp_path)
+    _commit(up, "a.txt", "1\n")
+    _git(up, "tag", "future")
+    _git(src, "fetch", "-q", "--tags", "origin")  # clone learns the tag but stays behind
+    res = do_rollback(src, tmp_path / "home", to="future", pip_run=_no_pip)
+    assert res.status == "not_earlier"
+
+
+def test_rollback_refuses_dirty_tree(tmp_path):
+    up, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    _commit(up, "a.txt", "1\n")
+    do_update(src, home, pip_run=_no_pip)
+    (src / "canonical" / "x.md").write_text("uncommitted edit\n", encoding="utf-8")
+    assert do_rollback(src, home, pip_run=_no_pip).status == "dirty"
+
+
+def test_rollback_dry_run_changes_nothing(tmp_path):
+    up, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    _commit(up, "a.txt", "1\n")
+    do_update(src, home, pip_run=_no_pip)
+    tip = _head(src)
+    res = do_rollback(src, home, dry_run=True, pip_run=_no_pip)
+    assert res.status == "dry_run" and res.commits
+    assert _head(src) == tip  # nothing was reset
+
+
+def test_rollback_reinstalls_when_pyproject_changes(tmp_path):
+    up, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    _commit(up, "pyproject.toml", "[project]\nname = 'x'\n")
+    calls = []
+
+    def rec(args):
+        calls.append(args)
+        return 0
+
+    do_update(src, home, pip_run=rec)  # pip runs — the update added pyproject.toml
+    res = do_rollback(src, home, pip_run=rec)  # pip runs again — rollback removes it
+    assert res.status == "rolled_back" and res.pip_reinstalled
+    assert len(calls) == 2

@@ -147,8 +147,8 @@ roster for now (project-awareness routing is tracked in #24).
 
 ## Commands
 
-`validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` ·
-`init` / `deinit` · `add-agent` / `add-memory` / `adopt` (global) · `add-specialist` /
+`validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` /
+`rollback` · `init` / `deinit` · `add-agent` / `add-memory` / `adopt` / `personalize` (global) · `add-specialist` /
 `remove-specialist` (project) · `promote` · `snapshot` · `context refresh` · `status` · `dashboard` ·
 `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
 command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a repair command,
@@ -161,7 +161,10 @@ commands; the `cohort` CLI is the plumbing and scripting layer; the dashboard is
 
 Releases follow [Semantic Versioning](https://semver.org/) and are recorded in
 [CHANGELOG.md](CHANGELOG.md). The session-start update-check advises when a clone falls behind;
-`cohort update` (or `/update`) applies a clean fast-forward.
+`cohort update` (or `/update`) applies a clean fast-forward. If an update misbehaves, `cohort
+rollback` returns the office to the version before it (or `cohort rollback --to <tag>` to a specific
+release) and recompiles — reversible, since a later `cohort update` restores whatever a rollback
+discarded.
 
 ## Stack
 
