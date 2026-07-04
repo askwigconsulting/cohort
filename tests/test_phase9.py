@@ -167,7 +167,7 @@ def test_full_system_e2e_all_three_ides(tmp_path):
     verbs.append("recompile")
     assert run("recompile", "--ide", "claude,codex,cursor", "--source", str(source)).returncode == 0
     for ide, ext in [(".claude", ".md"), (".codex", ".toml"), (".cursor", ".md")]:
-        assert len(list((home / ide / "agents").glob(f"*{ext}"))) == 17
+        assert len(list((home / ide / "agents").glob(f"*{ext}"))) == 19
     assert "applied: 0" in run("recompile", "--ide", "claude,codex,cursor", "--source", str(source)).stdout
 
     verbs.append("init")
