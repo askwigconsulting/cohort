@@ -8,8 +8,9 @@ targets: [all]
 # Project Context
 
 > Shared, git-tracked context for this repo. Edit the stable sections by hand; the
-> **Recent sessions** block at the bottom is Cohort-managed — regenerate it with
-> `cohort context refresh`, don't hand-edit it.
+> **Cohort office** block at the bottom is Cohort-managed (the project specialist roster
+> and recent sessions) — it refreshes automatically as specialists and sessions change;
+> don't hand-edit inside it.
 
 ## Purpose
 <!-- Owner: -->
@@ -27,4 +28,4 @@ _Durable decisions and their rationale (newest first)._
 <!-- Owner: -->
 _Project-specific terms._
 
-## Recent sessions
+## Cohort office

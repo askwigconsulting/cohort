@@ -437,6 +437,12 @@ def do_install_project(repo: Path, mode: Optional[str] = None) -> dict[str, Any]
     outcomes = apply(plan, ppaths, manifest, force=False)
     stale_outcomes = _remove_stale_placed(stale, manifest, ppaths)
     manifest.persist(ppaths.manifest)
+    # Keep the project-context specialist roster in step with what's placed (#24),
+    # so ChiefOfStaff — which reads the always-@imported project context — routes
+    # to the current set.
+    from .project import refresh_project_context  # lazy: avoid import cycle
+
+    refresh_project_context(ppaths)
     return {
         "action": "project-recompile",
         "ide": ide,

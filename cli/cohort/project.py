@@ -80,7 +80,7 @@ def context_template(source: Path) -> str:
 
 
 def sessions_index(paths: CohortPaths) -> str:
-    """Deterministic newest-first index of ``sessions/`` (the managed block body)."""
+    """Deterministic newest-first index of ``sessions/`` (part of the managed block)."""
     sessions_dir = paths.cohort_home / "sessions"
     files = sorted(sessions_dir.glob("*.md"), reverse=True) if sessions_dir.exists() else []
     if not files:
@@ -93,6 +93,69 @@ def sessions_index(paths: CohortPaths) -> str:
         branch = fm.get("branch", "?")
         lines.append(f"- `{ts}` · {author} · {branch} — [{f.name}](sessions/{f.name})")
     return "\n".join(lines)
+
+
+def specialists_index(paths: CohortPaths) -> str:
+    """The project's specialist roster (part of the managed block, #24). Read from
+    canonical so it reflects sources even before/without a placement."""
+    spec_dir = paths.canonical / "agents"
+    specs = sorted(spec_dir.glob("*.md")) if spec_dir.exists() else []
+    if not specs:
+        return "_None — add one with `cohort add-specialist`._"
+    lines = []
+    for p in specs:
+        fm = load_artifact(p).frontmatter or {}
+        label = fm.get("display_name", p.stem)
+        dept = fm.get("department", "")
+        desc = (fm.get("description", "") or "").strip()
+        dept_part = f" ({dept})" if dept else ""
+        lines.append(f"- **{label}**{dept_part} — {desc}")
+    return "\n".join(lines)
+
+
+def managed_context_block(paths: CohortPaths) -> str:
+    """Body of the single Cohort-managed block in ``project_context.md`` — the
+    project specialist roster (so ChiefOfStaff, which reads the always-@imported
+    project context, can route to them, #24) plus the recent-sessions index."""
+    return (
+        "### Project specialists\n"
+        "_Advisory agents scoped to this repo. For repo-specific requests, ChiefOfStaff "
+        "routes here; you can also invoke one directly by name._\n\n"
+        f"{specialists_index(paths)}\n\n"
+        "### Recent sessions\n"
+        f"{sessions_index(paths)}"
+    )
+
+
+def refresh_project_context(
+    paths: CohortPaths, *, dry_run: bool = False, force: bool = False
+) -> dict[str, Any]:
+    """Re-merge the managed block (specialists + sessions) into project_context.md.
+
+    Reused by ``cohort init``/``context refresh`` and, so the specialist roster
+    tracks reality, by every project write path (add-/remove-specialist, project
+    recompile). A no-op when the content is unchanged; respects a user-diverged
+    block (skip, don't clobber). Returns ``{changed, diverged}`` or ``{error}``."""
+    manifest = load_manifest(paths.manifest)
+    if manifest is None:
+        return {"error": "not a Cohort project (run cohort init)"}
+    project_context = paths.cohort_home / "project_context.md"
+    if not project_context.exists():
+        return {"changed": False}  # nothing to merge into yet
+    body = managed_context_block(paths)
+    stage_dir = Path(tempfile.mkdtemp()) if dry_run else (paths.compiled / "project")
+    src = _stage(stage_dir, "context-block.txt", body)
+    merge_op = Op(OpType.MERGE.value, PROJECT_IDE, str(project_context),
+                  src=src, strategy="block", preserve=True)
+    if dry_run:
+        pf = preflight([merge_op], manifest, force=force)
+        return {"changed": pf.classified[0].status.value != "satisfied"}
+    outcomes = apply([merge_op], paths, manifest, force=force)
+    manifest.persist(paths.manifest)
+    return {
+        "changed": any(o.status == "applied" for o in outcomes),
+        "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
+    }
 
 
 def render_snapshot_entry(repo: Path) -> str:
@@ -142,7 +205,7 @@ def _build_init_plan(paths: CohortPaths, repo: Path, source: Path, stage_dir: Pa
         "gitignore": _stage(stage_dir, "gitignore", GITIGNORE_CONTENT),
         "toml": _stage(stage_dir, "cohort.toml", COHORT_TOML_CONTENT),
         "context": _stage(stage_dir, "project_context.md", context_template(source)),
-        "index": _stage(stage_dir, "sessions-index.txt", sessions_index(paths)),
+        "index": _stage(stage_dir, "context-block.txt", managed_context_block(paths)),
         "import": _stage(stage_dir, "claude-import.txt", IMPORT_LINE + "\n"),
     }
     return [
@@ -208,26 +271,10 @@ def do_init(repo: Path, source: Path, dry_run: bool, force: bool = False) -> dic
 
 def do_context_refresh(repo: Path, dry_run: bool, force: bool = False) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
-    manifest = load_manifest(paths.manifest)
-    if manifest is None:
-        return {"action": "context-refresh", "error": "not a Cohort project (run cohort init)"}
-    project_context = paths.cohort_home / "project_context.md"
-    index = sessions_index(paths)
-    stage_dir = Path(tempfile.mkdtemp()) if dry_run else (paths.compiled / "project")
-    src = _stage(stage_dir, "sessions-index.txt", index)
-    merge_op = Op(OpType.MERGE.value, PROJECT_IDE, str(project_context),
-                  src=src, strategy="block", preserve=True)
-    if dry_run:
-        pf = preflight([merge_op], manifest, force=force)
-        changed = pf.classified[0].status.value != "satisfied"
-        return {"action": "context-refresh", "dry_run": True, "changed": changed}
-    outcomes = apply([merge_op], paths, manifest, force=force)
-    manifest.persist(paths.manifest)
-    return {
-        "action": "context-refresh", "dry_run": False,
-        "changed": any(o.status == "applied" for o in outcomes),
-        "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
-    }
+    r = refresh_project_context(paths, dry_run=dry_run, force=force)
+    if "error" in r:
+        return {"action": "context-refresh", "error": r["error"]}
+    return {"action": "context-refresh", "dry_run": dry_run, **r}
 
 
 def do_snapshot(repo: Path, dry_run: bool, refresh_index: bool) -> dict[str, Any]:
