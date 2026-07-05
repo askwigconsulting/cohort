@@ -18,6 +18,7 @@ from .gitutil import GIT_ENV, GIT_TIMEOUT
 
 from . import merge
 from .install_model import CohortPaths
+from .inventory import inventory, inventory_summary
 from .loader import load_artifact
 from .manifest import load_manifest
 from .source import resolve_source_lenient
@@ -160,11 +161,15 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
 
     repo = find_repo_root(cwd)
     ppaths = CohortPaths.for_project(repo)
+    is_project = ppaths.cohort_home != gpaths.cohort_home and ppaths.cohort_home.exists()
+    # Inventory summary across every kind and layer — so `cohort status` (and the
+    # dashboard) recognizes the whole office, not just agents.
+    result["inventory"] = inventory_summary(inventory(home, repo if is_project else None))
     # A cwd under $HOME with no enclosing repo resolves to $HOME itself, whose
     # .cohort is the GLOBAL office home — never report it as a project (the
     # roster would read as self-shadowing specialists and the wiring check
     # would advise an init --force that clobbers the global CLAUDE.md block).
-    if ppaths.cohort_home != gpaths.cohort_home and ppaths.cohort_home.exists():
+    if is_project:
         spec_dir = ppaths.canonical / "agents"
         specialists = sorted(p.stem for p in spec_dir.glob("*.md")) if spec_dir.exists() else []
         legacy_dir = ppaths.cohort_home / "agents"

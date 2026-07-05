@@ -46,7 +46,8 @@ from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
 from .manifest import load_manifest
-from .office_setup import SetupError, canonical_agents, effective_roster, persist_roster
+from .inventory import inventory
+from .office_setup import SetupError, effective_roster
 from .parity import check_parity
 from .project import do_init, do_snapshot, find_repo_root
 from .source import SourceUnresolved, resolve_source, resolve_source_lenient
@@ -190,23 +191,19 @@ def collect_state(home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = 
                 parity[ide] = check_parity(source, ide, RENDERERS).to_dict()
     state["global"]["parity"] = parity
 
-    # The full catalog (source canonical when reachable, else the installed one)
-    # with an installed flag — the roster editor's working set.
-    gpaths = CohortPaths.for_global(home)
-    catalog_dir = (source / "canonical" / "agents") if source else (gpaths.canonical / "agents")
-    installed = set(state["global"]["roster"]["names"])
-    cards = _agent_cards(catalog_dir)
-    for card in cards:
-        card["installed"] = card["name"] in installed
-        card["layer"] = "office"
-    my_cards = _agent_cards(gpaths.my / "canonical" / "agents")
-    for card in my_cards:
-        card["installed"] = True  # my-layer agents always compile (#84)
-        card["layer"] = "my"
-    # a personalized override replaces its office card — one entry per placed name
-    my_names = {c["name"] for c in my_cards}
-    cards = [c for c in cards if c["name"] not in my_names]
-    state["global"]["roster"]["agents"] = cards + my_cards
+    # The full inventory — every kind across office / my / project (read-only),
+    # with an ``active`` flag (an office agent may be filtered out by the roster
+    # subset; my/project artifacts and every non-agent kind always compile).
+    repo = Path(state["project"]["repo"]) if "project" in state else None
+    installed_office_agents = set(state["global"]["roster"]["names"])
+    items = inventory(home, repo)
+    for it in items:
+        it["active"] = (
+            it["name"] in installed_office_agents
+            if (it["layer"] == "office" and it["kind"] == "agent")
+            else True
+        )
+    state["inventory"] = items
 
     if "project" in state:
         ppaths = CohortPaths.for_project(Path(state["project"]["repo"]))
@@ -306,32 +303,6 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
         elif action == "recompile":
             source = _require_source(home)
             report = _recompile_claude(home, source, effective_roster(home, None, source))
-        elif action == "set-roster":
-            names = args.get("agents")
-            if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
-                raise ActionError("agents must be a list of names")
-            if not names:
-                raise ActionError("select at least one agent")
-            source = _require_source(home)
-            # Validate the list directly (never through the comma-string parser,
-            # whose "all" sentinel and comma-splitting don't belong in an API).
-            catalog = set(canonical_agents(source))
-            unknown = sorted(set(names) - catalog)
-            if unknown:
-                raise ActionError(f"unknown agents: {', '.join(unknown)}")
-            deduped = list(dict.fromkeys(names))
-            # the full catalog means "follow upstream" (no persisted subset)
-            roster = None if set(deduped) == catalog else deduped
-            report = _recompile_claude(home, source, roster)
-            # recompile-then-persist matches the CLI ordering; a persist failure
-            # self-heals on the next recompile (placements win, roster reverts)
-            persist_roster(home, roster)
-            report["action"] = "set-roster"
-            report["roster"] = roster if roster is not None else "all"
-            if roster is not None and "chief-of-staff" not in roster:
-                report["warning"] = (
-                    "chief-of-staff is not in the subset; the office loses its triage agent"
-                )
         else:
             raise ActionError(f"unknown action {action!r}")
     except _ACTION_ERRORS as exc:

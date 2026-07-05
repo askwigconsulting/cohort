@@ -319,42 +319,26 @@ def test_update_cache_does_not_block_get(home, tmp_path, source):
 from cohort.dashboard import ActionError, run_action  # noqa: E402
 
 
-def test_state_includes_roster_catalog_cards(home, tmp_path, source):
+def test_state_includes_full_inventory(home, tmp_path, source):
+    # the inventory recognizes every kind across layers, not just agents
     state = collect_state(home, tmp_path)
-    agents = state["global"]["roster"]["agents"]
-    assert agents, "catalog must not be empty"
-    for a in agents:
-        assert {"name", "display_name", "department", "description", "installed"} <= set(a)
-    assert all(a["installed"] for a in agents)  # the fixture placed the full roster
+    items = state["inventory"]
+    assert items, "inventory must not be empty"
+    for it in items:
+        assert {"name", "kind", "layer", "description", "active"} <= set(it)
+    kinds = {it["kind"] for it in items}
+    assert "agent" in kinds and "command" in kinds and "hook" in kinds  # more than agents
+    assert all(it["layer"] == "office" for it in items)  # only office populated in the fixture
+    assert all(it["active"] for it in items)  # fixture placed the full roster
 
 
-def test_action_set_roster_shrinks_persists_and_restores(server, home, source):
-    from cohort.office_setup import canonical_agents
-
-    srv, repo = server
-    status, data = request(srv, "POST", "/api/action", token=srv.token,
-                           body={"action": "set-roster", "args": {"agents": ["counsel", "chief-of-staff"]}})
-    assert status == 200, data
-    placed = sorted(p.stem for p in (home / ".claude" / "agents").glob("*.md"))
-    assert placed == ["chief-of-staff", "counsel"]  # shrunk + stale agents pruned
-    manifest = json.loads((home / ".cohort" / "state" / "manifest.json").read_text(encoding="utf-8"))
-    assert set(manifest["roster"]) == {"chief-of-staff", "counsel"}  # survives recompiles
-    # selecting the full catalog clears the subset (the office follows upstream again)
-    everyone = canonical_agents(source)
-    status, data = request(srv, "POST", "/api/action", token=srv.token,
-                           body={"action": "set-roster", "args": {"agents": everyone}})
-    assert status == 200, data
-    manifest = json.loads((home / ".cohort" / "state" / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest.get("roster") in (None, []) or "roster" not in manifest
-    assert len(list((home / ".claude" / "agents").glob("*.md"))) == len(everyone)
-
-
-def test_action_set_roster_refuses_bad_input(server):
+def test_set_roster_action_is_gone(server):
+    # the roster editor was removed from the dashboard (no value); the CLI keeps
+    # subsets via `cohort setup --agents`
     srv, _ = server
-    for args in ({"agents": []}, {"agents": "counsel"}, {"agents": ["not-an-agent"]}):
-        status, data = request(srv, "POST", "/api/action", token=srv.token,
-                               body={"action": "set-roster", "args": args})
-        assert status == 400, data
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "set-roster", "args": {"agents": ["counsel"]}})
+    assert status == 400 and b"unknown action" in data
 
 
 def test_action_add_specialist_places(server):
@@ -402,15 +386,6 @@ def test_action_wrong_token_is_401(server):
     status, _ = request(srv, "POST", "/api/action", token="not-the-token",
                         body={"action": "snapshot", "args": {}})
     assert status == 401
-
-
-def test_action_set_roster_all_sentinel_is_an_unknown_name(server):
-    # "all" is a CLI-flag sentinel, not an agent — the API must refuse it
-    srv, _ = server
-    status, data = request(srv, "POST", "/api/action", token=srv.token,
-                           body={"action": "set-roster", "args": {"agents": ["all"]}})
-    assert status == 400, data
-    assert b"unknown agents" in data
 
 
 def test_action_recompile_preserves_copy_mode(tmp_path, source):
