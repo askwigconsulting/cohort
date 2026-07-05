@@ -19,9 +19,7 @@ listed below. Check the project's context for a project roster before treating t
 complete.
 
 **Office directory.**
-- **AWSArchitect** (Cloud) — AWS service selection, well-architected patterns, cost-awareness.
-- **AzureArchitect** (Cloud) — Azure service selection, patterns, cost-awareness.
-- **GCPArchitect** (Cloud) — GCP service selection, patterns, cost-awareness.
+- **CloudArchitect** (Cloud) — Cloud architecture across AWS, Azure, and GCP — service selection, patterns, cost.
 - **Comms** (Communications) — Internal/external messaging, announcements, tone.
 - **Steward** (Continuous Improvement) — Observes Cohort's own usage; drafts improvement proposals.
 - **DataAnalyst** (Data) — Reading and interpreting data — CSVs, logs, reports, metrics.
