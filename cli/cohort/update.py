@@ -61,33 +61,76 @@ def _read_update_config(home: Path) -> tuple[Optional[str], Optional[str]]:
         return None, None
 
 
-def _require_signed(home: Path) -> bool:
-    """Whether ``[update] require_signed = true`` gates the pull (default False).
-    Never raises — a missing/unparseable config reads as off, preserving the
-    common clone-and-go flow."""
+def _config_text(home: Path) -> Optional[str]:
+    """Raw global cohort.toml text, or None when the file is absent. Raises only
+    on a present-but-unreadable file, so callers can distinguish 'no config'
+    (fail open — clone-and-go) from 'unreadable' (fail closed)."""
     cfg = CohortPaths(home).cohort_home / "cohort.toml"
+    if not cfg.exists():
+        return None
+    return cfg.read_text(encoding="utf-8")
+
+
+def _update_table_value(text: str, key: str) -> Optional[str]:
+    """The raw right-hand side of ``key`` inside the ``[update]`` table, or None.
+
+    A minimal, stdlib-only line scan scoped to that one table — deliberately not
+    ``tomllib``, which is absent on Python 3.10 (the project floor) and would make
+    a security flag silently unreadable there. Enough for the simple ``key =
+    value`` lines Cohort itself writes."""
+    in_update = False
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("[") and s.endswith("]"):
+            in_update = s == "[update]"
+            continue
+        if in_update and "=" in s:
+            k, _, v = s.partition("=")
+            if k.strip() == key:
+                return v.strip()
+    return None
+
+
+def _truthy_toml(rhs: str) -> bool:
+    """A TOML boolean-ish right-hand side read as True: bare ``true`` or a common
+    truthy string. For a security opt-in, honoring a mistyped ``"true"`` fails
+    safe; silently reading it as off is the dangerous direction."""
+    v = rhs.split("#", 1)[0].strip().strip('"').strip("'").lower()
+    return v in {"true", "1", "yes", "on"}
+
+
+def _require_signed(home: Path) -> bool:
+    """Whether ``[update] require_signed`` gates the pull (default False).
+
+    Fail-closed on the control's *enablement*: a missing config reads as off (so
+    clone-and-go is unchanged), but a config that exists yet cannot be read
+    returns True — a corrupt/locked cohort.toml refuses unsigned updates rather
+    than silently disabling the gate. The value is read with a stdlib scanner
+    (not tomllib), so the flag is honored on Python 3.10 too, where a tomllib
+    parse would raise and no-op the gate."""
     try:
-        import tomllib  # 3.11+; absent on 3.10 → default off
+        text = _config_text(home)
+    except Exception:  # noqa: BLE001 - present but unreadable (perms/encoding) → fail closed
+        return True
+    if text is None:
+        return False  # no config at all → off
+    rhs = _update_table_value(text, "require_signed")
+    return _truthy_toml(rhs) if rhs is not None else False
 
-        data = tomllib.loads(cfg.read_text(encoding="utf-8"))
-        upd = data.get("update", {}) if isinstance(data, dict) else {}
-        return upd.get("require_signed") is True
-    except Exception:  # noqa: BLE001 - missing file, parse error, old python
+
+def _commit_is_signed(source: Path, sha: str) -> bool:
+    """True iff ``git verify-commit`` accepts the signature on the resolved commit
+    ``sha`` — a good signature from a key git already trusts. Fail-closed: a bad
+    signature, no signature, unknown key, or any git error all yield False.
+
+    ``sha`` must be an already-resolved object id (never a config-derived ref), so
+    it can never be read as a git flag, and the object verified is exactly the one
+    the caller will merge — closing the verify-vs-apply TOCTOU window."""
+    if not sha:
         return False
-
-
-def _upstream_is_signed(source: Path, upstream: str) -> bool:
-    """True if the upstream tip is a commit with a signature git can verify.
-
-    Resolves the ref to a concrete commit SHA *first* so an option-like upstream
-    (from a tampered config) can never reach ``verify-commit`` as a flag, then
-    runs ``git verify-commit``, which exits 0 only for a good signature under the
-    user's gpg/ssh trust config. Fail-closed: any resolve/verify failure (bad
-    signature, no signature, unknown key, git error) returns False."""
-    rc, tip = _git(source, "rev-parse", "--verify", f"{upstream}^{{commit}}")
-    if rc != 0 or not tip:
-        return False
-    rc, _ = _git(source, "verify-commit", tip)
+    rc, _ = _git(source, "verify-commit", sha)
     return rc == 0
 
 
@@ -448,24 +491,37 @@ def do_update(
             "before running cohort update.",
         )
 
-    # Summarize against the just-fetched tracking ref — the exact ref merged below.
-    commits = _incoming_commits(source, upstream)
-    changed_files = _changed_files(source, upstream)
-    _, target = _git(source, "rev-parse", "--short", upstream)
+    # Resolve the upstream tip to a concrete SHA ONCE and bind everything to it —
+    # summary, signature check, and the merge. The tracking ref is shared mutable
+    # state (a concurrent fetch, e.g. the session-start update-check, can advance
+    # it mid-run), so verifying the ref then merging it *by name* would let an
+    # unverified child slip in between (TOCTOU). Merging the pinned SHA closes that
+    # window and makes the preview identical to what is applied.
+    rc, tip = _git(source, "rev-parse", "--verify", f"{upstream}^{{commit}}")
+    if rc != 0 or not tip:
+        return UpdateResult(
+            status="pull_failed", upstream=upstream, behind=behind, current=current,
+            detail="Could not resolve the upstream tip to a commit (the tracking "
+            "ref may be mid-fetch); re-run `cohort update`.",
+        )
+    commits = _incoming_commits(source, tip)
+    changed_files = _changed_files(source, tip)
+    _, target = _git(source, "rev-parse", "--short", tip)
 
-    # Opt-in supply-chain gate (#30): with `[update] require_signed = true`, refuse
-    # an upstream tip whose commit isn't verifiably signed — the residual risk once
-    # transport and local config are trusted is a *compromised upstream* whose
-    # malicious commit is still a valid fast-forward. Gates the dry run too, so a
-    # preview never implies an apply that would then be refused.
-    if _require_signed(home) and not _upstream_is_signed(source, upstream):
+    # Opt-in supply-chain gate (#30): with `[update] require_signed`, refuse a tip
+    # that isn't a verifiably signed commit — the residual risk once transport and
+    # local config are trusted is a *compromised upstream* whose malicious commit
+    # is still a valid fast-forward. Gates the dry run too, so a preview never
+    # implies an apply that would then be refused.
+    if _require_signed(home) and not _commit_is_signed(source, tip):
         return UpdateResult(
             status="unsigned", upstream=upstream, behind=behind, current=current,
             target=target, commits=commits, changed_files=changed_files,
             detail="[update] require_signed is set, but the upstream tip "
-            f"({target or upstream}) is not a verifiably signed commit. Verify the "
-            f"source and its signing key (`git -C {source} verify-commit {upstream}`), "
-            "or unset require_signed to proceed.",
+            f"({target}) is not a verifiably signed commit. Confirm the source is "
+            "trustworthy and pin its signing key (git's gpg.ssh.allowedSignersFile, "
+            "or a trusted GPG key), then re-run — only unset require_signed as a "
+            "deliberate downgrade.",
         )
 
     if dry_run:
@@ -477,10 +533,10 @@ def do_update(
     # Capture the pre-merge HEAD so the update is reversible (cohort rollback).
     _, pre_sha = _git(source, "rev-parse", "HEAD")
 
-    # Fast-forward only: refuses (rc != 0) rather than ever creating a merge commit.
-    # ``--`` keeps this call self-defending — an option-like upstream ref can never
-    # be read as a git flag here, independent of the fetch gate in update_status.
-    rc, _ = _git(source, "merge", "--ff-only", "--", upstream, timeout=_PULL_TIMEOUT)
+    # Fast-forward only, to the SAME SHA summarized and verified above (not the ref
+    # name) — refuses (rc != 0) rather than ever creating a merge commit. A 40-hex
+    # object id can never be read as a git flag.
+    rc, _ = _git(source, "merge", "--ff-only", "--", tip, timeout=_PULL_TIMEOUT)
     if rc != 0:
         return UpdateResult(
             status="pull_failed", upstream=upstream, behind=behind, current=current,

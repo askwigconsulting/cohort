@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from cohort.install_model import CohortPaths
-from cohort.update import _require_signed, _upstream_is_signed, do_update
+from cohort.update import _commit_is_signed, _require_signed, do_update
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -33,12 +33,17 @@ def _make_upstream_and_clone(tmp_path: Path) -> tuple[Path, Path]:
     _git(up, "init", "-q", "-b", "main")
     _git(up, "config", "user.email", "t@e.st")
     _git(up, "config", "user.name", "T")
+    # Pin both repos to unsigned so a contributor's global commit.gpgsign=true
+    # can't auto-sign these commits and flip the "unsigned refuses" assertions.
+    # (The SSH test re-enables signing on `up` explicitly.)
+    _git(up, "config", "commit.gpgsign", "false")
     (up / "canonical").mkdir()
     _commit(up, "canonical/x.md", "x\n")
     src = tmp_path / "src"
     _git(tmp_path, "clone", "-q", str(up), str(src))
     _git(src, "config", "user.email", "t@e.st")
     _git(src, "config", "user.name", "T")
+    _git(src, "config", "commit.gpgsign", "false")
     return up, src
 
 
@@ -71,6 +76,31 @@ def test_require_signed_reads_the_flag(tmp_path):
     assert _require_signed(home) is False
     _write_config(home, "[update]\nupstream_remote = 'origin'\n")  # key absent
     assert _require_signed(home) is False
+
+
+def test_require_signed_honors_a_mistyped_string_true(tmp_path):
+    # A security opt-in typed as a string must fail safe (on), not silently off.
+    home = tmp_path / "home"
+    _write_config(home, '[update]\nrequire_signed = "true"\n')
+    assert _require_signed(home) is True
+
+
+def test_require_signed_ignores_the_flag_under_other_tables(tmp_path):
+    home = tmp_path / "home"
+    _write_config(home, "[other]\nrequire_signed = true\n\n[update]\nupstream_branch = 'main'\n")
+    assert _require_signed(home) is False
+
+
+def test_require_signed_fails_closed_on_an_unreadable_config(tmp_path, monkeypatch):
+    # A present-but-unreadable cohort.toml must refuse unsigned updates, not
+    # silently disable the gate (e.g. the Python-3.10 tomllib gap this avoids).
+    home = tmp_path / "home"
+    _write_config(home, "[update]\nrequire_signed = true\n")
+    monkeypatch.setattr(
+        "cohort.update._config_text",
+        lambda _h: (_ for _ in ()).throw(OSError("permission denied")),
+    )
+    assert _require_signed(home) is True
 
 
 # === the gate in do_update ===================================================
@@ -118,11 +148,18 @@ def test_update_proceeds_when_signature_verifies(tmp_path, monkeypatch):
     _commit(up, "a.txt", "1\n")
     home = tmp_path / "home"
     _write_config(home, "[update]\nrequire_signed = true\n")
-    monkeypatch.setattr("cohort.update._upstream_is_signed", lambda *a, **k: True)
+    monkeypatch.setattr("cohort.update._commit_is_signed", lambda *a, **k: True)
 
     res = do_update(src, home, pip_run=_no_pip)
     assert res.status == "updated"
     assert _head(src) == _head(up)
+
+
+def test_commit_is_signed_fails_closed_on_unresolvable_sha(tmp_path):
+    # Host-independent lock on the fail-closed contract (no ssh-keygen needed).
+    _, src = _make_upstream_and_clone(tmp_path)
+    assert _commit_is_signed(src, "0" * 40) is False  # no such object
+    assert _commit_is_signed(src, "") is False        # empty → never verifies
 
 
 # === real signature verification (skipped where ssh signing is unavailable) ==
@@ -176,7 +213,8 @@ def test_upstream_is_signed_verifies_a_real_ssh_signature(tmp_path):
     _git(src, "config", "gpg.ssh.allowedSignersFile", str(allowed))
     _git(src, "fetch", "-q", "origin")
 
-    assert _upstream_is_signed(src, "origin/main") is True
+    tip = _git(src, "rev-parse", "--verify", "origin/main^{commit}").stdout.strip()
+    assert _commit_is_signed(src, tip) is True
 
     # And an unsigned tip fails verification (fail-closed). --no-gpg-sign is
     # needed to override up's commit.gpgsign=true, which auto-signs otherwise.
@@ -184,4 +222,5 @@ def test_upstream_is_signed_verifies_a_real_ssh_signature(tmp_path):
     _git(up, "add", "-A")
     _git(up, "commit", "--no-gpg-sign", "-qm", "unsigned")
     _git(src, "fetch", "-q", "origin")
-    assert _upstream_is_signed(src, "origin/main") is False
+    tip2 = _git(src, "rev-parse", "--verify", "origin/main^{commit}").stdout.strip()
+    assert _commit_is_signed(src, tip2) is False
