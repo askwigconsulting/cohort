@@ -114,10 +114,6 @@
   }
   .agent:hover { border-color:rgba(34,211,238,.4); transform:translateY(-1px); }
   .agent.off { opacity:.42; }
-  .mono {
-    width:38px; height:38px; border-radius:12px; flex:none; display:flex; align-items:center;
-    justify-content:center; font-weight:800; font-size:14px; color:#0a0f1c;
-  }
   .agent .body { min-width:0; flex:1; }
   .agent .name { font-weight:700; font-size:13.5px; display:flex; gap:7px; align-items:baseline; }
   .agent .name small { font:600 10px/1 var(--mono); color:var(--faint); text-transform:uppercase; letter-spacing:.08em; }
@@ -414,22 +410,6 @@ async function runAction(btn, action, args, okMsg) {
 }
 
 /* ---------- rendering ---------- */
-const HUES = Object.create(null); // null proto: a "__proto__" department stays cosmetic-safe
-function hue(dept) {
-  if (!(dept in HUES)) {
-    let h = 0; for (const c of dept) h = (h * 31 + c.charCodeAt(0)) % 360;
-    HUES[dept] = h;
-  }
-  return HUES[dept];
-}
-function monogram(card) {
-  const m = document.createElement("div");
-  m.className = "mono";
-  const h = hue(card.department || "?");
-  m.style.background = "linear-gradient(145deg, hsl(" + h + " 70% 62%), hsl(" + ((h + 40) % 360) + " 70% 48%))";
-  m.textContent = (card.display_name || card.name).replace(/[^A-Za-z]/g, "").slice(0, 2).toUpperCase() || "◆";
-  return m;
-}
 function setDot(id, cls, label) {
   const d = $(id);
   d.className = "dot " + cls;
@@ -457,7 +437,6 @@ function agentCard(card, opts) {
   opts = opts || {};
   const el = document.createElement("div");
   el.className = "agent";
-  el.appendChild(monogram(card));
   const body = document.createElement("div"); body.className = "body";
   const name = document.createElement("div"); name.className = "name";
   name.textContent = card.display_name || card.name;
