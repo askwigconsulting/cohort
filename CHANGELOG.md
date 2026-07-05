@@ -39,6 +39,12 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   (ownership-checked) and pruned from the manifest. Plain `install` never prunes,
   a dry-run reports the removals it would make, and a `--force` backup displaced at
   a pruned dest is restored rather than stranded. (#51)
+- `cohort my-office sync` — back the personal layer (`~/.cohort/my`) with a Git
+  remote so personal agents/skills/settings follow you across machines. It
+  reconciles with the remote before committing local changes (fast-forward only,
+  so a fresh machine adopts the shared history and a diverged one is refused for
+  you to reconcile), pushes, and recompiles so anything pulled is placed. `cohort
+  status` now surfaces each tier's source remote (office / my office / project). (#101)
 
 ### Security
 - Agent/specialist scaffolds emit frontmatter through the safe YAML serializer and

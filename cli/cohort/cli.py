@@ -774,6 +774,47 @@ def uninstall(
 context_app = typer.Typer(add_completion=False, help="Project context commands.")
 app.add_typer(context_app, name="context")
 
+my_office_app = typer.Typer(add_completion=False, help="Personal-layer (my office) commands.")
+app.add_typer(my_office_app, name="my-office")
+
+
+@my_office_app.command("sync")
+def my_office_sync(
+    remote: Optional[str] = typer.Option(
+        None, "--remote", help="Set the Git remote URL to sync my office to/from (once)."
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Sync my office (~/.cohort/my) with its Git remote, then recompile.
+
+    Backs the personal layer with a Git repo so your agents/skills/settings follow
+    you across machines. Commits local changes, fast-forwards from the remote
+    (refuses a diverged history), pushes, and recompiles so anything pulled is placed.
+    """
+    from .myoffice import MySyncError, do_my_sync
+
+    try:
+        report = do_my_sync(Path.home(), remote=remote, dry_run=dry_run)
+    except MySyncError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    def human(r: dict) -> None:
+        if r.get("dry_run"):
+            typer.echo(f"my-office sync (dry-run) → remote {r.get('remote') or '(none set)'}")
+            return
+        bits = []
+        if r.get("pulled"):
+            bits.append("pulled")
+        if r.get("pushed"):
+            bits.append("pushed")
+        typer.echo(f"my-office sync: {', '.join(bits) or 'up to date'} · {r['remote']}"
+                   + (" · recompiled" if r.get("recompiled") else ""))
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
 
 def _emit(report: dict, json_output: bool, human) -> None:
     if json_output:
@@ -1336,6 +1377,17 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
             if counts:
                 parts = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in sorted(counts.items()))
                 typer.echo(f"  {layer}: {parts}")
+        srcs = r.get("sources", {})
+        labels = [("office", "office ←", srcs.get("office")),
+                  ("my", "my office ←", srcs.get("my")),
+                  ("project", "project ←", srcs.get("project"))]
+        shown = [(lbl, val) for _, lbl, val in labels if val]
+        if shown:
+            typer.echo("Sources:")
+            for lbl, val in shown:
+                typer.echo(f"  {lbl} {val}")
+            if srcs.get("my") is None:
+                typer.echo("  my office ← (local only — `cohort my-office sync --remote <url>` to back it up)")
         src = g.get("source", {})
         if src.get("linked") and not src.get("ok"):
             typer.echo(
