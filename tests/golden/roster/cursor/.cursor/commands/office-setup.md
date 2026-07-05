@@ -13,10 +13,9 @@ Ask, one question at a time:
 3. **Roster.** Show the roster (`ls <source>/canonical/agents/`) with one-line
    descriptions and ask which agents match their work. A solo developer rarely
    needs the full office; `chief-of-staff` should stay unless they insist.
-   The three cloud architects (`aws-architect`, `azure-architect`,
-   `gcp-architect`) are vendor-specific and otherwise identical — ask "which
-   cloud?" and install only the vendor(s) the user actually runs on, not all
-   three by default. A user on no cloud needs none of them.
+   `cloud-architect` covers AWS, Azure, and GCP in one advisor — include it only
+   if the user runs on a cloud at all (a user on none needs it not); it asks
+   which vendor when consulted.
 
 Then run the flags form (never the bare interactive form — you are the interview):
 

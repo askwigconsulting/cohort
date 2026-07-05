@@ -31,16 +31,14 @@ EXPECTED_ROSTER = [
     ("procurement", "Procurement", "Operations", "specialist"),
     ("privacy-officer", "PrivacyOfficer", "Governance", "specialist"),
     ("program-manager", "ProgramManager", "PMO", "specialist"),
-    ("aws-architect", "AWSArchitect", "Cloud", "specialist"),
-    ("azure-architect", "AzureArchitect", "Cloud", "specialist"),
-    ("gcp-architect", "GCPArchitect", "Cloud", "specialist"),
+    ("cloud-architect", "CloudArchitect", "Cloud", "specialist"),
     ("steward", "Steward", "Continuous Improvement", "specialist"),
     ("code-reviewer", "CodeReviewer", "Engineering", "specialist"),
     ("test-engineer", "TestEngineer", "Engineering", "specialist"),
     ("data-analyst", "DataAnalyst", "Data", "specialist"),
     ("researcher", "Researcher", "Research", "specialist"),
 ]
-CLOUD_AGENTS = {"aws-architect", "azure-architect", "gcp-architect"}
+CLOUD_AGENTS = {"cloud-architect"}
 
 # Required-element detection contract (E): structural anchor + canonical phrase.
 BOUNDARY_ANCHOR = "**Boundaries.**"

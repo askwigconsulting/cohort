@@ -92,7 +92,7 @@ def test_directory_excludes_generalist_and_equals_specialist_set():
     assert "**ChiefOfStaff**" not in chief.split("Office directory.")[1]  # never lists itself
     # all 14 specialists are listed
     for name, display, *_ in [
-        ("counsel", "Counsel"), ("aws-architect", "AWSArchitect"), ("steward", "Steward"),
+        ("counsel", "Counsel"), ("cloud-architect", "CloudArchitect"), ("steward", "Steward"),
     ]:
         assert f"**{display}**" in chief
 

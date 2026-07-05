@@ -100,13 +100,13 @@ def test_recompile_agents_all_restores_full_roster(home, source):
     proc = run_cli("recompile", "--ide", "claude", "--agents", "all",
                    "--source", str(source), home=home)
     assert proc.returncode == 0
-    assert len(placed_agents(home)) == 19
+    assert len(placed_agents(home)) == 17
     assert "roster" not in manifest(home)
 
 
 def test_shrinking_roster_removes_stale_placed_agents(home, source):
     run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
-    assert len(placed_agents(home)) == 19
+    assert len(placed_agents(home)) == 17
     proc = run_cli("recompile", "--ide", "claude", "--agents", "counsel,chief-of-staff",
                    "--source", str(source), home=home)
     assert proc.returncode == 0
@@ -127,7 +127,7 @@ def test_setup_non_interactive_defaults_to_full_roster(home, source):
     proc = run_cli("setup", "--non-interactive", "--ide", "claude",
                    "--source", str(source), home=home)
     assert proc.returncode == 0
-    assert len(placed_agents(home)) == 19
+    assert len(placed_agents(home)) == 17
     assert "roster" not in manifest(home)
 
 
@@ -307,11 +307,11 @@ def test_add_specialist_description_injection_neutralized(home, source, tmp_path
 def test_plain_install_never_prunes_office(home, source):
     # Finding 2: install must not read missing/partial staging as "office emptied".
     run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
-    assert len(placed_agents(home)) == 19
+    assert len(placed_agents(home)) == 17
     shutil.rmtree(home / ".cohort" / "compiled")  # derived + disposable
     proc = run_cli("install", "--ide", "claude", "--source", str(source), home=home)
     assert proc.returncode == 0
-    assert len(placed_agents(home)) == 19  # office intact, nothing wiped
+    assert len(placed_agents(home)) == 17  # office intact, nothing wiped
 
 
 def test_dry_run_shrink_reports_removals(home, source):
@@ -323,7 +323,7 @@ def test_dry_run_shrink_reports_removals(home, source):
     data = json.loads(proc.stdout)
     removed = [op for op in data["ops"] if op["status"] == "removed"]
     assert len(removed) >= 12  # the dropped agents appear as removals
-    assert len(placed_agents(home)) == 19  # dry-run wrote nothing
+    assert len(placed_agents(home)) == 17  # dry-run wrote nothing
 
 
 def test_add_agent_on_subset_office_survives_recompile(home, source):
