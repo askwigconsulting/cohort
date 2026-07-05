@@ -51,6 +51,7 @@ from .project import (
     do_init,
     do_snapshot,
     find_repo_root,
+    list_projects,
     session_capture,
     staleness_check,
 )
@@ -806,7 +807,7 @@ def init(
             err=True,
         )
         raise typer.Exit(code=2)
-    report = do_init(repo, source_path, effective_dry_run, force)
+    report = do_init(repo, source_path, effective_dry_run, force, home=Path.home())
 
     def human(r: dict) -> None:
         for op in r["ops"]:
@@ -881,7 +882,7 @@ def deinit(
 ) -> None:
     """Reverse the project install (preserving team content unless --purge)."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
-    report = do_deinit(find_repo_root(Path.cwd()), purge, effective_dry_run)
+    report = do_deinit(find_repo_root(Path.cwd()), purge, effective_dry_run, home=Path.home())
 
     def human(r: dict) -> None:
         if r.get("nothing"):
@@ -898,6 +899,23 @@ def deinit(
         )
 
     _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def projects(json_output: bool = typer.Option(False, "--json")) -> None:
+    """List the Cohort projects on this machine (every repo you've `cohort init`ed)."""
+    items = list_projects(Path.home())
+    if json_output:
+        typer.echo(_json.dumps({"projects": items}, indent=2))
+        raise typer.Exit(code=0)
+    if not items:
+        typer.echo("No Cohort projects registered yet — run `cohort init` in a repository.")
+        raise typer.Exit(code=0)
+    for it in items:
+        wiring = "" if it["wiring"] == "present" else f" · wiring {it['wiring']}"
+        typer.echo(f"  {it['name']}  ({it['specialists']} specialist"
+                   f"{'s' if it['specialists'] != 1 else ''}{wiring})  {it['path']}")
     raise typer.Exit(code=0)
 
 
