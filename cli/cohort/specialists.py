@@ -225,6 +225,11 @@ def do_remove_specialist(repo: Path, home: Path, name: str, dry_run: bool) -> di
             leftover.unlink()  # derived staging is a non-op artifact
     manifest.ops = [op for op in manifest.ops if op.dest not in targets]
     manifest.persist(paths.manifest)
+    # Drop the removed name from the project-context specialist roster (#24) —
+    # remove-specialist doesn't route through do_install_project, so refresh here.
+    from .project import refresh_project_context  # lazy: avoid import cycle
+
+    refresh_project_context(paths)
     return {
         "action": "remove-specialist", "dry_run": False, "name": name,
         "path": str(src), "unshadows": shadow,

@@ -425,3 +425,68 @@ def test_init_refuses_the_home_directory(home):
     assert "home directory" in proc.stderr
     assert (home / ".claude" / "CLAUDE.md").read_text(encoding="utf-8") == before
     assert not (home / ".cohort" / "project_context.md").exists()
+
+
+# === #24: ChiefOfStaff project-awareness — the managed specialist roster =====
+
+
+def _project_context(repo: Path) -> str:
+    return (repo / ".cohort" / "project_context.md").read_text(encoding="utf-8")
+
+
+def test_init_writes_project_specialists_block(repo, home):
+    assert init(repo, home).returncode == 0
+    ctx = _project_context(repo)
+    block = extract_block(ctx)
+    assert block is not None
+    assert "### Project specialists" in block
+    assert "### Recent sessions" in block  # both live in the one managed block
+    assert "_None" in block  # no specialists yet
+
+
+def test_add_specialist_appears_in_the_managed_roster(repo, home):
+    init(repo, home)
+    run_cli("add-specialist", "--name", "data-modeler", "--display-name", "DataModeler",
+            "--department", "Data", "--description", "Schema advice.", repo=repo, home=home)
+    block = extract_block(_project_context(repo))
+    assert "**DataModeler**" in block and "Data" in block and "Schema advice." in block
+    # and it rode into the always-@imported project memory, so the chief sees it
+    claude_md = (repo / ".claude" / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "@import ../.cohort/project_context.md" in claude_md
+
+
+def test_remove_specialist_drops_it_from_the_managed_roster(repo, home):
+    init(repo, home)
+    run_cli("add-specialist", "--name", "data-modeler", "--display-name", "DataModeler",
+            "--department", "Data", "--description", "x.", repo=repo, home=home)
+    assert "**DataModeler**" in extract_block(_project_context(repo))
+    run_cli("remove-specialist", "data-modeler", repo=repo, home=home)
+    block = extract_block(_project_context(repo))
+    assert "**DataModeler**" not in block
+    assert "_None" in block  # back to empty roster
+
+
+def test_specialist_roster_survives_a_hand_edited_stable_section(repo, home):
+    init(repo, home)
+    # a human edits a stable (non-managed) section; the managed refresh must not touch it
+    ctx_path = repo / ".cohort" / "project_context.md"
+    ctx_path.write_text(
+        ctx_path.read_text(encoding="utf-8").replace(
+            "_What this project is and why it exists._", "A real purpose the human wrote."),
+        encoding="utf-8")
+    run_cli("add-specialist", "--name", "helper", "--display-name", "Helper",
+            "--department", "X", "--description", "y.", repo=repo, home=home)
+    ctx = _project_context(repo)
+    assert "A real purpose the human wrote." in ctx  # hand edit preserved
+    assert "**Helper**" in extract_block(ctx)  # roster still refreshed
+
+
+def test_context_refresh_renders_specialists_and_sessions(repo, home):
+    init(repo, home)
+    run_cli("add-specialist", "--name", "helper", "--display-name", "Helper",
+            "--department", "X", "--description", "y.", repo=repo, home=home)
+    # a manual context refresh keeps both parts of the block
+    proc = run_cli("context", "refresh", repo=repo, home=home)
+    assert proc.returncode == 0
+    block = extract_block(_project_context(repo))
+    assert "**Helper**" in block and "### Recent sessions" in block
