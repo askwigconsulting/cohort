@@ -50,7 +50,10 @@ def _clone_files(remote: Path, tmp_path: Path, tag: str) -> set[str]:
     """The tracked file set on the remote's default branch (via a throwaway clone)."""
     dest = tmp_path / f"verify-{tag}"
     subprocess.run(["git", "clone", "-q", str(remote), str(dest)], check=True)
-    return {str(p.relative_to(dest)) for p in dest.rglob("*") if p.is_file() and ".git" not in p.parts}
+    # as_posix() so assertions use "/" separators on Windows too (the files land
+    # fine there; only str(Path) would spell them with backslashes).
+    return {p.relative_to(dest).as_posix()
+            for p in dest.rglob("*") if p.is_file() and ".git" not in p.parts}
 
 
 # === guard rails =============================================================
