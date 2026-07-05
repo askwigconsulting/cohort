@@ -127,6 +127,7 @@
   .tag { font:600 9.5px/1 var(--mono); color:var(--cyan); border:1px solid rgba(34,211,238,.35);
          padding:3px 6px; border-radius:6px; letter-spacing:.06em; }
   .tag.mine { color:#a78bfa; border-color:rgba(167,139,250,.45); }
+  .tag.proj { color:#fbbf24; border-color:rgba(251,191,36,.45); }
   .thumb { background:none; border:none; cursor:pointer; font-size:13px; opacity:.5; transition:opacity .12s, transform .12s; }
   .thumb:hover { opacity:1; transform:scale(1.2); }
   .agent .x {
@@ -135,8 +136,6 @@
   }
   .agent:hover .x { display:block; } .agent .x:hover { color:var(--bad); }
   .agent input[type=checkbox] { position:absolute; top:12px; right:12px; width:15px; height:15px; accent-color:var(--vio); }
-  .rosterbar { display:flex; gap:10px; align-items:center; margin-top:14px; }
-  .rosterbar .grow { flex:1; }
   .ghost { border-style:dashed; justify-content:center; align-items:center; color:var(--dim);
            cursor:pointer; min-height:64px; font-weight:600; display:flex; }
   .ghost:hover { color:var(--ink); border-color:rgba(124,92,255,.55); }
@@ -236,17 +235,17 @@
 
   <!-- Roster -->
   <section>
-    <h2>The office <span class="rule"></span>
-      <button class="btn" id="btn-roster" style="font-size:11px;padding:6px 11px">⚙ Manage roster</button>
-    </h2>
+    <h2>The office <span class="rule"></span><span class="sub">advisory agents on your roster</span></h2>
     <div class="card">
       <div id="roster"></div>
-      <div class="rosterbar" id="rosterbar" hidden>
-        <span class="sub" id="roster-count"></span>
-        <div class="grow"></div>
-        <button class="btn" id="btn-roster-cancel">Cancel</button>
-        <button class="btn primary" id="btn-roster-apply"><span class="spin"></span>Apply roster</button>
-      </div>
+    </div>
+  </section>
+
+  <!-- Everything else: the full inventory across layers -->
+  <section>
+    <h2>Everything <span class="rule"></span><span class="sub" id="inv-sub">skills, commands, hooks & memories across the office, my office, and this project</span></h2>
+    <div class="card">
+      <div id="inventory"></div>
     </div>
   </section>
 
@@ -306,7 +305,7 @@
 "use strict";
 const TOKEN = "__COHORT_TOKEN__";
 const $ = (id) => document.getElementById(id);
-let STATE = null, EDIT_MODE = false, PENDING = null;
+let STATE = null, PENDING = null;
 
 /* ---------- plumbing ---------- */
 async function api(path, opts = {}) {
@@ -380,10 +379,20 @@ function setDot(id, cls, label) {
   d.className = "dot " + cls;
   d.lastElementChild.textContent = label;
 }
+function layerBadge(foot, card) {
+  if (card.layer === "my") {
+    const b = document.createElement("span"); b.className = "tag mine";
+    b.textContent = card.overrides ? "MY · OVERRIDE" : "MY OFFICE";
+    foot.appendChild(b);
+  } else if (card.layer === "project") {
+    const b = document.createElement("span"); b.className = "tag proj";
+    b.textContent = "PROJECT"; foot.appendChild(b);
+  }
+}
 function agentCard(card, opts) {
   opts = opts || {};
   const el = document.createElement("div");
-  el.className = "agent" + (opts.checkbox && !card.installed ? " off" : "");
+  el.className = "agent";
   el.appendChild(monogram(card));
   const body = document.createElement("div"); body.className = "body";
   const name = document.createElement("div"); name.className = "name";
@@ -397,27 +406,15 @@ function agentCard(card, opts) {
   const tag = document.createElement("span"); tag.className = "tag";
   tag.textContent = card.topology === "generalist" ? "TRIAGE · READ-ONLY" : "ADVISOR · READ-ONLY";
   foot.appendChild(tag);
-  if (card.layer === "my") {
-    const mine = document.createElement("span"); mine.className = "tag mine";
-    mine.textContent = card.overrides ? "MY · OVERRIDE" : "MY OFFICE";
-    foot.appendChild(mine);
-  }
-  if (!opts.checkbox) {
-    for (const pair of [["👍", "up"], ["👎", "down"]]) {
-      const b = document.createElement("button");
-      b.className = "thumb"; b.textContent = pair[0]; b.title = "Rate " + card.name + " " + pair[1];
-      b.addEventListener("click", () =>
-        runAction(null, "feedback", { rating: pair[1], agent: card.name }, "Feedback recorded for " + card.name));
-      foot.appendChild(b);
-    }
+  layerBadge(foot, card);
+  for (const pair of [["👍", "up"], ["👎", "down"]]) {
+    const b = document.createElement("button");
+    b.className = "thumb"; b.textContent = pair[0]; b.title = "Rate " + card.name + " " + pair[1];
+    b.addEventListener("click", () =>
+      runAction(null, "feedback", { rating: pair[1], agent: card.name }, "Feedback recorded for " + card.name));
+    foot.appendChild(b);
   }
   body.appendChild(foot); el.appendChild(body);
-  if (opts.checkbox) {
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = !!card.installed; cb.dataset.name = card.name;
-    cb.addEventListener("change", () => { el.classList.toggle("off", !cb.checked); updateRosterCount(); });
-    el.appendChild(cb);
-  }
   if (opts.removable) {
     const x = document.createElement("button");
     x.className = "x"; x.textContent = "✕"; x.title = "Remove " + card.name + " from this project";
@@ -430,16 +427,32 @@ function agentCard(card, opts) {
   }
   return el;
 }
-function renderRoster(g) {
+function invCard(it) {
+  const el = document.createElement("div"); el.className = "agent";
+  const body = document.createElement("div"); body.className = "body";
+  const name = document.createElement("div"); name.className = "name";
+  name.textContent = it.display_name || it.name;
+  body.appendChild(name);
+  const desc = document.createElement("div"); desc.className = "desc";
+  desc.textContent = it.description || ""; desc.title = it.description || "";
+  body.appendChild(desc);
+  const foot = document.createElement("div"); foot.className = "foot";
+  layerBadge(foot, it);
+  body.appendChild(foot); el.appendChild(body);
+  return el;
+}
+function renderRoster() {
   const holder = $("roster"); holder.textContent = "";
-  const cards = (g.roster.agents || []).filter((c) => EDIT_MODE || c.installed);
-  if (!cards.length) {
+  // agents from the inventory (office + my), read-only, grouped by department
+  const agents = (STATE.inventory || []).filter((it) => it.kind === "agent" && it.layer !== "project");
+  if (!agents.length) {
     const e = document.createElement("div"); e.className = "empty";
-    e.textContent = "No agents placed yet — run Recompile (or cohort setup) to install the office.";
+    e.textContent = "No agents yet — run Recompile (or cohort setup) to install the office.";
     holder.appendChild(e);
+    return;
   }
   const byDept = new Map();
-  for (const c of cards) {
+  for (const c of agents) {
     const k = c.department || "Other";
     if (!byDept.has(k)) byDept.set(k, []);
     byDept.get(k).push(c);
@@ -448,18 +461,29 @@ function renderRoster(g) {
     const d = document.createElement("div"); d.className = "dept";
     const h = document.createElement("h4"); h.textContent = entry[0]; d.appendChild(h);
     const grid = document.createElement("div"); grid.className = "grid";
-    for (const c of entry[1]) grid.appendChild(agentCard(c, { checkbox: EDIT_MODE && c.layer !== "my" }));
+    for (const c of entry[1]) grid.appendChild(agentCard(c, {}));
     d.appendChild(grid); holder.appendChild(d);
   }
-  $("rosterbar").hidden = !EDIT_MODE;
-  $("btn-roster").textContent = EDIT_MODE ? "✕ Close editor" : "⚙ Manage roster";
-  updateRosterCount();
 }
-function updateRosterCount() {
-  if (!EDIT_MODE) return;
-  const n = document.querySelectorAll("#roster input[type=checkbox]:checked").length;
-  $("roster-count").textContent = n + " agent" + (n === 1 ? "" : "s") +
-    " selected — applying recompiles and re-places the office";
+const KIND_LABEL = { skill: "Skills", command: "Commands", hook: "Hooks", memory: "Memories" };
+function renderInventory() {
+  const holder = $("inventory"); holder.textContent = "";
+  const items = (STATE.inventory || []).filter((it) => it.kind !== "agent");
+  if (!items.length) {
+    const e = document.createElement("div"); e.className = "empty";
+    e.textContent = "No skills, commands, hooks, or memories yet.";
+    holder.appendChild(e);
+    return;
+  }
+  for (const kind of ["skill", "command", "hook", "memory"]) {
+    const of = items.filter((it) => it.kind === kind);
+    if (!of.length) continue;
+    const d = document.createElement("div"); d.className = "dept";
+    const h = document.createElement("h4"); h.textContent = KIND_LABEL[kind]; d.appendChild(h);
+    const grid = document.createElement("div"); grid.className = "grid";
+    for (const it of of) grid.appendChild(invCard(it));
+    d.appendChild(grid); holder.appendChild(d);
+  }
 }
 function renderProject(p) {
   $("project-section").hidden = !p; $("no-project").hidden = !!p;
@@ -536,7 +560,8 @@ function render(s) {
   $("pipe-sub").textContent = unmanaged
     ? unmanaged + " unmanaged file" + (unmanaged === 1 ? "" : "s") + " in ~/.claude — run cohort status for adopt hints"
     : "how your office actually works";
-  renderRoster(g);
+  renderRoster();
+  renderInventory();
   renderProject(s.project || null);
 }
 async function refresh() {
@@ -565,19 +590,6 @@ $("btn-reinit").addEventListener("click", async () => {
     "Re-runs cohort init --force: re-scaffolds anything missing and re-asserts the managed wiring block in this repo's CLAUDE.md. Your project context content is preserved.", "Re-init"))
     runAction($("btn-reinit"), "init", { force: true }, "Project re-initialized");
 });
-$("btn-roster").addEventListener("click", () => { EDIT_MODE = !EDIT_MODE; if (STATE) renderRoster(STATE.global); });
-$("btn-roster-cancel").addEventListener("click", () => { EDIT_MODE = false; renderRoster(STATE.global); });
-$("btn-roster-apply").addEventListener("click", async () => {
-  const names = [...document.querySelectorAll("#roster input[type=checkbox]:checked")].map((c) => c.dataset.name);
-  if (!names.length) { toast("Select at least one agent", "err"); return; }
-  if (!names.includes("chief-of-staff")) {
-    const ok = await confirmDlg("No ChiefOfStaff?",
-      "Without chief-of-staff the office loses its triage agent. Apply anyway?", "Apply");
-    if (!ok) return;
-  }
-  const r = await runAction($("btn-roster-apply"), "set-roster", { agents: names }, "Roster applied");
-  if (r) { EDIT_MODE = false; renderRoster(STATE.global); }
-});
 $("ad-cancel").addEventListener("click", () => $("dlg-add").close());
 $("add-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -593,7 +605,7 @@ $("add-form").addEventListener("submit", async (e) => {
 });
 
 refresh();
-setInterval(() => { if (!PENDING && !EDIT_MODE) refresh(); }, 6000);
+setInterval(() => { if (!PENDING) refresh(); }, 6000);
 </script>
 </body>
 </html>

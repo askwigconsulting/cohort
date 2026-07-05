@@ -20,7 +20,7 @@ from .install import do_install
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact, load_artifact_text
 from .manifest import load_manifest
-from .schema import NAME_PATTERN, validate_frontmatter
+from .schema import KIND_DIRS, NAME_PATTERN, validate_frontmatter
 
 # The canonical read-only tool set. The string form preserves the historical
 # byte layout for callers that still interpolate; the list form feeds the safe
@@ -311,10 +311,9 @@ class PersonalizeError(Exception):
     """A refused personalize request (missing artifact, already personalized)."""
 
 
-_PERSONALIZE_DIRS = {
-    "agent": "agents", "command": "commands", "memory": "memories",
-    "hook": "hooks", "skill": "skills",
-}
+# Kinds a user can personalize (context is init-managed). Directory names come
+# from the single KIND_DIRS source of truth.
+_PERSONALIZE_KINDS = ("agent", "command", "memory", "hook", "skill")
 
 
 def do_personalize(
@@ -326,11 +325,11 @@ def do_personalize(
     collision still refuses) and ``office_sha256`` (the office content hash at
     personalize time, so ``status`` can flag the override as *stale* when the
     office version later changes, or *dangling* when it disappears)."""
-    if kind not in _PERSONALIZE_DIRS:
+    if kind not in _PERSONALIZE_KINDS:
         raise PersonalizeError(
-            f"kind must be one of {', '.join(sorted(_PERSONALIZE_DIRS))}, got {kind!r}"
+            f"kind must be one of {', '.join(sorted(_PERSONALIZE_KINDS))}, got {kind!r}"
         )
-    sub = _PERSONALIZE_DIRS[kind]
+    sub = KIND_DIRS[kind]
     office = source / "canonical" / sub / f"{name}.md"
     if not office.exists():
         raise PersonalizeError(f"no office {kind} named {name!r} to personalize")

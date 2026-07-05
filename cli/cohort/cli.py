@@ -1188,6 +1188,11 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
         typer.echo(f"Roster: {g['roster']['count']} agents")
         if g["roster"].get("my"):
             typer.echo(f"  my office: {', '.join(g['roster']['my'])}")
+        for layer in ("office", "my", "project"):
+            counts = r.get("inventory", {}).get(layer)
+            if counts:
+                parts = ", ".join(f"{n} {k}{'s' if n != 1 else ''}" for k, n in sorted(counts.items()))
+                typer.echo(f"  {layer}: {parts}")
         src = g.get("source", {})
         if src.get("linked") and not src.get("ok"):
             typer.echo(
