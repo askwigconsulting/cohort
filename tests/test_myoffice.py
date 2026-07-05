@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from cohort.install_model import CohortPaths
-from cohort.myoffice import MySyncError, do_my_sync, my_remote
+from cohort.myoffice import MySyncError, _redact_url, do_my_sync, my_remote
 
 
 @pytest.fixture
@@ -74,6 +74,29 @@ def test_sync_without_a_remote_is_refused(home):
         do_my_sync(home)
 
 
+def test_unreachable_remote_is_fatal_not_a_false_success(home, tmp_path):
+    # A failed fetch must raise — never fall through to a local commit that would
+    # orphan a fresh machine's branch and wedge it into "diverged" forever.
+    missing = tmp_path / "does-not-exist.git"
+    _write_personal(home, "solo")
+    with pytest.raises(MySyncError, match="could not reach sync remote"):
+        do_my_sync(home, remote=str(missing))
+
+
+def test_unborn_file_conflict_reports_a_distinct_message(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_personal(home, "clash", "office copy\n")
+    do_my_sync(home, remote=str(remote))
+
+    # A fresh machine whose local file collides (same path, different content)
+    # with one already in the synced office can't fast-forward-adopt it.
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    _write_personal(home_b, "clash", "my divergent copy\n")
+    with pytest.raises(MySyncError, match="conflicts with one already in your synced"):
+        do_my_sync(home_b, remote=str(remote))
+
+
 # === first machine ===========================================================
 
 
@@ -126,6 +149,35 @@ def test_second_sync_no_local_changes_is_up_to_date(home, tmp_path):
 
 
 # === genuine divergence is still refused =====================================
+
+
+def test_report_redacts_an_embedded_url_password(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_personal(home, "solo")
+    do_my_sync(home, remote=str(remote))
+    # Re-point at an https URL carrying a token; the report must not echo it.
+    report = do_my_sync(home, remote="https://user:ghp_secrettoken@example.com/o.git",
+                        dry_run=True)
+    assert "ghp_secrettoken" not in report["remote"]
+    assert "user:***@" in report["remote"]
+
+
+def test_redact_url_leaves_scp_and_plain_urls_untouched():
+    assert _redact_url("git@example.com:me/office.git") == "git@example.com:me/office.git"
+    assert _redact_url("ssh://git@host/o.git") == "ssh://git@host/o.git"
+    assert _redact_url("/tmp/local/remote.git") == "/tmp/local/remote.git"
+    assert _redact_url(None) is None
+
+
+def test_default_gitignore_excludes_secret_files_from_the_sync(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_personal(home, "solo")
+    # A user drops a credential file into the personal layer.
+    (_my(home) / ".env").write_text("API_KEY=sk-live-do-not-sync\n", encoding="utf-8")
+    do_my_sync(home, remote=str(remote))
+    pushed = _clone_files(remote, tmp_path, "secrets")
+    assert ".env" not in pushed
+    assert ".gitignore" in pushed  # the exclusion list itself is synced
 
 
 def test_diverged_history_is_refused_for_the_user_to_reconcile(home, tmp_path):

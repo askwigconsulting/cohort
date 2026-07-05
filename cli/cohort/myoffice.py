@@ -4,13 +4,15 @@ The office tier already points back to a shared repo (the `[update]` upstream)
 and a project's settings travel with its consuming repo, but *my office*
 (`~/.cohort/my`) is a plain directory — so personal agents/skills/settings don't
 follow you across machines. This makes it a Git repo with a configured remote
-and syncs it (commit → fast-forward pull → push), then recompiles so anything
-pulled is placed. All git is non-interactive and hard-timeout'd (gitutil).
+and syncs it (fast-forward pull → commit local → push — reconcile *before*
+committing so a fresh machine adopts the shared history), then recompiles so
+anything pulled is placed. All git is non-interactive and hard-timeout'd (gitutil).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Optional
@@ -20,6 +22,25 @@ from .install_model import CohortPaths
 
 _BRANCH = "main"
 
+# Passwords embedded in a remote URL (https://user:token@host) must never be
+# echoed back to the terminal or a --json blob. Redact the password, keep the
+# username. scp-style git@host:path has no "://" and is left untouched.
+_URL_PASSWORD = re.compile(r"(://[^/@:]+):[^/@]*@")
+
+# A real personal-layer .gitignore: the layer holds settings/hooks, so exclude
+# the common credential-bearing files rather than sweeping them to the remote.
+_GITIGNORE = (
+    "# Cohort personal layer — synced across your machines via `cohort my-office sync`.\n"
+    "# Never sync secrets: exclude common credential-bearing files.\n"
+    ".env\n.env.*\n*.pem\n*.key\n*.p12\nid_rsa*\nid_ed25519*\n.netrc\n"
+    "credentials.json\n*.credentials\n*_token\n*.token\n"
+)
+
+
+def _redact_url(url: Optional[str]) -> Optional[str]:
+    """A remote URL safe to display: any embedded password is masked."""
+    return _URL_PASSWORD.sub(r"\1:***@", url) if url else url
+
 
 class MySyncError(Exception):
     """A refused ``cohort my-office sync`` (no remote, diverged, git failure)."""
@@ -28,7 +49,11 @@ class MySyncError(Exception):
 def _git(cwd: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tuple[Optional[int], str]:
     try:
         proc = subprocess.run(
-            ["git", "-C", str(cwd), "-c", "credential.helper=", *args],
+            # ext::/fd:: transports run an arbitrary command as the "transport";
+            # a crafted --remote could execute it on the first fetch. Ban them
+            # (leaving file/https/ssh) so a pasted URL can't be a code path.
+            ["git", "-C", str(cwd), "-c", "credential.helper=",
+             "-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never", *args],
             capture_output=True, text=True, timeout=timeout, env={**os.environ, **GIT_ENV},
         )
         return proc.returncode, proc.stdout.strip()
@@ -49,15 +74,17 @@ def _ensure_repo(my: Path) -> None:
     my.mkdir(parents=True, exist_ok=True)
     if not (my / ".git").exists():
         _git(my, "init", "-q", "-b", _BRANCH)
-        # Author identity: fall back to a Cohort identity if the user has none.
-        if _git(my, "config", "user.email")[1] == "":
-            _git(my, "config", "user.email", "cohort@localhost")
-        if _git(my, "config", "user.name")[1] == "":
-            _git(my, "config", "user.name", "Cohort")
         # NB: no bootstrap commit here. A local commit made before the first
         # fetch orphans the branch from the remote's history, so a second
         # machine could never fast-forward-adopt the shared office. The
         # .gitignore is written in do_my_sync *after* reconciling with origin.
+    # Author identity fallback, applied every sync (not only on fresh init): a
+    # pre-existing ~/.cohort/my repo with no configured identity would otherwise
+    # fail the commit — silently, since _git swallows it — and never push.
+    if _git(my, "config", "user.email")[1] == "":
+        _git(my, "config", "user.email", "cohort@localhost")
+    if _git(my, "config", "user.name")[1] == "":
+        _git(my, "config", "user.name", "Cohort")
 
 
 def do_my_sync(
@@ -65,12 +92,19 @@ def do_my_sync(
 ) -> dict[str, Any]:
     """Sync ``~/.cohort/my`` with its Git remote and recompile.
 
-    With ``remote``, (re)configures the sync remote first. Commits local changes,
-    fetches, fast-forwards from the remote (refuses a diverged history — reconcile
-    by hand), pushes, then recompiles the office so anything pulled is placed."""
+    With ``remote``, (re)configures the sync remote first. Fetches and
+    fast-forwards from the remote *before* committing local changes (so a fresh
+    machine's unborn branch adopts the shared history; a diverged one is refused
+    to reconcile by hand), commits local changes on top, pushes, then recompiles
+    the office so anything pulled is placed.
+
+    Whole-office caveat: the personal layer is pushed wholesale, so don't store
+    secrets in ``~/.cohort/my`` — a default ``.gitignore`` excludes the common
+    credential files but can't catch a token pasted into an agent/memory body."""
     my = CohortPaths.for_global(home).my
     if dry_run:
-        return {"action": "my-sync", "dry_run": True, "remote": remote or my_remote(home),
+        return {"action": "my-sync", "dry_run": True,
+                "remote": _redact_url(remote or my_remote(home)),
                 "plan": ["ensure git repo", "set remote" if remote else "use remote",
                          "fetch + ff-pull", "commit local", "push", "recompile"]}
     _ensure_repo(my)
@@ -78,50 +112,67 @@ def do_my_sync(
         _git(my, "remote", "remove", "origin")  # idempotent: ignore "no such remote"
         rc, _ = _git(my, "remote", "add", "origin", "--", remote)
         if rc != 0:
-            raise MySyncError(f"could not set remote to {remote!r}")
+            raise MySyncError(f"could not set remote to {_redact_url(remote)}")
     url = my_remote(home)
     if not url:
         raise MySyncError("no sync remote configured — run `cohort my-office sync --remote <url>`")
+    safe_url = _redact_url(url)
 
     # Reconcile with the remote BEFORE committing anything local, so a fresh
     # machine (whose branch is still unborn) fast-forward-adopts the shared
     # history instead of colliding with it. Local personal files stay untracked
     # across the merge and are committed on top afterwards.
-    fetched = _git(my, "fetch", "--quiet", "--", "origin", timeout=30)[0] == 0
+    #
+    # A failed fetch is FATAL, never a silent fall-through: on a fresh machine,
+    # falling through would commit an orphan root on the unborn branch that no
+    # later sync could ever fast-forward — one network blip would wedge it into
+    # "diverged" forever. Distinguish this from an empty-but-reachable remote
+    # (fetch succeeds, just has no `main` yet), which legitimately proceeds.
+    if _git(my, "fetch", "--quiet", "--", "origin", timeout=30)[0] != 0:
+        raise MySyncError(
+            f"could not reach sync remote {safe_url} — check the URL, network, or access"
+        )
     pulled = False
-    if fetched:
-        # Only fast-forward: a diverged personal history is the user's to reconcile.
-        has_remote_branch = _git(my, "rev-parse", "--verify", f"origin/{_BRANCH}")[0] == 0
-        if has_remote_branch:
-            unborn = _git(my, "rev-parse", "--verify", "HEAD")[0] != 0
-            before = _git(my, "rev-parse", "HEAD")[1]
-            rc, _ = _git(my, "merge", "--ff-only", "--", f"origin/{_BRANCH}", timeout=30)
-            if rc != 0:
-                if unborn:
-                    raise MySyncError(
-                        "a personal file conflicts with one already in your synced "
-                        f"office — move it aside in {my} and re-run sync"
-                    )
+    # Only fast-forward: a diverged personal history is the user's to reconcile.
+    if _git(my, "rev-parse", "--verify", f"origin/{_BRANCH}")[0] == 0:
+        unborn = _git(my, "rev-parse", "--verify", "HEAD")[0] != 0
+        before = "" if unborn else _git(my, "rev-parse", "HEAD")[1]
+        rc, _ = _git(my, "merge", "--ff-only", "--", f"origin/{_BRANCH}", timeout=30)
+        if rc != 0:
+            if unborn:
                 raise MySyncError(
-                    "my office has diverged from its remote — reconcile "
-                    f"{my} by hand (git pull --rebase), then re-run sync"
+                    "a personal file conflicts with one already in your synced "
+                    f"office — move it aside in {my} and re-run sync"
                 )
-            pulled = before != _git(my, "rev-parse", "HEAD")[1]
+            raise MySyncError(
+                "my office has diverged from its remote — reconcile "
+                f"{my} by hand (git pull --rebase), then re-run sync"
+            )
+        pulled = before != _git(my, "rev-parse", "HEAD")[1]
 
-    # A .gitignore only if the (now reconciled) office doesn't already carry one.
+    # A real .gitignore (secret-excluding) only if the reconciled office lacks one.
     gitignore = my / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text("# personal layer\n", encoding="utf-8")
+        gitignore.write_text(_GITIGNORE, encoding="utf-8")
 
     # Commit local changes on top of the reconciled history (no-op commit is skipped).
     _git(my, "add", "-A")
     _git(my, "commit", "-q", "-m", "cohort: sync my office")  # ignores "nothing to commit"
 
-    pushed = _git(my, "push", "--quiet", "-u", "origin", _BRANCH, timeout=30)[0] == 0
+    # A failed push is FATAL too: a non-fast-forward rejection (the remote
+    # advanced between our fetch and push) or an auth/network failure must not
+    # read as success. Re-running fetches the advancing commit and retries.
+    if _git(my, "push", "--quiet", "-u", "origin", _BRANCH, timeout=30)[0] != 0:
+        raise MySyncError(
+            f"push to {safe_url} failed — the remote may have advanced; re-run sync, "
+            "or check access"
+        )
+    pushed = True
 
     recompiled = _recompile_if_installed(home)
-    return {"action": "my-sync", "dry_run": False, "remote": url,
-            "fetched": fetched, "pulled": pulled, "pushed": pushed, "recompiled": recompiled}
+    # We only reach here past a successful fetch and push (both raise on failure).
+    return {"action": "my-sync", "dry_run": False, "remote": safe_url,
+            "fetched": True, "pulled": pulled, "pushed": pushed, "recompiled": recompiled}
 
 
 def _recompile_if_installed(home: Path) -> bool:

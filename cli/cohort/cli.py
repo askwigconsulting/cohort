@@ -789,8 +789,10 @@ def my_office_sync(
     """Sync my office (~/.cohort/my) with its Git remote, then recompile.
 
     Backs the personal layer with a Git repo so your agents/skills/settings follow
-    you across machines. Commits local changes, fast-forwards from the remote
-    (refuses a diverged history), pushes, and recompiles so anything pulled is placed.
+    you across machines. Fast-forwards from the remote first (refuses a diverged
+    history), commits your local changes on top, pushes, and recompiles so anything
+    pulled is placed. The personal layer is pushed wholesale — don't store secrets
+    in ~/.cohort/my.
     """
     from .myoffice import MySyncError, do_my_sync
 
