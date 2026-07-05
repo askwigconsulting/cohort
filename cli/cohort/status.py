@@ -83,6 +83,32 @@ def _unmanaged_claude_files(home: Path, manifest) -> list[dict[str, Any]]:
     return out
 
 
+def _remote_url(repo: Path) -> Optional[str]:
+    """The ``origin`` URL of a git repo, or None. Read-only, hardened, best-effort."""
+    if not (repo / ".git").exists():
+        return None
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(repo), "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=GIT_TIMEOUT, env={**os.environ, **GIT_ENV},
+        )
+        return r.stdout.strip() or None if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _tier_sources(home: Path, source: Optional[Path]) -> dict[str, Any]:
+    """Where each config tier points back to (a Git repo, where applicable): the
+    office's upstream, my office's sync remote, and — added per-project below —
+    the consuming repo."""
+    from .myoffice import my_remote
+
+    out: dict[str, Any] = {"office": None, "my": my_remote(home)}
+    if source is not None:
+        out["office"] = _remote_url(source) or str(source)
+    return out
+
+
 def _office_local_only(source: Optional[Path]) -> list[str]:
     """Canonical files in the office clone that upstream doesn't have — personal
     content candidates for ``~/.cohort/my`` (or a PR to the org fork).
@@ -157,6 +183,8 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
             "office_local_only": _office_local_only(source),
             "overrides": _override_health(source, gpaths),
         },
+        # Where each tier's config points back to (a Git repo, where applicable).
+        "sources": _tier_sources(home, source),
     }
 
     repo = find_repo_root(cwd)
@@ -195,4 +223,6 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
         if legacy:
             # Pre-unification layout: these no longer compile or count as specialists.
             result["project"]["legacy_agents"] = legacy
+        # A project's settings travel with its consuming repo — surface that source.
+        result["sources"]["project"] = _remote_url(repo) or str(repo)
     return result
