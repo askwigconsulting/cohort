@@ -2,12 +2,14 @@
 
 Serves a single-file UI from the stdlib HTTP server (no new dependencies, no
 daemon: it runs in the foreground and dies with Ctrl-C). Reads are the same
-read-only aggregates the CLI exposes (`status`, signals, proposals, sessions);
-writes are the same human-gated command functions the CLI calls (`feedback`,
-`add-/remove-specialist`, `propose-improvement`, `snapshot`, `init`, `update`,
-`recompile`, roster subsets) — the dashboard adds no new write paths and never
-edits the global source canonical. Submitting proposals as draft PRs stays in
-the CLI.
+read-only aggregates the CLI exposes (`status`, the inventory, signals,
+proposals, sessions). The dashboard has **no mutation logic of its own**: every
+write is a human-gated CLI function it invokes behind a confirm — feedback,
+add-/remove-specialist, propose-improvement, snapshot, init, update, recompile,
+and authoring/edit (add-agent/skill/command/hook, edit). Authoring defaults to
+*my* office; choosing the office layer (which does edit the shared clone) is an
+explicit per-action choice, exactly as on the CLI. Submitting proposals as draft
+PRs deliberately stays in the CLI.
 
 Hardening (the server is loopback-only but shares the machine with browsers):
 - binds 127.0.0.1 only, never 0.0.0.0;
@@ -50,6 +52,16 @@ from .inventory import inventory
 from .office_setup import SetupError, effective_roster
 from .parity import check_parity
 from .project import do_init, do_snapshot, find_repo_root
+from .roster import (
+    AddAgentError,
+    AuthoringError,
+    EditError,
+    do_add_agent,
+    do_add_command,
+    do_add_hook,
+    do_add_skill,
+    do_edit,
+)
 from .source import SourceUnresolved, resolve_source, resolve_source_lenient
 from .specialists import (
     AddSpecialistError,
@@ -219,6 +231,19 @@ class ActionError(Exception):
     """A refused dashboard action (bad input or a command-level refusal)."""
 
 
+def read_artifact(home: Path, cwd: Path, layer: str, kind: str, name: str) -> dict[str, Any]:
+    """The current description + body of one inventory-listed artifact, so the edit
+    form can pre-fill. Resolved by matching the inventory (never a client path),
+    so nothing outside the enumerated layers is readable."""
+    repo = find_repo_root(cwd)
+    for it in inventory(home, repo):
+        if it["layer"] == layer and it["kind"] == kind and it["name"] == name:
+            parsed = load_artifact(Path(it["path"]))
+            return {"kind": kind, "name": name, "layer": layer,
+                    "description": it["description"], "body": (parsed.body or "").strip()}
+    raise ActionError(f"no {kind} {name!r} in {layer}")
+
+
 def _require_source(home: Path) -> Path:
     source = _resolve_source_lenient(home)
     if source is None:
@@ -252,18 +277,36 @@ def _recompile_claude(home: Path, source: Path, roster: Optional[list]) -> dict[
 
 _ACTION_ERRORS = (
     FeedbackError, ProposeError, RemoveSpecialistError, AddSpecialistError,
+    AddAgentError, AuthoringError, EditError,
     SetupError, CompileError, ClobberRefused, UsageError,
 )
+
+
+def _to_layer(args: dict[str, Any]) -> str:
+    """The authoring layer from a UI action; defaults to my office. The office
+    layer (the shared clone) is only chosen when explicitly requested."""
+    return "office" if str(args.get("to") or args.get("layer") or "my") == "office" else "my"
+
+
+def _str_list(value: Any) -> Optional[list]:
+    """A list of trimmed strings from a UI field (a JSON array or comma string)."""
+    if isinstance(value, list):
+        items = [str(v).strip() for v in value if str(v).strip()]
+    elif isinstance(value, str):
+        items = [v.strip() for v in value.split(",") if v.strip()]
+    else:
+        return None
+    return items or None
 
 
 def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict[str, Any]:
     """Dispatch one human-initiated action to the same function the CLI uses.
 
-    Only this fixed allowlist exists — every entry is an existing human-gated
-    command, so the dashboard adds no new write paths. Nothing here edits the
-    global source canonical, merges, or pushes; `submit-proposals` (the draft-PR
-    gate) deliberately stays in the CLI. `add-specialist` authors the project's
-    own canonical, exactly as the CLI command does.
+    The dashboard has no mutation logic of its own: every entry is a human-gated
+    CLI function it invokes behind a confirm. Authoring/edit default to *my*
+    office; choosing the office layer (the shared clone) is explicit, exactly as
+    on the CLI. `submit-proposals` (the draft-PR gate) deliberately stays in the
+    CLI.
     """
     repo = find_repo_root(cwd)
     try:
@@ -303,6 +346,44 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
         elif action == "recompile":
             source = _require_source(home)
             report = _recompile_claude(home, source, effective_roster(home, None, source))
+        elif action == "add-agent":
+            src = _require_source(home)
+            name = str(args.get("name", "")).strip()
+            report = do_add_agent(
+                src, home, name, str(args.get("display_name") or "").strip() or name,
+                str(args.get("department") or "").strip() or "General",
+                str(args.get("topology") or "specialist"),
+                str(args.get("description") or "").strip() or f"{name} advisor.",
+                dry_run=False, to=_to_layer(args),
+            )
+        elif action == "add-skill":
+            report = do_add_skill(
+                _require_source(home), home, str(args.get("name", "")).strip(),
+                str(args.get("description") or "").strip(),
+                triggers=_str_list(args.get("triggers")), body=args.get("body") or None,
+                to=_to_layer(args),
+            )
+        elif action == "add-command":
+            report = do_add_command(
+                _require_source(home), home, str(args.get("name", "")).strip(),
+                str(args.get("description") or "").strip(),
+                invocation=str(args.get("invocation") or "").strip() or None,
+                body=args.get("body") or None, to=_to_layer(args),
+            )
+        elif action == "add-hook":
+            report = do_add_hook(
+                _require_source(home), home, str(args.get("name", "")).strip(),
+                str(args.get("description") or "").strip(),
+                str(args.get("event", "")), str(args.get("action_cmd", "")),
+                matcher=str(args.get("matcher") or "").strip() or None,
+                body=args.get("body") or None, to=_to_layer(args),
+            )
+        elif action == "edit":
+            report = do_edit(
+                _require_source(home), home, str(args.get("kind", "")),
+                str(args.get("name", "")), body=args.get("body") or None,
+                description=args.get("description") or None, layer=_to_layer(args),
+            )
         else:
             raise ActionError(f"unknown action {action!r}")
     except _ACTION_ERRORS as exc:
@@ -375,6 +456,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             state = collect_state(self.server.home, self.server.cwd, self.server.update_cache)
             self._send_json(200, state)
+        elif self.path.startswith("/api/artifact?"):
+            if not self._guard():
+                return
+            import urllib.parse
+
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            try:
+                art = read_artifact(
+                    self.server.home, self.server.cwd,
+                    (q.get("layer") or [""])[0], (q.get("kind") or [""])[0],
+                    (q.get("name") or [""])[0],
+                )
+            except ActionError as exc:
+                self._send_json(404, {"error": str(exc)})
+                return
+            self._send_json(200, art)
         else:
             self._send_json(404, {"error": "not found"})
 

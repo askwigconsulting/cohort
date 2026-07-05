@@ -193,6 +193,7 @@
     <button class="btn" id="btn-recompile" title="Compile canonical → staging → place into Claude"><span class="spin"></span>⟳ Recompile</button>
     <button class="btn" id="btn-snapshot" title="Capture a session record into .cohort/sessions/"><span class="spin"></span>✎ Snapshot</button>
     <button class="btn" id="btn-propose" title="Aggregate feedback into an improvement proposal"><span class="spin"></span>✦ Propose</button>
+    <button class="btn" id="btn-create" title="Create an agent, skill, command, or hook">＋ Create</button>
     <button class="btn primary" id="btn-update" title="Fast-forward the office to upstream and recompile"><span class="spin"></span>▲ Update<span class="badge" id="behind" hidden></span></button>
   </header>
 
@@ -299,6 +300,59 @@
   </form>
 </dialog>
 
+<dialog id="dlg-create">
+  <h3>Create an artifact</h3>
+  <p>Authors it in <b>my office</b> (<span style="font-family:var(--mono)">~/.cohort/my</span>) and recompiles — updates and proposals never touch it. Advisory read-only where it applies.</p>
+  <form id="create-form">
+    <label>kind</label>
+    <select id="cr-kind">
+      <option value="agent">agent</option>
+      <option value="skill">skill</option>
+      <option value="command">command</option>
+      <option value="hook">hook</option>
+    </select>
+    <label>name (kebab-case slug)</label><input id="cr-name" required pattern="[a-z][a-z0-9-]*" placeholder="my-thing">
+    <label>description</label><input id="cr-desc" required placeholder="What it's for.">
+    <div data-kind="agent">
+      <label>display name</label><input id="cr-display" placeholder="MyThing">
+      <label>department</label><input id="cr-dept" placeholder="General">
+    </div>
+    <div data-kind="skill" hidden>
+      <label>triggers (comma-separated, optional)</label><input id="cr-triggers" placeholder="weekly, review">
+    </div>
+    <div data-kind="command" hidden>
+      <label>invocation (slash name, default: the slug)</label><input id="cr-invocation" placeholder="my-thing">
+    </div>
+    <div data-kind="hook" hidden>
+      <label>event</label>
+      <select id="cr-event">
+        <option>session_start</option><option>session_end</option><option>pre_write</option>
+        <option>post_write</option><option>pre_command</option><option>post_command</option><option>on_stale</option>
+      </select>
+      <label>action (command to run)</label><input id="cr-action" placeholder="cohort status">
+      <label>matcher (optional)</label><input id="cr-matcher">
+    </div>
+    <label>body (markdown, optional)</label><textarea id="cr-body" rows="4" placeholder="The instructions / content."></textarea>
+    <div class="row">
+      <button class="btn" type="button" id="cr-cancel">Cancel</button>
+      <button class="btn primary" type="submit"><span class="spin"></span>Create</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-edit">
+  <h3 id="ed-title">Edit</h3>
+  <p>Edits the artifact in <b>my office</b> in place and recompiles. The frontmatter is preserved; you change the description and body.</p>
+  <form id="edit-form">
+    <label>description</label><input id="ed-desc">
+    <label>body (markdown)</label><textarea id="ed-body" rows="8"></textarea>
+    <div class="row">
+      <button class="btn" type="button" id="ed-cancel">Cancel</button>
+      <button class="btn primary" type="submit"><span class="spin"></span>Save</button>
+    </div>
+  </form>
+</dialog>
+
 <div id="toasts"></div>
 
 <script>
@@ -389,6 +443,14 @@ function layerBadge(foot, card) {
     b.textContent = "PROJECT"; foot.appendChild(b);
   }
 }
+function editButton(foot, it) {
+  // only my-office artifacts are editable from the dashboard (edits land in ~/.cohort/my)
+  if (it.layer !== "my") return;
+  const b = document.createElement("button");
+  b.className = "thumb"; b.textContent = "✎"; b.title = "Edit " + it.name;
+  b.addEventListener("click", () => openEdit(it.kind, it.name));
+  foot.appendChild(b);
+}
 function agentCard(card, opts) {
   opts = opts || {};
   const el = document.createElement("div");
@@ -414,6 +476,7 @@ function agentCard(card, opts) {
       runAction(null, "feedback", { rating: pair[1], agent: card.name }, "Feedback recorded for " + card.name));
     foot.appendChild(b);
   }
+  editButton(foot, card);
   body.appendChild(foot); el.appendChild(body);
   if (opts.removable) {
     const x = document.createElement("button");
@@ -437,7 +500,10 @@ function invCard(it) {
   desc.textContent = it.description || ""; desc.title = it.description || "";
   body.appendChild(desc);
   const foot = document.createElement("div"); foot.className = "foot";
+  const kt = document.createElement("span"); kt.className = "tag"; kt.textContent = it.kind.toUpperCase();
+  foot.appendChild(kt);
   layerBadge(foot, it);
+  editButton(foot, it);
   body.appendChild(foot); el.appendChild(body);
   return el;
 }
@@ -602,6 +668,53 @@ $("add-form").addEventListener("submit", async (e) => {
     description: $("ad-desc").value.trim(),
   }, "Specialist " + name + " added to this project");
   if (r) { $("dlg-add").close(); e.target.reset(); }
+});
+
+/* ---------- create ---------- */
+function syncCreateKind() {
+  const kind = $("cr-kind").value;
+  for (const g of document.querySelectorAll("#create-form [data-kind]"))
+    g.hidden = g.getAttribute("data-kind") !== kind;
+}
+$("cr-kind").addEventListener("change", syncCreateKind);
+$("btn-create").addEventListener("click", () => { syncCreateKind(); $("dlg-create").showModal(); });
+$("cr-cancel").addEventListener("click", () => $("dlg-create").close());
+$("create-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector("button[type=submit]");
+  const kind = $("cr-kind").value;
+  const name = $("cr-name").value.trim();
+  const args = { name, description: $("cr-desc").value.trim(), body: $("cr-body").value };
+  if (kind === "agent") { args.display_name = $("cr-display").value.trim(); args.department = $("cr-dept").value.trim(); }
+  if (kind === "skill") args.triggers = $("cr-triggers").value;
+  if (kind === "command") args.invocation = $("cr-invocation").value.trim();
+  if (kind === "hook") { args.event = $("cr-event").value; args.action_cmd = $("cr-action").value.trim(); args.matcher = $("cr-matcher").value.trim(); }
+  const r = await runAction(btn, "add-" + kind, args, kind + " " + name + " created in my office");
+  if (r) { $("dlg-create").close(); e.target.reset(); }
+});
+
+/* ---------- edit ---------- */
+let EDIT_TARGET = null;
+async function openEdit(kind, name) {
+  try {
+    const art = await api("/api/artifact?" + new URLSearchParams({ layer: "my", kind, name }));
+    EDIT_TARGET = { kind, name };
+    $("ed-title").textContent = "Edit " + kind + " " + name;
+    $("ed-desc").value = art.description || "";
+    $("ed-body").value = art.body || "";
+    $("dlg-edit").showModal();
+  } catch (e) { toast(e.message, "err"); }
+}
+$("ed-cancel").addEventListener("click", () => $("dlg-edit").close());
+$("edit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!EDIT_TARGET) return;
+  const btn = e.target.querySelector("button[type=submit]");
+  const r = await runAction(btn, "edit", {
+    kind: EDIT_TARGET.kind, name: EDIT_TARGET.name, layer: "my",
+    body: $("ed-body").value, description: $("ed-desc").value.trim(),
+  }, EDIT_TARGET.kind + " " + EDIT_TARGET.name + " updated");
+  if (r) { $("dlg-edit").close(); EDIT_TARGET = null; }
 });
 
 refresh();
