@@ -11,6 +11,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+- `cohort update` gains opt-in signed-commit verification: `[update]
+  require_signed = true` in the global `cohort.toml` gates the fast-forward behind
+  `git verify-commit` on the resolved upstream tip, refusing (`unsigned`, exit 1)
+  unless the commit is signed by a key git trusts. Closes the residual
+  compromised-upstream risk once transport and local config are trusted. Default
+  stays off — the common clone-and-go flow is unchanged. (#30)
+
 ### Added
 - `cohort dashboard` — a lightweight, loopback-only web dashboard (stdlib HTTP
   server, zero new dependencies) showing wiring & health (IDE placement, source-link

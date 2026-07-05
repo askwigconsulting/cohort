@@ -61,6 +61,36 @@ def _read_update_config(home: Path) -> tuple[Optional[str], Optional[str]]:
         return None, None
 
 
+def _require_signed(home: Path) -> bool:
+    """Whether ``[update] require_signed = true`` gates the pull (default False).
+    Never raises — a missing/unparseable config reads as off, preserving the
+    common clone-and-go flow."""
+    cfg = CohortPaths(home).cohort_home / "cohort.toml"
+    try:
+        import tomllib  # 3.11+; absent on 3.10 → default off
+
+        data = tomllib.loads(cfg.read_text(encoding="utf-8"))
+        upd = data.get("update", {}) if isinstance(data, dict) else {}
+        return upd.get("require_signed") is True
+    except Exception:  # noqa: BLE001 - missing file, parse error, old python
+        return False
+
+
+def _upstream_is_signed(source: Path, upstream: str) -> bool:
+    """True if the upstream tip is a commit with a signature git can verify.
+
+    Resolves the ref to a concrete commit SHA *first* so an option-like upstream
+    (from a tampered config) can never reach ``verify-commit`` as a flag, then
+    runs ``git verify-commit``, which exits 0 only for a good signature under the
+    user's gpg/ssh trust config. Fail-closed: any resolve/verify failure (bad
+    signature, no signature, unknown key, git error) returns False."""
+    rc, tip = _git(source, "rev-parse", "--verify", f"{upstream}^{{commit}}")
+    if rc != 0 or not tip:
+        return False
+    rc, _ = _git(source, "verify-commit", tip)
+    return rc == 0
+
+
 def resolve_upstream(source: Path, home: Path) -> tuple[str, str]:
     """The ``(remote, branch)`` to compare against. Config overrides win; else
     ``origin`` + the remote's default branch (only when ``symbolic-ref`` resolves
@@ -194,9 +224,9 @@ class UpdateResult:
     """Outcome of :func:`do_update`. ``status`` drives the CLI exit code.
 
     Statuses: ``up_to_date`` / ``dry_run`` / ``updated`` / ``rolled_back``
-    (success, exit 0); ``unavailable`` / ``diverged`` / ``dirty`` / ``pull_failed``
-    / ``reset_failed`` / ``pip_failed`` / ``recompile_refused`` / ``no_rollback_point``
-    / ``unknown_ref`` / ``not_earlier`` (refused/failed, exit 1).
+    (success, exit 0); ``unavailable`` / ``diverged`` / ``dirty`` / ``unsigned``
+    / ``pull_failed`` / ``reset_failed`` / ``pip_failed`` / ``recompile_refused``
+    / ``no_rollback_point`` / ``unknown_ref`` / ``not_earlier`` (refused/failed, exit 1).
     """
 
     status: str
@@ -422,6 +452,21 @@ def do_update(
     commits = _incoming_commits(source, upstream)
     changed_files = _changed_files(source, upstream)
     _, target = _git(source, "rev-parse", "--short", upstream)
+
+    # Opt-in supply-chain gate (#30): with `[update] require_signed = true`, refuse
+    # an upstream tip whose commit isn't verifiably signed — the residual risk once
+    # transport and local config are trusted is a *compromised upstream* whose
+    # malicious commit is still a valid fast-forward. Gates the dry run too, so a
+    # preview never implies an apply that would then be refused.
+    if _require_signed(home) and not _upstream_is_signed(source, upstream):
+        return UpdateResult(
+            status="unsigned", upstream=upstream, behind=behind, current=current,
+            target=target, commits=commits, changed_files=changed_files,
+            detail="[update] require_signed is set, but the upstream tip "
+            f"({target or upstream}) is not a verifiably signed commit. Verify the "
+            f"source and its signing key (`git -C {source} verify-commit {upstream}`), "
+            "or unset require_signed to proceed.",
+        )
 
     if dry_run:
         return UpdateResult(

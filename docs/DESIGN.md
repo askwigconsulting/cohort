@@ -95,6 +95,15 @@ structural and testable.
   `yaml.safe_dump` (safe by construction — quoting is the serializer's job, not a
   heuristic); `check_frontmatter_safety` is the CI lint, proven against a seeded bad
   fixture.
+- **`update`'s trust boundary is the upstream repo, not the transport (#30).** A
+  fast-forward runs the pulled commits' `pip install -e` and compiles their artifacts, so
+  a *compromised upstream* — a malicious commit that is still a valid fast-forward — is
+  the residual risk once git is non-interactive/credential-disabled and only a clean ff of
+  a user-configured upstream is applied. Opt-in `[update] require_signed = true` gates the
+  merge behind `git verify-commit` on the resolved upstream tip (a `unsigned` refusal,
+  exit 1), fail-closed on any unverifiable/unsigned/error case. Default-off keeps
+  clone-and-go unchanged; the ref is resolved to a SHA before `verify-commit` so an
+  option-like upstream from a tampered config can't be read as a flag.
 
 ## Verified environment facts (doc-cited; re-confirm on drift)
 
