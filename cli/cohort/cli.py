@@ -59,9 +59,15 @@ from .adopt import AdoptError, do_adopt
 from .roster import (
     AddAgentError,
     AddMemoryError,
+    AuthoringError,
+    EditError,
     PersonalizeError,
     do_add_agent,
+    do_add_command,
+    do_add_hook,
     do_add_memory,
+    do_add_skill,
+    do_edit,
     do_personalize,
     prompt_add_agent_inputs,
 )
@@ -1152,6 +1158,125 @@ def add_memory(
     _emit(report, json_output, lambda r: typer.echo(
         f"add-memory: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
     _echo_layer_note(report)
+    raise typer.Exit(code=0)
+
+
+def _read_body_file(body_file: Optional[str]) -> Optional[str]:
+    if body_file is None:
+        return None
+    p = Path(body_file)
+    if not p.is_file():
+        typer.echo(f"error: --body-file not found: {body_file}", err=True)
+        raise typer.Exit(code=2)
+    return p.read_text(encoding="utf-8")
+
+
+def _run_authoring(kind: str, call, json_output: bool) -> None:
+    try:
+        report = call()
+    except (AuthoringError, SourceUnresolved) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1 if isinstance(exc, AuthoringError) else 2)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"add-{kind}: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
+    _echo_layer_note(report)
+    raise typer.Exit(code=0)
+
+
+@app.command("add-skill")
+def add_skill(
+    name: str = typer.Argument(..., help="Skill slug (kebab-case)."),
+    description: str = typer.Option(..., "--description"),
+    display_name: Optional[str] = typer.Option(None, "--display-name"),
+    triggers: Optional[str] = typer.Option(None, "--triggers", help="Comma-separated trigger phrases."),
+    body_file: Optional[str] = typer.Option(None, "--body-file"),
+    to: str = typer.Option("my", "--to", help="my (default) | office (the shared clone)."),
+    source: Optional[str] = typer.Option(None, "--source"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Author a skill into my office (default) or the shared office, then recompile."""
+    trig = [t.strip() for t in triggers.split(",") if t.strip()] if triggers else None
+    body = _read_body_file(body_file)
+    _run_authoring("skill", lambda: do_add_skill(
+        resolve_source(source), Path.home(), name, description,
+        display_name=display_name, triggers=trig, body=body, to=to, dry_run=dry_run,
+    ), json_output)
+
+
+@app.command("add-command")
+def add_command(
+    name: str = typer.Argument(..., help="Command slug (kebab-case)."),
+    description: str = typer.Option(..., "--description"),
+    invocation: Optional[str] = typer.Option(None, "--invocation", help="Slash name (default: the slug)."),
+    body_file: Optional[str] = typer.Option(None, "--body-file"),
+    to: str = typer.Option("my", "--to", help="my (default) | office (the shared clone)."),
+    source: Optional[str] = typer.Option(None, "--source"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Author a slash command (always dry_run-safe) into my office or the shared office."""
+    body = _read_body_file(body_file)
+    _run_authoring("command", lambda: do_add_command(
+        resolve_source(source), Path.home(), name, description,
+        invocation=invocation, body=body, to=to, dry_run=dry_run,
+    ), json_output)
+
+
+@app.command("add-hook")
+def add_hook(
+    name: str = typer.Argument(..., help="Hook slug (kebab-case)."),
+    description: str = typer.Option(..., "--description"),
+    event: str = typer.Option(..., "--event", help="session_start | session_end | pre_write | "
+                              "post_write | pre_command | post_command | on_stale"),
+    action: str = typer.Option(..., "--action", help="The command the hook runs."),
+    matcher: Optional[str] = typer.Option(None, "--matcher"),
+    body_file: Optional[str] = typer.Option(None, "--body-file"),
+    to: str = typer.Option("my", "--to", help="my (default) | office (the shared clone)."),
+    source: Optional[str] = typer.Option(None, "--source"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Author a hook into my office or the shared office, then recompile."""
+    body = _read_body_file(body_file)
+    _run_authoring("hook", lambda: do_add_hook(
+        resolve_source(source), Path.home(), name, description, event, action,
+        matcher=matcher, body=body, to=to, dry_run=dry_run,
+    ), json_output)
+
+
+@app.command()
+def edit(
+    kind: str = typer.Argument(..., help="agent | skill | command | hook | memory"),
+    name: str = typer.Argument(..., help="The artifact to edit."),
+    body_file: Optional[str] = typer.Option(None, "--body-file", help="New body (markdown)."),
+    description: Optional[str] = typer.Option(None, "--description", help="New description."),
+    layer: str = typer.Option("my", "--layer", help="my (default) | office (edits the shared clone)."),
+    source: Optional[str] = typer.Option(None, "--source"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Edit a global artifact's body/description in place, then recompile.
+
+    Round-trips the existing frontmatter (keeps hand-added keys and a personalized
+    copy's override markers). Editing `--layer office` rewrites the shared clone.
+    """
+    body = _read_body_file(body_file)
+    try:
+        report = do_edit(
+            resolve_source(source), Path.home(), kind, name,
+            body=body, description=description, layer=layer, dry_run=dry_run,
+        )
+    except EditError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except SourceUnresolved as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    _emit(report, json_output, lambda r: typer.echo(
+        f"edit: {'(dry-run) ' if r['dry_run'] else ''}{r['kind']} {r['name']} → {r['path']}"))
+    if not report.get("dry_run") and report.get("layer") == "office":
+        typer.echo("edited the office layer (the shared clone) — commit it or open a PR.", err=True)
     raise typer.Exit(code=0)
 
 
