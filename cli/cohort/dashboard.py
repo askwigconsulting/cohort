@@ -51,7 +51,7 @@ from .manifest import load_manifest
 from .inventory import inventory
 from .office_setup import SetupError, effective_roster
 from .parity import check_parity
-from .project import do_init, do_snapshot, find_repo_root
+from .project import do_init, do_snapshot, find_repo_root, list_projects, resolve_registered
 from .roster import (
     AddAgentError,
     AuthoringError,
@@ -190,9 +190,19 @@ def _agent_cards(agents_dir: Path) -> list[dict[str, Any]]:
     return cards
 
 
-def collect_state(home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = None) -> dict[str, Any]:
-    """Everything the dashboard shows, as one JSON-safe dict. Read-only."""
-    state = do_status(home, cwd)
+def collect_state(
+    home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = None,
+    project_index: Any = None,
+) -> dict[str, Any]:
+    """Everything the dashboard shows, as one JSON-safe dict. Read-only.
+
+    ``project_index`` focuses a registered project (from the UI switcher) instead
+    of the launch cwd's — resolved server-side against the registry (never a
+    client path)."""
+    focused = resolve_registered(home, project_index) if project_index is not None else None
+    state = do_status(home, focused if focused is not None else cwd)
+    state["projects"] = list_projects(home)
+    state["focused_project"] = state.get("project", {}).get("repo")
     state["version"] = __version__
     source = _resolve_source_lenient(home)
     state["global"]["update"] = (update_cache or _UpdateCache()).get(source, home)
@@ -308,7 +318,8 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
     on the CLI. `submit-proposals` (the draft-PR gate) deliberately stays in the
     CLI.
     """
-    repo = find_repo_root(cwd)
+    focused = resolve_registered(home, args.get("project")) if args.get("project") is not None else None
+    repo = focused if focused is not None else find_repo_root(cwd)
     try:
         if action == "feedback":
             report = do_feedback(
@@ -336,7 +347,7 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
                     "refusing to init the home directory as a project (it is the "
                     "global office's home) — open the dashboard from a repository"
                 )
-            report = do_init(repo, _require_source(home), False, bool(args.get("force")))
+            report = do_init(repo, _require_source(home), False, bool(args.get("force")), home=home)
         elif action == "update":
             result = do_update(_require_source(home), home)
             if not result.ok:
@@ -451,10 +462,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             page = load_page().replace("__COHORT_TOKEN__", self.server.token)
             self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
-        elif self.path == "/api/state":
+        elif self.path == "/api/state" or self.path.startswith("/api/state?"):
             if not self._guard():
                 return
-            state = collect_state(self.server.home, self.server.cwd, self.server.update_cache)
+            import urllib.parse
+
+            q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
+            pi = (q.get("project") or [None])[0]
+            state = collect_state(self.server.home, self.server.cwd, self.server.update_cache, pi)
             self._send_json(200, state)
         elif self.path.startswith("/api/artifact?"):
             if not self._guard():

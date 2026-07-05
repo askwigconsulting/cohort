@@ -153,7 +153,7 @@ roster for now (project-awareness routing is tracked in #24).
 `rollback` · `init` / `deinit` · `add-agent` / `add-memory` / `add-skill` / `add-command` / `add-hook` /
 `adopt` / `personalize` / `edit` / `try` (global) · `add-specialist` /
 `remove-specialist` (project) · `promote` · `snapshot` · `context refresh` · `status` · `dashboard` ·
-`weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
+`projects` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
 command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a repair command,
 excepted); installs/compiles are idempotent and reversible. `cohort --version` prints the release.
 

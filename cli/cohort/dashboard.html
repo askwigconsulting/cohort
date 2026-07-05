@@ -189,6 +189,7 @@
     <span class="chip" id="version">v—</span>
     <span class="chip live"><i></i>live</span>
     <span class="chip" id="repo-chip" hidden></span>
+    <select class="chip" id="project-switcher" title="Switch project" hidden></select>
     <div class="spacer"></div>
     <button class="btn" id="btn-recompile" title="Compile canonical → staging → place into Claude"><span class="spin"></span>⟳ Recompile</button>
     <button class="btn" id="btn-snapshot" title="Capture a session record into .cohort/sessions/"><span class="spin"></span>✎ Snapshot</button>
@@ -359,7 +360,7 @@
 "use strict";
 const TOKEN = "__COHORT_TOKEN__";
 const $ = (id) => document.getElementById(id);
-let STATE = null, PENDING = null;
+let STATE = null, PENDING = null, FOCUS = null;
 
 /* ---------- plumbing ---------- */
 async function api(path, opts = {}) {
@@ -397,7 +398,8 @@ async function runAction(btn, action, args, okMsg) {
   PENDING = action;
   if (btn) { btn.disabled = true; btn.classList.add("busy"); }
   try {
-    const report = await api("/api/action", { method: "POST", body: JSON.stringify({ action, args: args || {} }) });
+    const a = { ...(args || {}) }; if (FOCUS != null) a.project = FOCUS;
+    const report = await api("/api/action", { method: "POST", body: JSON.stringify({ action, args: a }) });
     if (report.warning) toast(report.warning, "warn");
     if (okMsg) toast(okMsg);
     await refresh();
@@ -601,6 +603,21 @@ function renderProject(p) {
     li.appendChild(ico); li.appendChild(what); li.appendChild(when); feed.appendChild(li);
   }
 }
+function renderProjectSwitcher(s) {
+  const sel = $("project-switcher");
+  const projects = s.projects || [];
+  if (!projects.length) { sel.hidden = true; return; }
+  sel.hidden = false;
+  const focusedPath = s.focused_project;
+  sel.textContent = "";
+  for (const pr of projects) {
+    const o = document.createElement("option");
+    o.value = String(pr.index);
+    o.textContent = pr.name + " · " + pr.specialists + " spec" + (pr.specialists === 1 ? "" : "s");
+    if (pr.path === focusedPath) o.selected = true;
+    sel.appendChild(o);
+  }
+}
 function render(s) {
   STATE = s;
   $("version").textContent = "v" + (s.version || "?");
@@ -626,12 +643,13 @@ function render(s) {
   $("pipe-sub").textContent = unmanaged
     ? unmanaged + " unmanaged file" + (unmanaged === 1 ? "" : "s") + " in ~/.claude — run cohort status for adopt hints"
     : "how your office actually works";
+  renderProjectSwitcher(s);
   renderRoster();
   renderInventory();
   renderProject(s.project || null);
 }
 async function refresh() {
-  try { render(await api("/api/state")); }
+  try { render(await api("/api/state" + (FOCUS != null ? "?project=" + FOCUS : ""))); }
   catch (e) { console.error("refresh failed:", e); } // transient poll failure or render bug
 }
 
@@ -717,6 +735,7 @@ $("edit-form").addEventListener("submit", async (e) => {
   if (r) { $("dlg-edit").close(); EDIT_TARGET = null; }
 });
 
+$("project-switcher").addEventListener("change", (e) => { FOCUS = e.target.value; refresh(); });
 refresh();
 setInterval(() => { if (!PENDING) refresh(); }, 6000);
 </script>

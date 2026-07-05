@@ -240,10 +240,115 @@ def _summary(outcomes) -> dict[str, int]:
     }
 
 
+# --- project registry (multi-project awareness, #66) ------------------------
+
+
+def _registry_path(home: Path) -> Path:
+    return CohortPaths.for_global(home).state / "projects.json"
+
+
+def _read_registry(home: Path) -> list[str]:
+    import json
+
+    try:
+        data = json.loads(_registry_path(home).read_text(encoding="utf-8"))
+        return [str(p) for p in data.get("projects", [])] if isinstance(data, dict) else []
+    except Exception:  # noqa: BLE001 - missing/corrupt registry → empty
+        return []
+
+
+def _write_registry(home: Path, projects: list[str]) -> None:
+    import json
+
+    path = _registry_path(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"projects": projects}, indent=2), encoding="utf-8")
+    except OSError:
+        pass  # advisory state; a write failure never fails init/deinit
+
+
+def _register_project(home: Path, repo: Path) -> None:
+    """Record a repo as a Cohort project (dedup). Never records ``$HOME`` — its
+    ``.cohort`` is the global office home, not a project."""
+    gp = CohortPaths.for_global(home)
+    resolved = str(Path(repo).resolve())
+    if Path(resolved) == gp.home.resolve():
+        return
+    projects = _read_registry(home)
+    if resolved not in projects:
+        projects.append(resolved)
+        _write_registry(home, projects)
+
+
+def _deregister_project(home: Path, repo: Path) -> None:
+    resolved = str(Path(repo).resolve())
+    projects = [p for p in _read_registry(home) if p != resolved]
+    _write_registry(home, projects)
+
+
+def _project_wiring(repo: Path) -> str:
+    """The @import wiring state of a repo's CLAUDE.md, without importing status.py."""
+    from . import merge
+
+    claude_md = repo / ".claude" / "CLAUDE.md"
+    if not claude_md.exists():
+        return "missing"
+    inner = merge.extract_block(claude_md.read_text(encoding="utf-8"))
+    if inner is None:
+        return "missing"
+    return "present" if inner.strip() == IMPORT_LINE else "diverged"
+
+
+def list_projects(home: Path) -> list[dict[str, Any]]:
+    """Registered projects, each with a health summary. Prunes (and rewrites)
+    entries whose ``.cohort`` manifest is gone — a deleted/deinited repo drops off
+    the list on the next read. Read-only aside from that self-heal."""
+    gp = CohortPaths.for_global(home)
+    original = _read_registry(home)
+    kept: list[str] = []
+    out: list[dict[str, Any]] = []
+    for p in original:
+        repo = Path(p)
+        pp = CohortPaths.for_project(repo)
+        if pp.cohort_home == gp.cohort_home or not pp.manifest.exists():
+            continue  # dead or $HOME → prune
+        spec_dir = pp.canonical / "agents"
+        specialists = sorted(x.stem for x in spec_dir.glob("*.md")) if spec_dir.exists() else []
+        out.append({
+            "index": len(kept),
+            "path": p,
+            "name": repo.name,
+            "specialists": len(specialists),
+            "wiring": _project_wiring(repo),
+        })
+        kept.append(p)
+    if kept != original:
+        _write_registry(home, kept)
+    return out
+
+
+def resolve_registered(home: Path, index: Any) -> Optional[Path]:
+    """Map a project *index* (from the UI switcher) to its repo path — re-validated
+    against the live registry (manifest exists, not ``$HOME``). Never accepts a
+    client path, only an index, so the dashboard can't be steered to an arbitrary
+    directory."""
+    try:
+        i = int(index)
+    except (TypeError, ValueError):
+        return None
+    for entry in list_projects(home):
+        if entry["index"] == i:
+            return Path(entry["path"])
+    return None
+
+
 # --- commands ---------------------------------------------------------------
 
 
-def do_init(repo: Path, source: Path, dry_run: bool, force: bool = False) -> dict[str, Any]:
+def do_init(
+    repo: Path, source: Path, dry_run: bool, force: bool = False, home: Optional[Path] = None,
+) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
     existing = load_manifest(paths.manifest)
     if dry_run:
@@ -261,6 +366,7 @@ def do_init(repo: Path, source: Path, dry_run: bool, force: bool = False) -> dic
     manifest = existing or _new_manifest()
     outcomes = apply(plan, paths, manifest, force=force)
     manifest.persist(paths.manifest)
+    _register_project(home if home is not None else Path.home(), repo)  # multi-project registry
     return {
         "action": "init", "dry_run": False,
         "ops": [{"op": o.op.op, "dest": o.op.dest, "status": o.status} for o in outcomes],
@@ -294,7 +400,9 @@ def do_snapshot(repo: Path, dry_run: bool, refresh_index: bool) -> dict[str, Any
     return result
 
 
-def do_deinit(repo: Path, purge: bool, dry_run: bool) -> dict[str, Any]:
+def do_deinit(
+    repo: Path, purge: bool, dry_run: bool, home: Optional[Path] = None,
+) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
     manifest = load_manifest(paths.manifest)
     if manifest is None:
@@ -310,6 +418,7 @@ def do_deinit(repo: Path, purge: bool, dry_run: bool) -> dict[str, Any]:
         import shutil
 
         shutil.rmtree(paths.cohort_home)
+    _deregister_project(home if home is not None else Path.home(), repo)  # drop from registry
     return {
         "action": "deinit", "dry_run": False, "purge": purge,
         "summary": {"removed": result.removed, "restored": result.restored,
