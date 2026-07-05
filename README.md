@@ -102,10 +102,12 @@ stop). It shows *how the office works* — the canonical → compiled → placed
 pipeline with live health at each stage — plus the roster (agents grouped by department)
 and a full inventory of every artifact (skills, commands, hooks, memories) across the
 office, my office, and this project, each layer-badged. Day-to-day operations run from
-the UI: **update**, **recompile**, **re-init**, adding/removing project specialists,
-rating agents, snapshots, and improvement proposals. Every button calls the exact same
-human-gated command as the CLI behind a confirm step; submitting proposals as draft PRs
-deliberately stays in the terminal. It is
+the UI: **update**, **recompile**, **re-init**, **creating and editing** any artifact
+(agents, skills, commands, hooks) in your personal layer, adding/removing project
+specialists, rating agents, snapshots, and improvement proposals. The dashboard has no
+mutation logic of its own — every button invokes the same human-gated CLI command behind
+a confirm (authoring defaults to *my* office; touching the shared office is an explicit
+choice); submitting proposals as draft PRs deliberately stays in the terminal. It is
 loopback-only, token-guarded per launch, built on the Python stdlib (no extra
 dependencies), and dies with Ctrl-C — no daemon.
 

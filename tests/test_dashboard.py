@@ -400,3 +400,67 @@ def test_action_recompile_preserves_copy_mode(tmp_path, source):
     assert report["action"] == "recompile"
     assert placed.exists()
     assert not placed.is_symlink()  # still a copy after the dashboard recompile
+
+
+# === dashboard authoring + edit (increment 3) ================================
+
+
+def test_action_add_skill_authors_my_office(server, home):
+    srv, _ = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "add-skill",
+                                 "args": {"name": "weekly-review", "description": "Sum up the week."}})
+    assert status == 200, data
+    assert (home / ".cohort" / "my" / "canonical" / "skills" / "weekly-review.md").exists()
+    assert (home / ".claude" / "skills" / "weekly-review" / "SKILL.md").exists()
+
+
+def test_action_add_hook_and_command(server, home):
+    srv, _ = server
+    for action, args, sub, name in [
+        ("add-hook", {"name": "note", "description": "n.", "event": "session_start",
+                      "action_cmd": "cohort status"}, "hooks", "note"),
+        ("add-command", {"name": "standup", "description": "Daily standup."}, "commands", "standup"),
+    ]:
+        status, data = request(srv, "POST", "/api/action", token=srv.token,
+                               body={"action": action, "args": args})
+        assert status == 200, data
+        assert (home / ".cohort" / "my" / "canonical" / sub / (name + ".md")).exists()
+
+
+def test_action_edit_updates_my_artifact(server, home):
+    srv, _ = server
+    request(srv, "POST", "/api/action", token=srv.token,
+            body={"action": "add-skill", "args": {"name": "s", "description": "Old."}})
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "edit", "args": {"kind": "skill", "name": "s",
+                                 "body": "New body here.", "description": "New."}})
+    assert status == 200, data
+    placed = (home / ".claude" / "skills" / "s" / "SKILL.md").read_text(encoding="utf-8")
+    assert "New body here." in placed and "New." in placed
+
+
+def test_artifact_endpoint_returns_body(server, home):
+    srv, _ = server
+    request(srv, "POST", "/api/action", token=srv.token,
+            body={"action": "add-skill", "args": {"name": "s", "description": "D.",
+                  "body": "The skill body."}})
+    status, data = request(srv, "GET", "/api/artifact?layer=my&kind=skill&name=s", token=srv.token)
+    assert status == 200, data
+    art = json.loads(data)
+    assert art["description"] == "D." and "The skill body." in art["body"]
+
+
+def test_artifact_endpoint_requires_token(server):
+    srv, _ = server
+    status, _ = request(srv, "GET", "/api/artifact?layer=my&kind=skill&name=s")
+    assert status == 401
+
+
+def test_action_add_skill_to_office_writes_clone(server, home, source):
+    srv, _ = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "add-skill",
+                                 "args": {"name": "shared-skill", "description": "x.", "to": "office"}})
+    assert status == 200, data
+    assert (source / "canonical" / "skills" / "shared-skill.md").exists()
