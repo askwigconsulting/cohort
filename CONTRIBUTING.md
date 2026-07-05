@@ -32,6 +32,10 @@ Symlink-mechanics tests are skipped on Windows (Cohort uses copy-mode there).
   executor's job.
 - **The self-improvement loop never edits `canonical/` and never auto-merges.**
   Preserve those invariants (they're enforced by tests in `tests/test_phase8.py`).
+- **Changes land by reviewed PR.** See [GOVERNANCE.md](GOVERNANCE.md): the default
+  is an approving review from a contributor + green CI. While Cohort has a single
+  maintainer, that maintainer may self-approve and merge their own PRs; when a
+  second maintainer joins, PRs require another maintainer's approval.
 
 ## Submitting proposals through the loop
 
