@@ -108,9 +108,11 @@ structural and testable.
   (2) *enablement* fails closed — a stdlib scanner (not `tomllib`, absent on the 3.10 floor)
   reads the flag so it can't silently no-op, and a present-but-unreadable config refuses
   rather than disabling the gate; (3) it is honestly scoped — `verify-commit` proves "signed
-  by a key git trusts," not "signed by the maintainer," so the docs require the user to pin
-  the signer (`gpg.ssh.allowedSignersFile`). Key-fingerprint pinning inside Cohort is a
-  tracked follow-up. Default-off keeps clone-and-go unchanged.
+  by a key git trusts," not "signed by the maintainer," so `[update] signed_by = ["SHA256:…"]`
+  (#105) is the strict tier: it additionally requires the tip's signing key to match a pinned
+  fingerprint (a whole-token match against the *signing-key field* of `verify-commit --raw`,
+  never signer-controlled free text), and a non-empty list implies `require_signed`. The docs still steer users to also pin `gpg.ssh.allowedSignersFile`.
+  Default-off keeps clone-and-go unchanged.
 
 ## Verified environment facts (doc-cited; re-confirm on drift)
 
