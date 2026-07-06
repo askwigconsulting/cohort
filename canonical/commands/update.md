@@ -36,3 +36,16 @@ of ownertrust, so an unpinned keyring is a weak bar. `~/.cohort/cohort.toml` is
 therefore security-sensitive — it selects the update source and toggles this
 enforcement; keep it user-owned and not world-writable. The flag is off by
 default, so the common clone-and-go flow is unchanged.
+
+For a stronger, identity-pinned tier, set `signed_by` to a list of trusted key
+fingerprints — the update then additionally requires the tip's *signing key* to
+match one you pinned (not merely any key git trusts), and a non-empty `signed_by`
+implies `require_signed`:
+
+```toml
+[update]
+signed_by = ["SHA256:nuK/x67qH8e3I0UWKQQOTG5ggGCHcWrIfbVy810dHto"]
+```
+
+Get an SSH key's fingerprint with `ssh-keygen -lf key.pub` (the `SHA256:…` field);
+a GPG long key-id or fingerprint works too. Give it as a single-line TOML array.

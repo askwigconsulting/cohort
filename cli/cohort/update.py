@@ -14,6 +14,7 @@ cannot prompt for credentials or hang a session.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -132,6 +133,51 @@ def _commit_is_signed(source: Path, sha: str) -> bool:
         return False
     rc, _ = _git(source, "verify-commit", sha)
     return rc == 0
+
+
+def _signed_by(home: Path) -> list[str]:
+    """Pinned signer fingerprints from ``[update] signed_by`` (default []).
+
+    The strict tier layered over ``require_signed`` (#105): ``verify-commit`` only
+    proves "signed by a key git trusts," so pinning ties acceptance to specific
+    key fingerprints — an SSH ``SHA256:…`` fingerprint (``ssh-keygen -lf key.pub``)
+    or a GPG key id/fingerprint. Given as a single-line TOML array of strings:
+    ``signed_by = ["SHA256:abc…", "SHA256:def…"]``. A non-empty list implies
+    ``require_signed``. Read with the stdlib scanner (not tomllib, absent on the
+    3.10 floor); an unreadable/absent config yields [] — but ``require_signed``
+    still fail-closes there, so an unsigned tip is refused regardless."""
+    try:
+        text = _config_text(home)
+    except Exception:  # noqa: BLE001 - unreadable; require_signed still refuses unsigned
+        return []
+    if text is None:
+        return []
+    rhs = _update_table_value(text, "signed_by")
+    if rhs is None:
+        return []
+    return [a or b for a, b in re.findall(r'"([^"]*)"|\'([^\']*)\'', rhs) if (a or b).strip()]
+
+
+def _commit_signer_allowed(source: Path, sha: str, pins: list[str]) -> bool:
+    """True iff ``sha`` carries a good signature AND its signing key matches one of
+    the pinned fingerprints. Runs ``git verify-commit --raw``, which both sets a
+    non-zero exit on a bad/absent/untrusted signature and prints the signing key
+    (e.g. ``… with ED25519 key SHA256:<fp>`` for SSH, ``VALIDSIG <fp>`` for GPG);
+    a pin must appear in that output. Fail-closed: no pins, empty sha, non-zero
+    exit, or any error → False."""
+    if not sha or not pins:
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(source), "-c", "credential.helper=", "verify-commit", "--raw", sha],
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT, env={**os.environ, **_GIT_ENV},
+        )
+    except Exception:  # noqa: BLE001 - missing git / timeout → fail closed
+        return False
+    if proc.returncode != 0:  # not a good, trusted signature at all
+        return False
+    out = (proc.stdout or "") + (proc.stderr or "")
+    return any(pin in out for pin in pins)
 
 
 def resolve_upstream(source: Path, home: Path) -> tuple[str, str]:
@@ -508,12 +554,27 @@ def do_update(
     changed_files = _changed_files(source, tip)
     _, target = _git(source, "rev-parse", "--short", tip)
 
-    # Opt-in supply-chain gate (#30): with `[update] require_signed`, refuse a tip
-    # that isn't a verifiably signed commit — the residual risk once transport and
+    # Opt-in supply-chain gate (#30, #105): the residual risk once transport and
     # local config are trusted is a *compromised upstream* whose malicious commit
-    # is still a valid fast-forward. Gates the dry run too, so a preview never
-    # implies an apply that would then be refused.
-    if _require_signed(home) and not _commit_is_signed(source, tip):
+    # is still a valid fast-forward. Two tiers, both gating the dry run too so a
+    # preview never implies an apply that would then be refused:
+    #   * signed_by — a non-empty pin list requires the tip's signing key to match
+    #     a pinned fingerprint (and implies require_signed); the strong assurance.
+    #   * require_signed — the tip must be a verifiably signed commit (any key git
+    #     trusts). Weaker without a pinned allowed-signers store, but a real gate.
+    # Fail-closed throughout.
+    pins = _signed_by(home)
+    if pins:
+        if not _commit_signer_allowed(source, tip, pins):
+            return UpdateResult(
+                status="unsigned", upstream=upstream, behind=behind, current=current,
+                target=target, commits=commits, changed_files=changed_files,
+                detail="[update] signed_by is set, but the upstream tip "
+                f"({target}) is not signed by a pinned key. Verify the source and "
+                "its signing key, then re-run — only change signed_by as a "
+                "deliberate trust decision.",
+            )
+    elif _require_signed(home) and not _commit_is_signed(source, tip):
         return UpdateResult(
             status="unsigned", upstream=upstream, behind=behind, current=current,
             target=target, commits=commits, changed_files=changed_files,
@@ -521,7 +582,7 @@ def do_update(
             f"({target}) is not a verifiably signed commit. Confirm the source is "
             "trustworthy and pin its signing key (git's gpg.ssh.allowedSignersFile, "
             "or a trusted GPG key), then re-run — only unset require_signed as a "
-            "deliberate downgrade.",
+            "deliberate downgrade. For key-identity assurance, pin signed_by.",
         )
 
     if dry_run:

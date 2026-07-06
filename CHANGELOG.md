@@ -18,6 +18,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   unless the commit is signed by a key git trusts. Closes the residual
   compromised-upstream risk once transport and local config are trusted. Default
   stays off — the common clone-and-go flow is unchanged. (#30)
+- `cohort update` adds an identity-pinned tier: `[update] signed_by = ["SHA256:…"]`
+  additionally requires the upstream tip's *signing key* to match a pinned
+  fingerprint (matched against `git verify-commit --raw`), not merely any key git
+  trusts — closing the "signed by someone I trust ≠ signed by the maintainer" gap.
+  A non-empty `signed_by` implies `require_signed`; fail-closed throughout. (#105)
 
 ### Added
 - `cohort dashboard` — a lightweight, loopback-only web dashboard (stdlib HTTP
