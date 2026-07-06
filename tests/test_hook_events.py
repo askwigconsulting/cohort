@@ -62,17 +62,25 @@ def test_codex_event_names_are_official_pascalcase():
         assert name[0].isupper(), f"codex {event}->{name} should be PascalCase"
 
 
-def test_cursor_fragment_emits_expected_events():
+def test_cursor_fragment_uses_cursors_flat_versioned_schema():
+    # Cursor: top-level `version` + a FLAT handler array per event (verified against
+    # cursor.com/docs/hooks). Distinct from Codex — the two must not be unified.
     fragment = cursor.render_hooks_fragment(
         [_hook_ir("session_start"), _hook_ir("post_command", "c")]
     )
     assert fragment["version"] == 1
     assert set(fragment["hooks"]) == {"sessionStart", "afterShellExecution"}
+    assert fragment["hooks"]["sessionStart"] == [{"type": "command", "command": "cohort x"}]
 
 
-def test_codex_fragment_emits_pascalcase_events():
+def test_codex_fragment_uses_codex_matcher_group_schema():
+    # Codex: NO `version`; event → matcher groups → nested `hooks` handler array
+    # (verified against developers.openai.com/codex/hooks).
     fragment = codex.render_hooks_fragment(
         [_hook_ir("session_start"), _hook_ir("session_end", "e")]
     )
-    assert fragment["version"] == 1
+    assert "version" not in fragment
     assert set(fragment["hooks"]) == {"SessionStart", "Stop"}
+    assert fragment["hooks"]["SessionStart"] == [
+        {"hooks": [{"type": "command", "command": "cohort x"}]}
+    ]

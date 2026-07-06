@@ -1,11 +1,21 @@
 """The Codex renderer (P7-T1).
 
-Verified layout (OpenAI Codex CLI, mid-2026, doc-cited):
-- agent  → ``.codex/agents/<name>.toml``        (per-file subagent, TOML)
-- skill  → ``.agents/skills/<name>/SKILL.md``    (note ``.agents/``, NOT ``.codex/``)
+Layout doc-verified 2026-07-06 against the official Codex docs
+(developers.openai.com/codex):
+- agent  → ``.codex/agents/<name>.toml``  MATCH — per-file TOML subagent; keys
+           ``name``/``description``/``developer_instructions`` and a real per-agent
+           ``sandbox_mode`` (``"read-only"`` is valid). (/codex/subagents)
+- skill  → ``.agents/skills/<name>/SKILL.md``  MATCH — Codex scans ``.agents/skills``
+           (the ``.agents/`` root, NOT ``.codex/``); ``SKILL.md`` + ``name``/
+           ``description``. (/codex/skills)
 - command→ **declared gap** (Codex deprecates custom prompts in favor of skills)
-- hook   → ``.codex/hooks.json``                 (JSON → key-merge)
-- memory → ``.codex/AGENTS.md``                  (markdown → managed-block)
+- hook   → ``.codex/hooks.json``  path MATCH; schema fixed to Codex's matcher-group
+           form (no ``version``; event → groups → nested ``hooks``). (/codex/hooks)
+- memory → ``.codex/AGENTS.md``  correct FOR THE GLOBAL TIER only: ``dest_root =
+           base`` = home, so this resolves to ``~/.codex/AGENTS.md``, Codex's global
+           instructions path. Codex does NOT read ``<repo>/.codex/AGENTS.md``; a
+           project-tier codex install would need repo-root ``AGENTS.md`` — not a
+           current path (no memory targets codex). (/codex/guides/agents-md)
 
 ``dest_root = base`` and the full subpath is encoded in each staged_rel, because
 Codex's roots aren't uniform (``.codex/`` vs ``.agents/``).
@@ -13,14 +23,10 @@ Codex's roots aren't uniform (``.codex/`` vs ``.agents/``).
 Advisory is enforced mechanically via ``sandbox_mode = "read-only"`` (doc-
 confirmed) — the Codex analogue of Claude's tool-strip, not prose-only.
 
-Hook-event names verified 2026-07-06 against the official Codex docs
-(developers.openai.com/codex/hooks): Codex events are **PascalCase** and a
-different vocabulary than Cursor's camelCase — they mirror Claude Code's scheme
-(`SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, …). ‹verify› still open
-against a real install: the exact `.codex/hooks.json` wrapper and whether Codex
-reads per-file subagents at `.codex/agents/<name>.toml` (undocumented — Codex may
-route subagents through skills). Codex/Cursor stay experimental; shipped hooks
-target `[claude]`, so these paths are latent until a codex/cursor hook is authored.
+Hook-event names are Codex's **PascalCase** vocabulary (mirrors Claude Code), NOT
+Cursor's camelCase. Codex/Cursor stay experimental; shipped hooks/memories target
+``[claude]``, so the hooks.json and AGENTS.md paths are latent until a codex-
+targeted artifact is authored.
 """
 
 from __future__ import annotations
@@ -97,13 +103,21 @@ def render_skill(ir: IRArtifact) -> StagedFile:
 
 
 def render_hooks_fragment(hook_irs: list[IRArtifact]) -> dict:
-    hooks: dict[str, list] = {}
+    """Codex `hooks.json` (verified 2026-07-06, developers.openai.com/codex/hooks).
+
+    Codex's schema differs from Cursor's: NO top-level `version`, and each event maps
+    to an array of *matcher groups*, each with an optional `matcher` and a nested
+    `hooks` array of handlers — the JSON form of config.toml's `[[hooks.<Event>]]` /
+    `[[hooks.<Event>.hooks]]`. Cohort hooks match all invocations, so `matcher` is
+    omitted. (The Cursor renderer keeps Cursor's flat, versioned shape — do not unify.)
+    """
+    handlers: dict[str, list] = {}
     for ir in sorted(hook_irs, key=lambda i: i.name):
         event = HOOK_EVENT_MAP[ir.fields["event"]]
-        hooks.setdefault(event, []).append(
+        handlers.setdefault(event, []).append(
             {"type": "command", "command": ir.fields["action"]}
         )
-    return {"version": 1, "hooks": hooks}
+    return {"hooks": {event: [{"hooks": hs}] for event, hs in handlers.items()}}
 
 
 class CodexRenderer:

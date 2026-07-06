@@ -181,9 +181,14 @@ not because anyone promised it wouldn't, but because a test fails if it tries.
    Codex/Cursor hook-event names are **doc-verified against the current official docs**
    (cursor.com/docs, developers.openai.com/codex) and locked by `test_hook_events`; the
    Codex map was corrected from Cursor-style camelCase to Codex's PascalCase vocabulary.
-   `‹verify›` remaining is only what needs a **real install**: the exact `.codex/hooks.json`
-   wrapper and whether Codex reads per-file subagents at `.codex/agents/<name>.toml`.
-   Codex/Cursor stay experimental; shipped hooks target `[claude]` only, so those paths
-   are latent until a codex/cursor hook is authored.
+   The Codex layout is now doc-verified too: subagents `.codex/agents/<name>.toml`
+   (MATCH), skills `.agents/skills/<name>/SKILL.md` (MATCH), `.codex/hooks.json` schema
+   (corrected to Codex's matcher-group form, no `version`), and `.codex/AGENTS.md`
+   (correct for the global tier — resolves to `~/.codex/AGENTS.md`, Codex's global
+   instructions path; a project-tier codex install would need repo-root `AGENTS.md`,
+   not a current path). All formats now rest on official docs rather than being
+   doc-cited-and-possibly-stale; a **real install** would only add byte-level
+   belt-and-suspenders. Codex/Cursor stay experimental; shipped hooks/memories target
+   `[claude]` only, so those paths are latent until a codex/cursor artifact is authored.
 
 The fitting first trip through Cohort's own loop is the proposal that closes gap (2).
