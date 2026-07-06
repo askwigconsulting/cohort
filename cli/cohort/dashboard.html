@@ -12,6 +12,9 @@
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
+  /* The `hidden` attribute must win over any element's explicit `display`
+     (e.g. .btn is inline-flex), so a hidden button/section truly hides. */
+  [hidden] { display:none !important; }
   html { color-scheme:dark; }
   body {
     font:14px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
