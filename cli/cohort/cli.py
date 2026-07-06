@@ -839,7 +839,15 @@ def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
     from .install_model import CohortPaths
 
     paths = CohortPaths.for_global(Path.home())
-    pending = quarantine.reconcile(paths.state, paths.my)  # prune stale, then list
+    try:
+        pending = quarantine.reconcile(paths.state, paths.my)  # prune stale, then list
+    except quarantine.QuarantineStateError as exc:
+        typer.echo(
+            f"error: {exc}\nThe quarantine state is unreadable, so every pulled "
+            "hook/memory stays withheld. Delete the file to reset, then re-sync.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     report = {"action": "my-office-review", "pending": [a.to_dict() for a in pending]}
 
     def human(r: dict) -> None:
@@ -882,7 +890,15 @@ def my_office_approve(
         raise typer.Exit(code=1)
 
     paths = CohortPaths.for_global(Path.home())
-    cleared = quarantine.approve(paths.state, [name] if name else [], all=approve_all)
+    try:
+        cleared = quarantine.approve(paths.state, [name] if name else [], approve_all=approve_all)
+    except quarantine.QuarantineStateError as exc:
+        typer.echo(
+            f"error: {exc}\nRefusing to approve against unreadable state. Delete the "
+            "file to reset, then re-sync to re-record what is pending.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
     recompiled = _recompile_if_installed(Path.home()) if cleared else False
     report = {"action": "my-office-approve", "approved": cleared, "recompiled": recompiled}
 

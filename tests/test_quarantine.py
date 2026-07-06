@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cohort import quarantine as q
 
 
@@ -17,19 +19,34 @@ def _state(tmp_path: Path) -> Path:
     return d
 
 
-# --- identity helpers --------------------------------------------------------
+# --- identity helpers (frontmatter-based, matching the compiler) --------------
 
 
-def test_gated_kind_and_name_maps_hook_and_memory_dirs(tmp_path):
-    hook = tmp_path / "canonical" / "hooks" / "on-start.md"
-    mem = tmp_path / "canonical" / "memories" / "team-context.md"
-    agent = tmp_path / "canonical" / "agents" / "counsel.md"
-    for p in (hook, mem, agent):
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n", encoding="utf-8")
-    assert q.gated_kind_and_name(hook) == ("hook", "on-start")
-    assert q.gated_kind_and_name(mem) == ("memory", "team-context")
-    assert q.gated_kind_and_name(agent) is None  # agents are not gated
+def _art_file(path: Path, *, kind: str, name: str, extra: str = "") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nname: {name}\nkind: {kind}\nscope: global\n"
+        f"description: x.\ntargets: [claude]\n{extra}---\nbody\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_gated_identity_classifies_by_frontmatter_not_directory(tmp_path):
+    hook = _art_file(tmp_path / "hooks" / "on-start.md", kind="hook", name="on-start",
+                     extra="event: session_start\naction: cohort x\n")
+    mem = _art_file(tmp_path / "memories" / "ctx.md", kind="memory", name="ctx",
+                    extra="priority: high\ndisplay_name: Ctx\n")
+    agent = _art_file(tmp_path / "agents" / "counsel.md", kind="agent", name="counsel",
+                      extra="department: Law\ntopology: specialist\nadvisory: true\ntools: [read]\n"
+                            "display_name: Counsel\n")
+    # A hook MISFILED in the agents directory is still a hook by frontmatter.
+    misfiled = _art_file(tmp_path / "agents" / "evil.md", kind="hook", name="evil",
+                         extra="event: session_start\naction: cohort rce\n")
+    assert q.gated_identity(hook) == ("hook", "on-start")
+    assert q.gated_identity(mem) == ("memory", "ctx")
+    assert q.gated_identity(agent) is None  # agents are not gated
+    assert q.gated_identity(misfiled) == ("hook", "evil")  # the bypass, closed
 
 
 def test_content_hash_tracks_bytes(tmp_path):
@@ -48,10 +65,6 @@ def test_load_pending_absent_is_empty(tmp_path):
     assert q.pending_keys(_state(tmp_path)) == set()
 
 
-def test_load_pending_corrupt_is_empty(tmp_path):
-    state = _state(tmp_path)
-    (state / "quarantine.json").write_text("{not json", encoding="utf-8")
-    assert q.load_pending(state) == []
 
 
 def test_add_pending_dedups_by_identity_and_reports_new(tmp_path):
@@ -85,7 +98,7 @@ def test_approve_by_name_clears_all_hashes_of_that_name(tmp_path):
 def test_approve_all_clears_everything(tmp_path):
     state = _state(tmp_path)
     q.add_pending(state, [_art(name="a"), _art(name="b")])
-    assert set(q.approve(state, all=True)) == {"a", "b"}
+    assert set(q.approve(state, approve_all=True)) == {"a", "b"}
     assert q.load_pending(state) == []
 
 
@@ -102,10 +115,8 @@ def test_approve_unknown_name_is_a_noop(tmp_path):
 def test_reconcile_drops_records_not_matching_disk(tmp_path):
     state = _state(tmp_path)
     my = tmp_path / "my"
-    hooks = my / "canonical" / "hooks"
-    hooks.mkdir(parents=True)
-    live = hooks / "present.md"
-    live.write_text("live\n", encoding="utf-8")
+    live = _art_file(my / "canonical" / "hooks" / "present.md", kind="hook", name="present",
+                     extra="event: session_start\naction: cohort x\n")
     live_hash = q.content_hash(live)
     q.add_pending(
         state,
@@ -118,6 +129,17 @@ def test_reconcile_drops_records_not_matching_disk(tmp_path):
     survivors = q.reconcile(state, my)
     assert [a.content_hash for a in survivors] == [live_hash]
     assert q.pending_keys(state) == {("hook", "present", live_hash)}
+
+
+def test_load_pending_corrupt_raises_not_empty(tmp_path):
+    # A present-but-unparseable file must NOT read as "nothing pending" (fail open);
+    # it raises so callers withhold.
+    state = _state(tmp_path)
+    (state / "quarantine.json").write_text("{ truncated", encoding="utf-8")
+    with pytest.raises(q.QuarantineStateError):
+        q.load_pending(state)
+    with pytest.raises(q.QuarantineStateError):
+        q.pending_keys(state)
 
 
 # --- compile_ide withhold integration ----------------------------------------
@@ -213,3 +235,36 @@ def test_approve_lets_the_artifact_through_next_compile(tmp_path):
     assert compile_ide(src, "claude", scope="global", overlay=my).withheld == ["hook pulled-hook"]
     q.approve(state, ["pulled-hook"])
     assert compile_ide(src, "claude", scope="global", overlay=my).withheld == []
+
+
+def test_misfiled_hook_is_still_gated_by_frontmatter(tmp_path):
+    # The bypass the review caught: a hook in the AGENTS directory renders as a hook
+    # (its action reaches settings.json), so it must be quarantinable and withheld.
+    src = _source(tmp_path)
+    my = tmp_path / "home" / ".cohort" / "my"
+    (my.parent / "state").mkdir(parents=True)
+    d = my / "canonical" / "agents"
+    d.mkdir(parents=True)
+    (d / "evil.md").write_text(
+        "---\nname: evil\nkind: hook\nscope: global\ndescription: rce.\n"
+        f"targets: [claude]\nevent: session_start\naction: {_HOOK_MARKER}\n---\nbody\n",
+        encoding="utf-8",
+    )
+    state = my.parent / "state"
+    q.add_pending(state, [
+        q.QuarantinedArtifact("hook", "evil", q.content_hash(d / "evil.md"), "t"),
+    ])
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    assert result.withheld == ["hook evil"]
+    assert _HOOK_MARKER not in _placed_text(result)  # never reaches settings.json
+
+
+def test_corrupt_state_fails_closed_withholding_every_gated(tmp_path):
+    # A corrupt quarantine file must not read as "nothing pending" — every gated
+    # my-layer artifact is withheld until the state is repaired.
+    src, my = _source(tmp_path), _my_overlay(tmp_path)
+    (my.parent / "state" / "quarantine.json").write_text("{ truncated", encoding="utf-8")
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    assert result.withheld == ["hook pulled-hook", "memory pulled-memory"]
+    text = _placed_text(result)
+    assert _HOOK_MARKER not in text and _MEMORY_MARKER not in text

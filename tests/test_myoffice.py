@@ -18,7 +18,13 @@ import pytest
 
 from cohort import quarantine
 from cohort.install_model import CohortPaths
-from cohort.myoffice import MySyncError, _redact_url, do_my_sync, my_remote
+from cohort.myoffice import (
+    MySyncError,
+    _record_pulled_gated,
+    _redact_url,
+    do_my_sync,
+    my_remote,
+)
 
 _HOOK = (
     "---\nname: {name}\nkind: hook\nscope: global\n"
@@ -211,7 +217,7 @@ def test_incremental_pull_quarantines_new_hook_but_not_local_authoring(home, tmp
     home_b = tmp_path / "home-b"
     home_b.mkdir()
     do_my_sync(home_b, remote=str(remote))  # B shares history
-    quarantine.approve(CohortPaths.for_global(home_b).state, all=True)  # clear the adopt
+    quarantine.approve(CohortPaths.for_global(home_b).state, approve_all=True)  # clear the adopt
 
     # A pushes a new hook; B authors its own hook, then syncs.
     _write_hook(home, "from-a")
@@ -222,6 +228,21 @@ def test_incremental_pull_quarantines_new_hook_but_not_local_authoring(home, tmp
     # Only the pulled hook is quarantined; B's own authored hook is not.
     assert report["quarantined"] == ["hook from-a"]
     assert _pending_names(home_b) == {"from-a"}
+
+
+def test_diff_failure_fails_closed_quarantining_every_gated(home, tmp_path):
+    # If the pull-delta diff can't be computed (a git hiccup / bad ref), the recorder
+    # must fall back to quarantining EVERY gated artifact present, never activate one.
+    remote = _bare_remote(tmp_path)
+    _write_hook(home, "a")
+    _write_hook(home, "b")
+    do_my_sync(home, remote=str(remote))  # makes ~/.cohort/my a real repo with commits
+    my = CohortPaths.for_global(home).my
+    state = CohortPaths.for_global(home).state
+    quarantine.approve(state, approve_all=True)  # start clean
+    # A bogus `before` SHA makes `git diff before..after` exit non-zero → fallback.
+    newly = _record_pulled_gated(my, state, before="0" * 40, after="HEAD", unborn=False)
+    assert {a.name for a in newly} == {"a", "b"}
 
 
 def _run_cli(*args, home):
@@ -267,6 +288,25 @@ def test_pulled_agent_is_not_quarantined(home, tmp_path):
     report = do_my_sync(home_b, remote=str(remote))
     assert report["quarantined"] == []
     assert _pending_names(home_b) == set()
+
+
+def test_pulled_hook_misfiled_in_agents_dir_is_still_quarantined(home, tmp_path):
+    # The bypass the review caught: a hook committed under canonical/agents/ still
+    # renders as a hook, so sync must gate it by frontmatter kind, not directory.
+    remote = _bare_remote(tmp_path)
+    agents = CohortPaths.for_global(home).my / "canonical" / "agents"
+    agents.mkdir(parents=True, exist_ok=True)
+    (agents / "evil.md").write_text(
+        "---\nname: evil\nkind: hook\nscope: global\ndescription: rce.\n"
+        "targets: [claude]\nevent: session_start\naction: cohort rce\n---\nbody\n",
+        encoding="utf-8",
+    )
+    do_my_sync(home, remote=str(remote))
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    report = do_my_sync(home_b, remote=str(remote))
+    assert report["quarantined"] == ["hook evil"]
+    assert _pending_names(home_b) == {"evil"}
 
 
 def test_redact_url_leaves_scp_and_plain_urls_untouched():

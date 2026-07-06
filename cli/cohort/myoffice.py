@@ -21,7 +21,6 @@ from . import quarantine
 from .gitutil import GIT_ENV, GIT_TIMEOUT
 from .install_model import CohortPaths
 from .manifest import now_iso
-from .schema import KIND_DIRS
 
 _BRANCH = "main"
 
@@ -90,17 +89,6 @@ def _ensure_repo(my: Path) -> None:
         _git(my, "config", "user.name", "Cohort")
 
 
-def _all_gated_paths(my: Path) -> list[Path]:
-    """Every gated (hook/memory) canonical file currently in the personal layer."""
-    canonical = my / "canonical"
-    paths: list[Path] = []
-    for kind in quarantine.GATED_KINDS:
-        d = canonical / KIND_DIRS[kind]
-        if d.exists():
-            paths.extend(sorted(d.glob("*.md")))
-    return paths
-
-
 def _record_pulled_gated(
     my: Path, state_dir: Path, *, before: str, after: str, unborn: bool
 ) -> list[quarantine.QuarantinedArtifact]:
@@ -113,31 +101,29 @@ def _record_pulled_gated(
     history. Fail closed: if the diff cannot be computed, quarantine *every* gated
     artifact present rather than risk activating an unreviewed one.
 
+    Gated-ness is decided by frontmatter ``kind`` (via ``quarantine``), NOT by the
+    on-disk directory — the compiler classifies by ``kind``, so a hook misfiled in
+    ``canonical/agents/`` still renders and must still be gated. The diff therefore
+    scans the whole ``canonical`` tree, not only the hook/memory directories.
     Identity is the on-disk file's content hash, so approving pins the exact bytes.
     """
     # Persist the record even if nothing is installed yet: a later install's first
     # recompile must still withhold this pull, not silently activate it.
     state_dir.mkdir(parents=True, exist_ok=True)
+    canonical = my / "canonical"
     if unborn or not before:
-        changed = _all_gated_paths(my)
+        gated = quarantine.all_gated_in(canonical)
     else:
-        gated_dirs = [f"canonical/{KIND_DIRS[k]}" for k in quarantine.GATED_KINDS]
-        rc, out = _git(my, "diff", "--name-only", "-z", before, after, "--", *gated_dirs)
+        rc, out = _git(my, "diff", "--name-only", "-z", before, after, "--", "canonical")
         if rc != 0:  # a git hiccup must not silently activate a pulled sink
-            changed = _all_gated_paths(my)
+            gated = quarantine.all_gated_in(canonical)
         else:
             changed = [my / rel for rel in out.split("\x00") if rel]
-    items = []
-    for path in changed:
-        if not path.exists():  # deleted by the pull → nothing to place, nothing to gate
-            continue
-        kn = quarantine.gated_kind_and_name(path)
-        if kn is None:
-            continue
-        kind, name = kn
-        items.append(
-            quarantine.QuarantinedArtifact(kind, name, quarantine.content_hash(path), now_iso())
-        )
+            gated = quarantine.gated_artifacts(p for p in changed if p.exists())
+    items = [
+        quarantine.QuarantinedArtifact(kind, name, quarantine.content_hash(path), now_iso())
+        for kind, name, path in gated
+    ]
     return quarantine.add_pending(state_dir, items)
 
 
@@ -233,10 +219,16 @@ def do_my_sync(
     # pull attempted (no origin/main yet) → nothing to record.
     newly_quarantined: list[quarantine.QuarantinedArtifact] = []
     if pull_before is not None:
-        newly_quarantined = _record_pulled_gated(
-            my, CohortPaths.for_global(home).state,
-            before=pull_before, after=pull_after, unborn=pull_unborn,
-        )
+        try:
+            newly_quarantined = _record_pulled_gated(
+                my, CohortPaths.for_global(home).state,
+                before=pull_before, after=pull_after, unborn=pull_unborn,
+            )
+        except quarantine.QuarantineStateError:
+            # Existing state is corrupt; we can't append. Safe: the recompile below
+            # reads the same corrupt file and fails closed (withholds every gated
+            # artifact), so nothing pulled activates. `my-office review` surfaces it.
+            pass
 
     recompiled = _recompile_if_installed(home)
     # We only reach here past a successful fetch and push (both raise on failure).

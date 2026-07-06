@@ -21,7 +21,7 @@ from .executor import path_hash
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
 from .loader import load_artifact
-from .quarantine import GATED_KINDS, content_hash, pending_keys
+from .quarantine import GATED_KINDS, QuarantineStateError, content_hash, pending_keys
 from .schema import discover_artifacts, validate_frontmatter
 
 # Renderers by IDE — each is a descriptor the pipeline drives off (P7-R1).
@@ -172,15 +172,28 @@ def compile_ide(
         # Quarantine gate (#107): withhold pulled-but-unreviewed my-layer
         # hooks/memories at the single compile chokepoint, so no recompile from any
         # command silently activates them. Derived from the overlay's sibling
-        # state/ dir unless the caller passes an explicit set.
-        keys = pending_keys(overlay.parent / "state") if withhold is None else withhold
-        if keys:
+        # state/ dir unless the caller passes an explicit set. A corrupt state file
+        # (keys is None) fails CLOSED — withhold every gated my-layer artifact —
+        # rather than read as "nothing pending" and activate them.
+        fail_closed = False
+        if withhold is not None:
+            keys = withhold
+        else:
+            try:
+                keys = pending_keys(overlay.parent / "state")
+            except QuarantineStateError:
+                keys, fail_closed = set(), True
+        if keys or fail_closed:
             kept = []
             for ir in my_irs:
-                if (
-                    ir.kind in GATED_KINDS
-                    and ir.source_path is not None
-                    and (ir.kind, ir.name, content_hash(ir.source_path)) in keys
+                gated = ir.kind in GATED_KINDS
+                # A gated artifact is withheld when the state is corrupt, when its
+                # identity is unverifiable (no source_path), or when its exact bytes
+                # are quarantined — every ambiguous case fails closed.
+                if gated and (
+                    fail_closed
+                    or ir.source_path is None
+                    or (ir.kind, ir.name, content_hash(ir.source_path)) in keys
                 ):
                     result.withheld.append(f"{ir.kind} {ir.name}")
                     continue
