@@ -14,7 +14,12 @@ from pathlib import Path
 import pytest
 
 from cohort.install_model import CohortPaths
-from cohort.update import _commit_signer_allowed, _signed_by, do_update
+from cohort.update import (
+    _commit_signer_allowed,
+    _signed_by,
+    _signing_key_fingerprints,
+    do_update,
+)
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -52,6 +57,82 @@ def test_signed_by_ignores_the_key_under_other_tables(tmp_path):
     home = tmp_path / "home"
     _write_config(home, '[other]\nsigned_by = ["SHA256:x"]\n\n[update]\nupstream_branch = "main"\n')
     assert _signed_by(home) == []
+
+
+def test_signed_by_parses_a_multi_line_array(tmp_path):
+    # A hand-edited multi-line array must NOT silently parse to [] — that would
+    # disable the gate while the user believes they pinned a key (#108 review).
+    home = tmp_path / "home"
+    _write_config(
+        home,
+        '[update]\nsigned_by = [\n  "SHA256:aaa",  # primary\n  "SHA256:bbb",\n]\n',
+    )
+    assert _signed_by(home) == ["SHA256:aaa", "SHA256:bbb"]
+
+
+# === fingerprint extraction & matching (host-independent) =====================
+
+
+class _FakeVerify:
+    """Stand in for ``git verify-commit --raw`` with canned output, so the reject
+    paths are exercised on hosts without ssh/gpg commit signing."""
+
+    def __init__(self, returncode, stdout="", stderr="", raises=False):
+        self.returncode, self.stdout, self.stderr, self.raises = returncode, stdout, stderr, raises
+
+    def __call__(self, cmd, *args, **kwargs):
+        if self.raises:
+            raise OSError("git not found")
+        return subprocess.CompletedProcess(cmd, self.returncode, self.stdout, self.stderr)
+
+
+_FP_A = "A" * 40  # the real GPG signing-key fingerprint
+_FP_C = "C" * 40  # a different, pinned fingerprint
+
+
+def test_signing_key_fingerprints_reads_gpg_validsig_not_the_user_id():
+    # The user-id on GOODSIG is set by the key's owner; only VALIDSIG names the key.
+    raw = (
+        "[GNUPG:] NEWSIG\n"
+        f"[GNUPG:] GOODSIG DEADBEEF12345678 Evil {_FP_C}\n"
+        f"[GNUPG:] VALIDSIG {_FP_A} 2026-01-01 0 0 4 0 1 8 00 {_FP_A}\n"
+    )
+    keys = _signing_key_fingerprints(raw)
+    assert _FP_A in keys and _FP_C not in keys
+
+
+def test_signing_key_fingerprints_reads_ssh_key_token_only():
+    raw = 'Good "git" signature for SHA256:planted with ED25519 key SHA256:realkey\n'
+    assert _signing_key_fingerprints(raw) == {"SHA256:realkey"}
+
+
+def test_commit_signer_allowed_rejects_userid_spoof(monkeypatch):
+    # rc==0 (some trusted key signed it) but the pinned string appears ONLY in the
+    # attacker-controlled user-id; the real key is _FP_A. Must be refused.
+    raw = (
+        f"[GNUPG:] GOODSIG DEADBEEF12345678 pinned-{_FP_C}\n"
+        f"[GNUPG:] VALIDSIG {_FP_A} 2026-01-01 0 0 4 0 1 8 00 {_FP_A}\n"
+    )
+    monkeypatch.setattr("cohort.update.subprocess.run", _FakeVerify(0, stderr=raw))
+    assert _commit_signer_allowed(Path("."), "deadbeef", [_FP_C]) is False
+    assert _commit_signer_allowed(Path("."), "deadbeef", [_FP_A]) is True  # real key matches
+
+
+def test_commit_signer_allowed_ssh_whole_token_match(monkeypatch):
+    raw = 'Good "git" signature for m@e.st with ED25519 key SHA256:realkey\n'
+    monkeypatch.setattr("cohort.update.subprocess.run", _FakeVerify(0, stdout=raw))
+    assert _commit_signer_allowed(Path("."), "sha", ["SHA256:realkey"]) is True
+    assert _commit_signer_allowed(Path("."), "sha", ["SHA256:other"]) is False
+
+
+def test_commit_signer_allowed_fails_closed(monkeypatch):
+    # non-zero exit, unidentifiable key, and a subprocess error all refuse.
+    monkeypatch.setattr("cohort.update.subprocess.run", _FakeVerify(1, stderr="bad signature"))
+    assert _commit_signer_allowed(Path("."), "sha", [_FP_A]) is False
+    monkeypatch.setattr("cohort.update.subprocess.run", _FakeVerify(0, stdout="Good signature\n"))
+    assert _commit_signer_allowed(Path("."), "sha", [_FP_A]) is False  # rc 0 but no key token
+    monkeypatch.setattr("cohort.update.subprocess.run", _FakeVerify(0, raises=True))
+    assert _commit_signer_allowed(Path("."), "sha", [_FP_A]) is False
 
 
 # === signed_by implies require_signed (host-independent) ======================

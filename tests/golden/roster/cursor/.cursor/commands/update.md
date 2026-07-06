@@ -38,5 +38,7 @@ implies `require_signed`:
 signed_by = ["SHA256:nuK/x67qH8e3I0UWKQQOTG5ggGCHcWrIfbVy810dHto"]
 ```
 
-Get an SSH key's fingerprint with `ssh-keygen -lf key.pub` (the `SHA256:…` field);
-a GPG long key-id or fingerprint works too. Give it as a single-line TOML array.
+Get an SSH key's fingerprint with `ssh-keygen -lf key.pub` (the `SHA256:…` field),
+or a GPG key's *full* fingerprint with `gpg --fingerprint` (a short/long key-id is
+not enough — pin the whole fingerprint). Give it as a TOML array of strings, on one
+line or several.

@@ -110,8 +110,8 @@ structural and testable.
   rather than disabling the gate; (3) it is honestly scoped — `verify-commit` proves "signed
   by a key git trusts," not "signed by the maintainer," so `[update] signed_by = ["SHA256:…"]`
   (#105) is the strict tier: it additionally requires the tip's signing key to match a pinned
-  fingerprint (matched against `verify-commit --raw` output), and a non-empty list implies
-  `require_signed`. The docs still steer users to also pin `gpg.ssh.allowedSignersFile`.
+  fingerprint (a whole-token match against the *signing-key field* of `verify-commit --raw`,
+  never signer-controlled free text), and a non-empty list implies `require_signed`. The docs still steer users to also pin `gpg.ssh.allowedSignersFile`.
   Default-off keeps clone-and-go unchanged.
 
 ## Verified environment facts (doc-cited; re-confirm on drift)

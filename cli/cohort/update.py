@@ -94,6 +94,43 @@ def _update_table_value(text: str, key: str) -> Optional[str]:
     return None
 
 
+def _update_array_text(text: str, key: str) -> Optional[str]:
+    """The full right-hand side of an ``[update]`` array-valued ``key``, joined
+    across physical lines when the array spans several (``key = [`` / ``"a",`` /
+    ``]``). Returns None when the key is absent from the table.
+
+    ``_update_table_value`` reads a single line, so a multi-line array would yield
+    just ``[`` and parse to *zero* elements — a silent fail-open for a security
+    gate like ``signed_by``. This joins the array's lines so every element is seen
+    (and an unterminated array still surfaces its elements rather than vanishing).
+    Comments are stripped per line; the pinned fingerprints Cohort matches never
+    contain ``#``."""
+    in_update = False
+    collecting = False
+    buf: list[str] = []
+    for line in text.splitlines():
+        s = line.split("#", 1)[0].strip()  # drop comments; fingerprints have no '#'
+        if collecting:
+            buf.append(s)
+            if "]" in s:
+                return " ".join(buf)
+            continue
+        if not s:
+            continue
+        if s.startswith("[") and s.endswith("]"):
+            in_update = s == "[update]"
+            continue
+        if in_update and "=" in s:
+            k, _, v = s.partition("=")
+            if k.strip() == key:
+                v = v.strip()
+                if "[" not in v or "]" in v:  # scalar or single-line array — done
+                    return v
+                buf.append(v)  # array opened but not closed on this line
+                collecting = True
+    return " ".join(buf) if buf else None
+
+
 def _truthy_toml(rhs: str) -> bool:
     """A TOML boolean-ish right-hand side read as True: bare ``true`` or a common
     truthy string. For a security opt-in, honoring a mistyped ``"true"`` fails
@@ -141,30 +178,63 @@ def _signed_by(home: Path) -> list[str]:
     The strict tier layered over ``require_signed`` (#105): ``verify-commit`` only
     proves "signed by a key git trusts," so pinning ties acceptance to specific
     key fingerprints — an SSH ``SHA256:…`` fingerprint (``ssh-keygen -lf key.pub``)
-    or a GPG key id/fingerprint. Given as a single-line TOML array of strings:
-    ``signed_by = ["SHA256:abc…", "SHA256:def…"]``. A non-empty list implies
-    ``require_signed``. Read with the stdlib scanner (not tomllib, absent on the
-    3.10 floor); an unreadable/absent config yields [] — but ``require_signed``
-    still fail-closes there, so an unsigned tip is refused regardless."""
+    or a full GPG fingerprint. Given as a TOML array of strings, single- or
+    multi-line: ``signed_by = ["SHA256:abc…", "SHA256:def…"]``. A non-empty list
+    implies ``require_signed``. Read with the stdlib scanner (not tomllib, absent
+    on the 3.10 floor); an unreadable/absent config yields [] — but
+    ``require_signed`` still fail-closes there, so an unsigned tip is refused
+    regardless."""
     try:
         text = _config_text(home)
     except Exception:  # noqa: BLE001 - unreadable; require_signed still refuses unsigned
         return []
     if text is None:
         return []
-    rhs = _update_table_value(text, "signed_by")
+    rhs = _update_array_text(text, "signed_by")
     if rhs is None:
         return []
     return [a or b for a, b in re.findall(r'"([^"]*)"|\'([^\']*)\'', rhs) if (a or b).strip()]
 
 
+def _signing_key_fingerprints(raw: str) -> set[str]:
+    """The signing-key fingerprints named by ``git verify-commit --raw`` output —
+    and *only* those, never free-text a signer controls.
+
+    Two formats appear:
+
+    * GPG status lines ``[GNUPG:] VALIDSIG <fpr> … <primary-fpr>`` — the fpr fields
+      are the actual key, distinct from the ``GOODSIG <keyid> <user-id>`` line
+      whose trailing user-id is set by the key's owner. Anchoring to ``VALIDSIG``
+      as the status keyword (position 1, right after ``[GNUPG:]``) means a crafted
+      user-id embedding a pinned fingerprint cannot be mistaken for the key.
+    * SSH ``… with <ALGO> key SHA256:<b64>`` — the token right after ``key``.
+
+    Extracting the key token and comparing for equality (below) closes the bypass
+    where ``pin in raw_output`` would match a pinned string planted anywhere in the
+    blob, e.g. a malicious commit's UID."""
+    fingerprints: set[str] = set()
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[0] == "[GNUPG:]" and len(parts) >= 3 and parts[1] == "VALIDSIG":
+            fingerprints.update(
+                tok.upper() for tok in parts[2:] if re.fullmatch(r"[0-9A-Fa-f]{40,}", tok)
+            )
+        for i, tok in enumerate(parts[:-1]):
+            if tok == "key" and parts[i + 1].startswith("SHA256:"):
+                fingerprints.add(parts[i + 1])
+    return fingerprints
+
+
 def _commit_signer_allowed(source: Path, sha: str, pins: list[str]) -> bool:
-    """True iff ``sha`` carries a good signature AND its signing key matches one of
-    the pinned fingerprints. Runs ``git verify-commit --raw``, which both sets a
-    non-zero exit on a bad/absent/untrusted signature and prints the signing key
-    (e.g. ``… with ED25519 key SHA256:<fp>`` for SSH, ``VALIDSIG <fp>`` for GPG);
-    a pin must appear in that output. Fail-closed: no pins, empty sha, non-zero
-    exit, or any error → False."""
+    """True iff ``sha`` carries a good signature AND its signing key's fingerprint
+    equals one of the pinned fingerprints. Runs ``git verify-commit --raw`` (which
+    both sets a non-zero exit on a bad/absent/untrusted signature and names the
+    signing key), extracts the key fingerprint from that output, and requires a
+    *whole-token* match — not a substring, which a signer-controlled user-id could
+    otherwise spoof. Fail-closed: no pins, empty sha, non-zero exit, no
+    identifiable key, or any error → False."""
     if not sha or not pins:
         return False
     try:
@@ -176,8 +246,11 @@ def _commit_signer_allowed(source: Path, sha: str, pins: list[str]) -> bool:
         return False
     if proc.returncode != 0:  # not a good, trusted signature at all
         return False
-    out = (proc.stdout or "") + (proc.stderr or "")
-    return any(pin in out for pin in pins)
+    keys = _signing_key_fingerprints((proc.stdout or "") + "\n" + (proc.stderr or ""))
+    if not keys:  # signed, but we cannot identify the key → fail closed
+        return False
+    wanted = {p if p.startswith("SHA256:") else p.upper() for p in (pin.strip() for pin in pins)}
+    return not keys.isdisjoint(wanted)
 
 
 def resolve_upstream(source: Path, home: Path) -> tuple[str, str]:
