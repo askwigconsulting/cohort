@@ -45,6 +45,10 @@ class CompileResult:
     scope_filtered: list[str] = field(default_factory=list)
     # Office artifacts deliberately replaced by a personalized my-layer copy.
     overridden: list[str] = field(default_factory=list)
+    # my-layer hooks withheld from this compile (exclude_hooks) — pulled hooks that
+    # my-office sync deliberately does not auto-activate (#103). Named for the caller
+    # to tell the user to `cohort recompile` when they want them live.
+    withheld_hooks: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +58,7 @@ class CompileResult:
             "skipped": self.skipped,
             "scope_filtered": self.scope_filtered,
             "overridden": self.overridden,
+            "withheld_hooks": self.withheld_hooks,
         }
 
 
@@ -122,7 +127,7 @@ def merge_layers(office_irs: list, my_irs: list) -> tuple[list, list]:
 def compile_ide(
     source: Path, ide: str, scope: Optional[str] = None,
     only_agents: Optional[frozenset[str]] = None, project_tier: bool = False,
-    overlay: Optional[Path] = None,
+    overlay: Optional[Path] = None, exclude_hooks: bool = False,
 ) -> CompileResult:
     """Render every targeting canonical artifact of ``scope`` into staged files for
     ``ide``. The global install passes ``scope="global"`` (the leak guard — project
@@ -166,6 +171,17 @@ def compile_ide(
             if not (ir.kind == "agent" and ir.layer == "office" and ir.name not in only_agents)
         ]
         result.skipped.extend(sorted(excluded))
+    if exclude_hooks:
+        # Drop ALL hook IRs so no settings.json hooks fragment is staged and its
+        # merge never runs — the user's existing hooks (office + personal) are left
+        # exactly as-is, and a freshly-pulled hook stays inert until an explicit
+        # `cohort recompile` (#103). Excluding only my-layer hooks would instead
+        # re-merge an office-only fragment and drop a previously-active personal
+        # hook, so the exclusion is all-or-nothing on the fragment.
+        result.withheld_hooks = sorted(
+            ir.name for ir in irs if ir.kind == "hook" and ir.layer == "my"
+        )
+        irs = [ir for ir in irs if ir.kind != "hook"]
     try:
         staged, skipped = renderer.compile(irs, project_tier=project_tier)
     except MarkerError as exc:

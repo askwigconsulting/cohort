@@ -793,6 +793,10 @@ def my_office_sync(
     history), commits your local changes on top, pushes, and recompiles so anything
     pulled is placed. The personal layer is pushed wholesale — don't store secrets
     in ~/.cohort/my.
+
+    Pulled hooks are NOT auto-activated: a hook's action is code that runs on IDE
+    events, so a hook changed by the pull is reported, not merged into settings.json.
+    Review it in ~/.cohort/my/canonical/hooks/ and run `cohort recompile` to enable.
     """
     from .myoffice import MySyncError, do_my_sync
 
@@ -813,6 +817,15 @@ def my_office_sync(
             bits.append("pushed")
         typer.echo(f"my-office sync: {', '.join(bits) or 'up to date'} · {r['remote']}"
                    + (" · recompiled" if r.get("recompiled") else ""))
+        withheld = r.get("withheld_hooks") or []
+        if withheld:
+            names = ", ".join(withheld)
+            typer.echo(
+                f"note: {len(withheld)} pulled hook(s) not activated ({names}) — a hook "
+                "runs code on IDE events, so review them in ~/.cohort/my/canonical/hooks/ "
+                "then run `cohort recompile` to enable.",
+                err=True,
+            )
 
     _emit(report, json_output, human)
     raise typer.Exit(code=0)

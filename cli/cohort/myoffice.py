@@ -133,6 +133,7 @@ def do_my_sync(
             f"could not reach sync remote {safe_url} — check the URL, network, or access"
         )
     pulled = False
+    pulled_hooks: list[str] = []
     # Only fast-forward: a diverged personal history is the user's to reconcile.
     if _git(my, "rev-parse", "--verify", f"origin/{_BRANCH}")[0] == 0:
         unborn = _git(my, "rev-parse", "--verify", "HEAD")[0] != 0
@@ -148,7 +149,10 @@ def do_my_sync(
                 "my office has diverged from its remote — reconcile "
                 f"{my} by hand (git pull --rebase), then re-run sync"
             )
-        pulled = before != _git(my, "rev-parse", "HEAD")[1]
+        after_merge = _git(my, "rev-parse", "HEAD")[1]
+        pulled = before != after_merge
+        if pulled:
+            pulled_hooks = _pulled_hook_names(my, before, after_merge)
 
     # A real .gitignore (secret-excluding) only if the reconciled office lacks one.
     gitignore = my / ".gitignore"
@@ -171,13 +175,34 @@ def do_my_sync(
 
     recompiled = _recompile_if_installed(home)
     # We only reach here past a successful fetch and push (both raise on failure).
+    # withheld_hooks: hooks the pull changed but sync deliberately did NOT activate
+    # (#103) — a pulled hook's action is code that runs on IDE events, so it never
+    # goes live off a sync; the user runs `cohort recompile` to opt in after review.
     return {"action": "my-sync", "dry_run": False, "remote": safe_url,
-            "fetched": True, "pulled": pulled, "pushed": pushed, "recompiled": recompiled}
+            "fetched": True, "pulled": pulled, "pushed": pushed, "recompiled": recompiled,
+            "withheld_hooks": pulled_hooks}
+
+
+def _pulled_hook_names(my: Path, before: str, after: str) -> list[str]:
+    """Stems of canonical hooks introduced or changed by the pull (``before..after``).
+    On a fresh-machine adopt (``before`` empty), every hook in the adopted tip counts.
+    Best-effort — a git hiccup yields [] rather than blocking the sync."""
+    if before:
+        rc, out = _git(my, "diff", "--name-only", f"{before}..{after}")
+    else:
+        rc, out = _git(my, "ls-tree", "-r", "--name-only", after)
+    if rc != 0 or not out:
+        return []
+    return sorted(
+        Path(f).stem for f in out.splitlines()
+        if f.startswith("canonical/hooks/") and f.endswith(".md")
+    )
 
 
 def _recompile_if_installed(home: Path) -> bool:
-    """Recompile the global Claude tier so a pulled personal artifact is placed.
-    A no-op (returns False) when nothing is installed."""
+    """Recompile the global Claude tier so pulled personal artifacts are placed —
+    excluding hooks (#103): a freshly-pulled hook's action must not go live off a
+    sync without review. A no-op (returns False) when nothing is installed."""
     from .manifest import load_manifest
     from .roster import recompile_global_claude
     from .source import resolve_source_lenient
@@ -189,7 +214,7 @@ def _recompile_if_installed(home: Path) -> bool:
     if source is None:
         return False
     try:
-        recompile_global_claude(home, source)
+        recompile_global_claude(home, source, place_my_hooks=False)
         return True
     except Exception:  # noqa: BLE001 - sync succeeded; a recompile hiccup isn't fatal
         return False

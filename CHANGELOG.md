@@ -11,6 +11,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- `cohort my-office sync` no longer auto-activates pulled hooks (#103). A hook's
+  `action` is code that runs on IDE events, so a hook changed by the pull is
+  reported and left inert rather than merged into `settings.json` — closing a
+  code-execution path from a shared/multi-writer personal remote. Agents, skills,
+  commands, and memories still auto-place as before; existing hooks are untouched;
+  `cohort recompile` activates a reviewed hook. (compile gains `exclude_hooks`.)
+
 ### Security
 - `cohort update` gains opt-in signed-commit verification: `[update]
   require_signed = true` in the global `cohort.toml` gates the fast-forward behind

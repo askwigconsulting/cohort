@@ -388,15 +388,21 @@ class EditError(Exception):
     """A refused ``cohort edit`` (missing artifact, invalid result)."""
 
 
-def recompile_global_claude(home: Path, source: Path):
+def recompile_global_claude(home: Path, source: Path, *, place_my_hooks: bool = True):
     """Compile + place the global Claude tier honoring the persisted roster subset,
     the recorded install mode, and the my-office overlay — the single tail every
-    global authoring/edit path shares."""
+    global authoring/edit path shares.
+
+    ``place_my_hooks=False`` (my-office sync, #103) excludes hooks from the compile
+    so a freshly-pulled hook is never auto-merged into settings.json and run; the
+    user's existing hooks are left untouched and activate a pulled hook only via an
+    explicit ``cohort recompile``."""
     paths = CohortPaths.for_global(home)
     manifest = load_manifest(paths.manifest)
     only = frozenset(manifest.roster) if manifest and manifest.roster else None
     mode = (manifest.mode if manifest and manifest.mode else None) or resolve_mode(copy=False)
-    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=paths.my)
+    result = compile_ide(source, "claude", scope="global", only_agents=only,
+                         overlay=paths.my, exclude_hooks=not place_my_hooks)
     write_staging(paths, result)
     return do_install(
         home=home, selection=["claude"], mode=mode, force=False, source=source,
