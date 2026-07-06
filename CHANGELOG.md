@@ -46,6 +46,16 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   handler array). Also fixed the Cursor `post_command` mapping (`afterFileEdit` →
   `afterShellExecution`); Cursor's own `hooks.json` shape was already correct. (#23)
 
+### Changed
+- The dashboard now presents the office as **three level sections** — **Company
+  office** (the shared company source), **Your office** (`~/.cohort/my`), and **This
+  project** — instead of a roster-plus-flat-inventory split. Every artifact of every
+  kind (agent, skill, command, hook, memory) appears in its level as a card tagged
+  with its kind and metadata (role, department, hook event, target IDEs, on-roster
+  state), and each card is clickable for a read-only detail view (description + body,
+  served by `/api/artifact` for any layer). Per-card actions (rate, edit my-office,
+  remove specialist) and the create/add affordances are preserved. Backend unchanged.
+
 ### Added
 - `cohort dashboard` — a lightweight, loopback-only web dashboard (stdlib HTTP
   server, zero new dependencies) showing wiring & health (IDE placement, source-link
