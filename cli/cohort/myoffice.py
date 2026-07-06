@@ -218,6 +218,7 @@ def do_my_sync(
     # recompile, so the recompile withholds it instead of activating it (#107). No
     # pull attempted (no origin/main yet) → nothing to record.
     newly_quarantined: list[quarantine.QuarantinedArtifact] = []
+    state_unreadable = False
     if pull_before is not None:
         try:
             newly_quarantined = _record_pulled_gated(
@@ -227,14 +228,16 @@ def do_my_sync(
         except quarantine.QuarantineStateError:
             # Existing state is corrupt; we can't append. Safe: the recompile below
             # reads the same corrupt file and fails closed (withholds every gated
-            # artifact), so nothing pulled activates. `my-office review` surfaces it.
-            pass
+            # artifact), so nothing pulled activates. Signal it so the user is told
+            # to run `my-office review` rather than seeing an empty quarantine list.
+            state_unreadable = True
 
     recompiled = _recompile_if_installed(home)
     # We only reach here past a successful fetch and push (both raise on failure).
     return {"action": "my-sync", "dry_run": False, "remote": safe_url,
             "fetched": True, "pulled": pulled, "pushed": pushed, "recompiled": recompiled,
-            "quarantined": [f"{a.kind} {a.name}" for a in newly_quarantined]}
+            "quarantined": [f"{a.kind} {a.name}" for a in newly_quarantined],
+            "quarantine_state_unreadable": state_unreadable}
 
 
 def _recompile_if_installed(home: Path) -> bool:

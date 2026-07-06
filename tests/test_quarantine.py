@@ -131,6 +131,26 @@ def test_reconcile_drops_records_not_matching_disk(tmp_path):
     assert q.pending_keys(state) == {("hook", "present", live_hash)}
 
 
+def test_reconcile_keeps_both_when_two_gated_share_kind_and_name(tmp_path):
+    # A correctly-filed hook and a misfiled duplicate share (kind=hook, name=evil)
+    # but differ in bytes. reconcile must keep BOTH pending records (full-identity
+    # key), not collapse them and re-activate the misfiled one.
+    state = _state(tmp_path)
+    my = tmp_path / "my"
+    filed = _art_file(my / "canonical" / "hooks" / "evil.md", kind="hook", name="evil",
+                      extra="event: session_start\naction: cohort good\n")
+    misfiled = _art_file(my / "canonical" / "agents" / "evil.md", kind="hook", name="evil",
+                         extra="event: session_start\naction: cohort rce\n")
+    h_filed, h_misfiled = q.content_hash(filed), q.content_hash(misfiled)
+    assert h_filed != h_misfiled
+    q.add_pending(state, [
+        q.QuarantinedArtifact("hook", "evil", h_filed, "t"),
+        q.QuarantinedArtifact("hook", "evil", h_misfiled, "t"),
+    ])
+    survivors = q.reconcile(state, my)
+    assert {a.content_hash for a in survivors} == {h_filed, h_misfiled}  # neither dropped
+
+
 def test_load_pending_corrupt_raises_not_empty(tmp_path):
     # A present-but-unparseable file must NOT read as "nothing pending" (fail open);
     # it raises so callers withhold.

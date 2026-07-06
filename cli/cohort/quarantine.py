@@ -214,13 +214,19 @@ def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
     """Drop pending records whose exact bytes are no longer present on disk (the
     artifact was deleted or changed by a later pull/edit), returning the survivors.
     Classifies on-disk artifacts by frontmatter kind (whole-tree), matching how they
-    were recorded, so the two sides can never disagree on what "gated" means."""
-    live_hash: dict[tuple[str, str], str] = {
-        (kind, name): content_hash(path)
+    were recorded, so the two sides can never disagree on what "gated" means.
+
+    Keyed on the FULL ``(kind, name, hash)`` identity — matching ``add_pending`` and
+    the ``compile_ide`` withhold — so two gated files that share a kind+name but
+    differ in bytes (a correctly-filed hook and a misfiled duplicate) both survive.
+    Collapsing them by ``(kind, name)`` would drop one live record and re-activate
+    an unreviewed artifact on the next recompile."""
+    live: set[tuple[str, str, str]] = {
+        (kind, name, content_hash(path))
         for kind, name, path in all_gated_in(my_root / "canonical")
     }
     pending = load_pending(state_dir)
-    survivors = [a for a in pending if live_hash.get((a.kind, a.name)) == a.content_hash]
+    survivors = [a for a in pending if a.key in live]
     if len(survivors) != len(pending):
         _save_pending(state_dir, survivors)
     return survivors

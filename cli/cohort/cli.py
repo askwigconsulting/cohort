@@ -813,6 +813,11 @@ def my_office_sync(
             bits.append("pushed")
         typer.echo(f"my-office sync: {', '.join(bits) or 'up to date'} · {r['remote']}"
                    + (" · recompiled" if r.get("recompiled") else ""))
+        if r.get("quarantine_state_unreadable"):
+            typer.echo(
+                "  ⚠ quarantine state is unreadable — every pulled hook/memory is "
+                "withheld. Run `cohort my-office review` to repair and see what is held."
+            )
         held = r.get("quarantined") or []
         if held:
             typer.echo(
