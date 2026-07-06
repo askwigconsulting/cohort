@@ -95,6 +95,22 @@ structural and testable.
   `yaml.safe_dump` (safe by construction — quoting is the serializer's job, not a
   heuristic); `check_frontmatter_safety` is the CI lint, proven against a seeded bad
   fixture.
+- **`update`'s trust boundary is the upstream repo, not the transport (#30).** A
+  fast-forward runs the pulled commits' `pip install -e` and compiles their artifacts, so
+  a *compromised upstream* — a malicious commit that is still a valid fast-forward — is
+  the residual risk once git is non-interactive/credential-disabled and only a clean ff of
+  a user-configured upstream is applied. Opt-in `[update] require_signed` gates the merge
+  behind `git verify-commit` (an `unsigned` refusal, exit 1), fail-closed on any
+  unverifiable/unsigned/error case. Three properties make it real rather than theatre:
+  (1) the tip is resolved to a SHA *once* and that same SHA is summarized, verified, **and**
+  merged — so a concurrent fetch can't slip an unverified child between check and apply
+  (TOCTOU), and an option-like upstream from a tampered config can't be read as a flag;
+  (2) *enablement* fails closed — a stdlib scanner (not `tomllib`, absent on the 3.10 floor)
+  reads the flag so it can't silently no-op, and a present-but-unreadable config refuses
+  rather than disabling the gate; (3) it is honestly scoped — `verify-commit` proves "signed
+  by a key git trusts," not "signed by the maintainer," so the docs require the user to pin
+  the signer (`gpg.ssh.allowedSignersFile`). Key-fingerprint pinning inside Cohort is a
+  tracked follow-up. Default-off keeps clone-and-go unchanged.
 
 ## Verified environment facts (doc-cited; re-confirm on drift)
 

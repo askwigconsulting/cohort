@@ -586,7 +586,7 @@ def _warn_divergence(report: InstallReport) -> None:
 
 
 _UPDATE_FAILED = (
-    "unavailable", "diverged", "dirty", "pull_failed", "pip_failed",
+    "unavailable", "diverged", "dirty", "unsigned", "pull_failed", "pip_failed",
     "reset_failed", "no_rollback_point", "unknown_ref", "not_earlier",
 )
 
