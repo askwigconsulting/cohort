@@ -11,8 +11,12 @@ Cursor's memory home is a Cohort-OWNED rule file, so it's a clean link (no
 merge); only ``hooks.json`` (shared) needs the merge op. ``dest_root = base``;
 full subpaths in staged_rel.
 
-‹verify› before golden-lock: the exact Cursor hook-event names, and whether
-Cursor commands now accept frontmatter (currently rendered as plain markdown).
+Doc-verified 2026-07-06 against the official Cursor docs (cursor.com/docs):
+rules `.mdc` + `description`/`globs`/`alwaysApply` (context/rules), plain-markdown
+commands in `.cursor/commands/` (changelog 1.6 — no frontmatter schema),
+`.cursor/skills/<name>/SKILL.md` + `name`/`description` (context/skills),
+`.cursor/agents/<name>.md` with a real `readonly` capability (context/subagents),
+and `.cursor/hooks.json` `{version, hooks}` with camelCase event names (docs/hooks).
 """
 
 from __future__ import annotations
@@ -36,14 +40,16 @@ MERGE_SUBDIR = ".merge"
 HOOKS_FRAGMENT_REL = f"{MERGE_SUBDIR}/cursor-hooks.json"
 MEMORIES_REL = ".cursor/rules/cohort-memories.mdc"
 
-# canonical hook event → Cursor event name. ‹verify› exact names before golden-lock.
+# canonical hook event → Cursor event name (camelCase). Verified 2026-07-06 against
+# cursor.com/docs/hooks. Cursor has no "on-stale" concept, so on_stale approximates
+# to sessionStart (the nearest lifecycle point Cohort can hang it on).
 HOOK_EVENT_MAP = {
     "session_start": "sessionStart",
     "session_end": "sessionEnd",
     "pre_write": "preToolUse",
     "post_write": "postToolUse",
     "pre_command": "beforeShellExecution",
-    "post_command": "afterFileEdit",
+    "post_command": "afterShellExecution",
     "on_stale": "sessionStart",
 }
 

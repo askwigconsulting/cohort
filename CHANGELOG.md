@@ -35,6 +35,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   trusts — closing the "signed by someone I trust ≠ signed by the maintainer" gap.
   A non-empty `signed_by` implies `require_signed`; fail-closed throughout. (#105)
 
+### Fixed
+- Codex hook-event names were Cursor-style camelCase (`sessionStart`, `preToolUse`),
+  which Codex does not recognize. Corrected to Codex's PascalCase vocabulary
+  (`SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, …), verified against the
+  official docs and locked by tests. Also fixed the Cursor `post_command` mapping
+  (`afterFileEdit` → `afterShellExecution`). Latent until now — shipped hooks target
+  `[claude]` only — but wrong for any codex/cursor-targeted hook. (#23)
+
 ### Added
 - `cohort dashboard` — a lightweight, loopback-only web dashboard (stdlib HTTP
   server, zero new dependencies) showing wiring & health (IDE placement, source-link

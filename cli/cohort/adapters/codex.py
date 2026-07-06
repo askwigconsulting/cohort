@@ -13,8 +13,14 @@ Codex's roots aren't uniform (``.codex/`` vs ``.agents/``).
 Advisory is enforced mechanically via ``sandbox_mode = "read-only"`` (doc-
 confirmed) — the Codex analogue of Claude's tool-strip, not prose-only.
 
-‹verify› remaining before golden-lock (byte refinements only): the canonical→
-Codex hook-event names. The structure below is stable.
+Hook-event names verified 2026-07-06 against the official Codex docs
+(developers.openai.com/codex/hooks): Codex events are **PascalCase** and a
+different vocabulary than Cursor's camelCase — they mirror Claude Code's scheme
+(`SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, …). ‹verify› still open
+against a real install: the exact `.codex/hooks.json` wrapper and whether Codex
+reads per-file subagents at `.codex/agents/<name>.toml` (undocumented — Codex may
+route subagents through skills). Codex/Cursor stay experimental; shipped hooks
+target `[claude]`, so these paths are latent until a codex/cursor hook is authored.
 """
 
 from __future__ import annotations
@@ -38,15 +44,19 @@ MERGE_SUBDIR = ".merge"
 AGENTS_IMPORT_REL = f"{MERGE_SUBDIR}/codex-agents-md.md"
 HOOKS_FRAGMENT_REL = f"{MERGE_SUBDIR}/codex-hooks.json"
 
-# canonical hook event → Codex event name. ‹verify› exact names before golden-lock.
+# canonical hook event → Codex event name (PascalCase). Verified 2026-07-06 against
+# developers.openai.com/codex/hooks. Codex's vocabulary has no session-end or shell-
+# specific events: session_end maps to Stop (the nearest terminal event) and the
+# command events fold into the tool-use events, as Codex has no separate shell hook.
+# on_stale is a Cohort concept with no Codex analogue → SessionStart.
 HOOK_EVENT_MAP = {
-    "session_start": "sessionStart",
-    "session_end": "sessionEnd",
-    "pre_write": "preToolUse",
-    "post_write": "postToolUse",
-    "pre_command": "preToolUse",
-    "post_command": "postToolUse",
-    "on_stale": "sessionStart",
+    "session_start": "SessionStart",
+    "session_end": "Stop",
+    "pre_write": "PreToolUse",
+    "post_write": "PostToolUse",
+    "pre_command": "PreToolUse",
+    "post_command": "PostToolUse",
+    "on_stale": "SessionStart",
 }
 
 

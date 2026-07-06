@@ -175,9 +175,15 @@ not because anyone promised it wouldn't, but because a test fails if it tries.
    `github.com/askwigconsulting/cohort`; CI (ubuntu + windows) runs on every push/PR and
    the loop's draft PRs are live. Kept as context for gap 2.
 2. **Codex/Cursor golden-lock (#23).** The renderer *structure* is tested and the bytes
-   are regression-locked against the renderers' own output, but they are doc-cited, not
-   validated against a real install. Field-level `‹verify›` remaining: the canonical→
-   Codex/Cursor hook-event names and the exact Cursor frontmatter/skills dir. Until the
-   lock, codex/cursor are labeled experimental and shipped hooks target `[claude]` only.
+   are regression-locked against the renderers' own output. As of 2026-07-06 the Cursor
+   layout/formats (rules `.mdc` + `alwaysApply`, plain-markdown commands,
+   `skills/<name>/SKILL.md`, `agents/` with a real `readonly`) and the canonical→
+   Codex/Cursor hook-event names are **doc-verified against the current official docs**
+   (cursor.com/docs, developers.openai.com/codex) and locked by `test_hook_events`; the
+   Codex map was corrected from Cursor-style camelCase to Codex's PascalCase vocabulary.
+   `‹verify›` remaining is only what needs a **real install**: the exact `.codex/hooks.json`
+   wrapper and whether Codex reads per-file subagents at `.codex/agents/<name>.toml`.
+   Codex/Cursor stay experimental; shipped hooks target `[claude]` only, so those paths
+   are latent until a codex/cursor hook is authored.
 
 The fitting first trip through Cohort's own loop is the proposal that closes gap (2).
