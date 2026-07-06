@@ -67,6 +67,20 @@ structural and testable.
   honest: my-over-office is resolved at compile into one flat `~/.claude/agents/`;
   only project-over-user is resolved by Claude Code at runtime. This is the
   machine-local overlay #42 deferred — it ends personal authoring dirtying the clone.
+- **[P] Pulled auto-activating artifacts are quarantined until reviewed (#107).**
+  `my-office sync` fast-forward-pulls the overlay from a Git remote; on a shared
+  remote, a pushed **hook** (runs on IDE events) or **memory** (loads into every
+  session) is a code/prompt-injection sink. Sync records the `(kind, name,
+  content-hash)` identity of every gated artifact a pull introduced under
+  `~/.cohort/state/quarantine.json`, and the *single compile chokepoint* withholds
+  exactly those identities from **every** recompile — not just sync's — so no later
+  `update`/`add-agent`/`edit` silently activates them. Content-addressed, so
+  approving pins the reviewed bytes (a re-pull with new content re-quarantines);
+  the pull-delta window excludes local authoring (committed after the merge). The
+  quarantine is derived from the overlay's sibling `state/` dir, preserving compile
+  hermeticity. Cleared by an explicit `cohort my-office review` + `approve`. Skills
+  are out of scope (advisory text, not an execute-on-event sink); agents/commands
+  likewise. Supersedes the incomplete "exclude hooks at sync time" of #103/PR #106.
 
 ## Other load-bearing rules
 

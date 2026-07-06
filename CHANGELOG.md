@@ -12,6 +12,17 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Security
+- `cohort my-office sync` no longer auto-activates a pulled hook or memory. A
+  sync now quarantines every gated artifact (**hooks**, which run on IDE events,
+  and **memories**, which load into every session's corpus) that the pull
+  introduced or changed, recording its `(kind, name, content-hash)` identity under
+  `~/.cohort/state/`. The withhold is durable and IDE-agnostic — *every*
+  `compile_ide` (not just the sync recompile) holds those exact artifacts back
+  until you clear them with `cohort my-office review` + `cohort my-office approve`.
+  Closes the shared/multi-writer-remote RCE path where a teammate's pushed hook or
+  prompt-injecting memory would otherwise activate on your next sync with no
+  review. Locally-authored artifacts are never quarantined (they are committed
+  after the pull, outside its delta). (#107)
 - `cohort update` gains opt-in signed-commit verification: `[update]
   require_signed = true` in the global `cohort.toml` gates the fast-forward behind
   `git verify-commit` on the resolved upstream tip, refusing (`unsigned`, exit 1)

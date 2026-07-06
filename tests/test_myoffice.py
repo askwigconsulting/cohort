@@ -8,13 +8,31 @@ a configured remote (fast-forward only), and pushes. The load-bearing behaviour 
 
 from __future__ import annotations
 
+import json as _json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from cohort import quarantine
 from cohort.install_model import CohortPaths
 from cohort.myoffice import MySyncError, _redact_url, do_my_sync, my_remote
+
+_HOOK = (
+    "---\nname: {name}\nkind: hook\nscope: global\n"
+    "description: A pulled hook.\ntargets: [claude]\n"
+    "event: session_start\naction: cohort {name}\n---\nHook body.\n"
+)
+
+
+def _write_hook(home: Path, name: str) -> Path:
+    d = CohortPaths.for_global(home).my / "canonical" / "hooks"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{name}.md"
+    p.write_text(_HOOK.format(name=name), encoding="utf-8")
+    return p
 
 
 @pytest.fixture
@@ -163,6 +181,92 @@ def test_report_redacts_an_embedded_url_password(home, tmp_path):
                         dry_run=True)
     assert "ghp_secrettoken" not in report["remote"]
     assert "user:***@" in report["remote"]
+
+
+# === quarantine of pulled hooks/memories (#107) ==============================
+
+
+def _pending_names(home: Path) -> set[str]:
+    return {a.name for a in quarantine.load_pending(CohortPaths.for_global(home).state)}
+
+
+def test_fresh_machine_quarantines_every_pulled_hook(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_hook(home, "a-hook")
+    do_my_sync(home, remote=str(remote))  # machine A seeds a hook
+
+    # Machine B: fresh adopt of the shared history → the pulled hook is unreviewed.
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    report = do_my_sync(home_b, remote=str(remote))
+    assert report["pulled"] is True
+    assert report["quarantined"] == ["hook a-hook"]
+    assert _pending_names(home_b) == {"a-hook"}
+
+
+def test_incremental_pull_quarantines_new_hook_but_not_local_authoring(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_hook(home, "base")
+    do_my_sync(home, remote=str(remote))
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    do_my_sync(home_b, remote=str(remote))  # B shares history
+    quarantine.approve(CohortPaths.for_global(home_b).state, all=True)  # clear the adopt
+
+    # A pushes a new hook; B authors its own hook, then syncs.
+    _write_hook(home, "from-a")
+    do_my_sync(home)
+    _write_hook(home_b, "from-b-local")
+    report = do_my_sync(home_b)
+
+    # Only the pulled hook is quarantined; B's own authored hook is not.
+    assert report["quarantined"] == ["hook from-a"]
+    assert _pending_names(home_b) == {"from-a"}
+
+
+def _run_cli(*args, home):
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env.pop("COHORT_SOURCE", None)
+    return subprocess.run(
+        [sys.executable, "-m", "cohort", *args], capture_output=True, text=True, env=env
+    )
+
+
+def test_review_and_approve_cli_roundtrip(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_hook(home, "seed-hook")
+    do_my_sync(home, remote=str(remote))
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    do_my_sync(home_b, remote=str(remote))  # pulls + quarantines seed-hook
+
+    review = _run_cli("my-office", "review", "--json", home=home_b)
+    assert review.returncode == 0, review.stderr
+    assert [a["name"] for a in _json.loads(review.stdout)["pending"]] == ["seed-hook"]
+
+    approve = _run_cli("my-office", "approve", "seed-hook", "--json", home=home_b)
+    assert approve.returncode == 0, approve.stderr
+    assert _json.loads(approve.stdout)["approved"] == ["seed-hook"]
+    assert _pending_names(home_b) == set()  # cleared durably
+
+
+def test_approve_requires_a_name_or_all(home):
+    result = _run_cli("my-office", "approve", home=home)
+    assert result.returncode == 1
+    assert "name" in result.stderr.lower()
+
+
+def test_pulled_agent_is_not_quarantined(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_personal(home, "pulled-agent")  # an agent, not a gated kind
+    do_my_sync(home, remote=str(remote))
+    home_b = tmp_path / "home-b"
+    home_b.mkdir()
+    report = do_my_sync(home_b, remote=str(remote))
+    assert report["quarantined"] == []
+    assert _pending_names(home_b) == set()
 
 
 def test_redact_url_leaves_scp_and_plain_urls_untouched():
