@@ -35,6 +35,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # Cache pip's download cache, keyed on the dependency spec, so the
+          # per-run `pip install` reuses wheels instead of re-downloading. The
+          # Windows job is the long pole; this shaves the install step on both.
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install package with dev extras (pytest)
         run: pip install -e ".[dev]"
       - name: shellcheck (CI-required; locally skip-when-absent)
