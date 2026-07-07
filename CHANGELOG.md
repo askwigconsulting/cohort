@@ -11,6 +11,12 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-07 · Dashboard & multi-level authoring
+
+A loopback web dashboard for the office; authoring across all three levels
+(company / your office / this project) for every artifact kind including memory;
+and supply-chain hardening for `update` and `my-office sync`.
+
 ### Security
 - `cohort my-office sync` no longer auto-activates a pulled hook or memory. A
   sync now quarantines every gated artifact (**hooks**, which run on IDE events,
@@ -164,7 +170,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/askwigconsulting/cohort/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/askwigconsulting/cohort/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/askwigconsulting/cohort/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/askwigconsulting/cohort/releases/tag/v0.1.0
