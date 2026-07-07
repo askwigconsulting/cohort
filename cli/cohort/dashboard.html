@@ -166,6 +166,20 @@
   .meta.warn { color:var(--warn); border-color:rgba(251,191,36,.4); }
   .art-actions { position:absolute; top:9px; right:10px; display:flex; gap:3px; opacity:0; transition:opacity .12s; }
   .artifact:hover .art-actions, .artifact:focus-within .art-actions { opacity:1; }
+  /* ---- projects overview --------------------------------------------------- */
+  h2 .proj-focus { color:var(--warn); text-transform:none; letter-spacing:0; font-weight:700; }
+  .proj-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:10px; }
+  .proj-card {
+    background:var(--card); border:1px solid var(--card-edge); border-radius:14px;
+    padding:13px 15px; cursor:pointer; transition:border-color .15s ease, transform .15s ease;
+  }
+  .proj-card:hover, .proj-card:focus-visible { border-color:rgba(124,92,255,.5); transform:translateY(-1px); outline:none; }
+  .proj-card.focused { border-color:rgba(251,191,36,.6); box-shadow:inset 0 0 0 1px rgba(251,191,36,.25); }
+  .proj-head { display:flex; align-items:center; gap:8px; justify-content:space-between; }
+  .proj-name { font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .proj-path { font:11px/1.4 var(--mono); color:var(--faint); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .proj-foot { margin-top:9px; display:flex; gap:6px; flex-wrap:wrap; }
+
   dialog.wide { width:min(680px,94vw); }
   .dt-meta { display:flex; flex-wrap:wrap; gap:6px; margin:2px 0 14px; }
   .dt-desc { color:var(--ink); font-size:13px; margin-bottom:12px; }
@@ -284,8 +298,16 @@
     <div class="card"><div class="level" id="level-my"></div></div>
   </section>
 
+  <!-- All Cohort projects — pick one to manage; its artifacts show in "Managing" below. -->
+  <section>
+    <h2>Projects <span class="rule"></span>
+      <span class="sub">every repo where you've run <span style="font-family:var(--mono)">cohort init</span> — pick one to manage</span>
+      <span class="lvl-count" id="cnt-projects"></span></h2>
+    <div class="card"><div class="proj-grid" id="projects-list"></div></div>
+  </section>
+
   <section id="project-section" hidden>
-    <h2>This project <span class="rule"></span>
+    <h2>Managing <span class="proj-focus" id="proj-focus-name"></span><span class="rule"></span>
       <span class="sub">travels with this repo, shared with everyone who clones it</span>
       <span class="dot" id="st-stale"><i></i><span>fresh</span></span>
       <span class="lvl-count" id="cnt-project"></span>
@@ -680,6 +702,53 @@ function renderProjectSwitcher(s) {
     sel.appendChild(o);
   }
 }
+/* The all-projects view: every registered Cohort project as a card; click one to
+   manage it (focuses it → the "Managing" section shows its artifacts + actions). */
+function renderProjectsOverview(s) {
+  const projects = s.projects || [];
+  const holder = $("projects-list"); holder.textContent = "";
+  $("cnt-projects").textContent = projects.length ? projects.length + " project" + (projects.length === 1 ? "" : "s") : "";
+  $("proj-focus-name").textContent = "";
+  if (!projects.length) {
+    const e = document.createElement("div"); e.className = "empty";
+    e.textContent = "No Cohort projects registered yet — run `cohort init` in a repo to add it here.";
+    holder.appendChild(e);
+    return;
+  }
+  const focusedPath = s.focused_project;
+  for (const p of projects) {
+    const focused = p.path === focusedPath;
+    if (focused) $("proj-focus-name").textContent = "· " + p.name;
+    const el = document.createElement("div");
+    el.className = "proj-card" + (focused ? " focused" : "");
+    el.tabIndex = 0; el.setAttribute("role", "button");
+    el.title = (focused ? "Managing " : "Manage ") + p.name;
+
+    const head = document.createElement("div"); head.className = "proj-head";
+    const name = document.createElement("div"); name.className = "proj-name"; name.textContent = p.name;
+    head.appendChild(name);
+    if (focused) {
+      const b = document.createElement("span"); b.className = "tag proj"; b.textContent = "MANAGING"; head.appendChild(b);
+    }
+    el.appendChild(head);
+
+    const path = document.createElement("div"); path.className = "proj-path";
+    path.textContent = p.path; path.title = p.path; el.appendChild(path);
+
+    const foot = document.createElement("div"); foot.className = "proj-foot";
+    const spec = document.createElement("span"); spec.className = "meta";
+    spec.textContent = p.specialists + " specialist" + (p.specialists === 1 ? "" : "s"); foot.appendChild(spec);
+    const wire = document.createElement("span");
+    wire.className = "meta" + (p.wiring === "present" ? "" : " warn");
+    wire.textContent = p.wiring === "present" ? "wired" : ("wiring " + p.wiring); foot.appendChild(wire);
+    el.appendChild(foot);
+
+    const focus = () => { if (!focused) { FOCUS = String(p.index); refresh(); } };
+    el.addEventListener("click", focus);
+    el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); focus(); } });
+    holder.appendChild(el);
+  }
+}
 function render(s) {
   STATE = s;
   $("version").textContent = "v" + (s.version || "?");
@@ -706,6 +775,7 @@ function render(s) {
     ? unmanaged + " unmanaged file" + (unmanaged === 1 ? "" : "s") + " in ~/.claude — run cohort status for adopt hints"
     : "how your office actually works";
   renderProjectSwitcher(s);
+  renderProjectsOverview(s);
   renderLevels();
   renderProject(s.project || null);
 }
