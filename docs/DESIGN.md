@@ -175,9 +175,20 @@ not because anyone promised it wouldn't, but because a test fails if it tries.
    `github.com/askwigconsulting/cohort`; CI (ubuntu + windows) runs on every push/PR and
    the loop's draft PRs are live. Kept as context for gap 2.
 2. **Codex/Cursor golden-lock (#23).** The renderer *structure* is tested and the bytes
-   are regression-locked against the renderers' own output, but they are doc-cited, not
-   validated against a real install. Field-level `‹verify›` remaining: the canonical→
-   Codex/Cursor hook-event names and the exact Cursor frontmatter/skills dir. Until the
-   lock, codex/cursor are labeled experimental and shipped hooks target `[claude]` only.
+   are regression-locked against the renderers' own output. As of 2026-07-06 the Cursor
+   layout/formats (rules `.mdc` + `alwaysApply`, plain-markdown commands,
+   `skills/<name>/SKILL.md`, `agents/` with a real `readonly`) and the canonical→
+   Codex/Cursor hook-event names are **doc-verified against the current official docs**
+   (cursor.com/docs, developers.openai.com/codex) and locked by `test_hook_events`; the
+   Codex map was corrected from Cursor-style camelCase to Codex's PascalCase vocabulary.
+   The Codex layout is now doc-verified too: subagents `.codex/agents/<name>.toml`
+   (MATCH), skills `.agents/skills/<name>/SKILL.md` (MATCH), `.codex/hooks.json` schema
+   (corrected to Codex's matcher-group form, no `version`), and `.codex/AGENTS.md`
+   (correct for the global tier — resolves to `~/.codex/AGENTS.md`, Codex's global
+   instructions path; a project-tier codex install would need repo-root `AGENTS.md`,
+   not a current path). All formats now rest on official docs rather than being
+   doc-cited-and-possibly-stale; a **real install** would only add byte-level
+   belt-and-suspenders. Codex/Cursor stay experimental; shipped hooks/memories target
+   `[claude]` only, so those paths are latent until a codex/cursor artifact is authored.
 
 The fitting first trip through Cohort's own loop is the proposal that closes gap (2).
