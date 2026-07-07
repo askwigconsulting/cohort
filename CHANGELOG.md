@@ -65,16 +65,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   corpus, and `do_install_project` wires a second `@import` into the managed
   CLAUDE.md block when the project has memories (removed when the last one goes).
   The `scope: project` constraint on memory is lifted.
-
-### Changed
-- The dashboard now presents the office as **three level sections** — **Company
-  office** (the shared company source), **Your office** (`~/.cohort/my`), and **This
-  project** — instead of a roster-plus-flat-inventory split. Every artifact of every
-  kind (agent, skill, command, hook, memory) appears in its level as a card tagged
-  with its kind and metadata (role, department, hook event, target IDEs, on-roster
-  state), and each card is clickable for a read-only detail view (description + body,
-  served by `/api/artifact` for any layer). Per-card actions (rate, edit my-office,
-  remove specialist) and the create/add affordances are preserved. Backend unchanged.
+- The dashboard adds an all-projects **Projects** section: every registered Cohort
+  project shows as a card (name, repo path, specialist count, wiring state), and
+  clicking one manages it — that project's artifacts and actions appear in the
+  retitled **Managing** section below. Driven by the state API's existing project
+  list and index-only focus.
 
 ### Added
 - `cohort dashboard` — a lightweight, loopback-only web dashboard (stdlib HTTP
