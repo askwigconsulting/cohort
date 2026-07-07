@@ -25,7 +25,7 @@ from .install_model import CohortPaths
 from .loader import load_artifact, load_artifact_text
 from .manifest import load_manifest, now_iso
 from .roster import READONLY_TOOLS_LIST, reject_control_chars
-from .schema import NAME_PATTERN, validate_frontmatter
+from .schema import KIND_DIRS, NAME_PATTERN, validate_frontmatter
 
 
 class AddSpecialistError(Exception):
@@ -172,6 +172,115 @@ def do_add_specialist(
         "path": str(dest), "compiled": str(repo / ".claude" / "agents" / f"{name}.md"),
         "applied": report["applied"], "scope_filtered": report.get("scope_filtered", []),
     }
+
+
+# --- project-scoped authoring for any kind -----------------------------------
+# The dashboard's project-level "Create" (and a future CLI) authors any supported
+# kind at project scope, the analogue of the global add-<kind> commands. Agents keep
+# their richer path (do_add_specialist: shadow detection, legacy-migration guard);
+# skill/command/hook are scaffolded here. Memory is deliberately excluded — the
+# project tier has no memory compile target (schema forbids scope:project memory).
+
+_PROJECT_KINDS = ("agent", "skill", "command", "hook")
+
+
+def _project_scaffold(
+    kind: str, name: str, description: str, *, display_name: Optional[str] = None,
+    triggers: Optional[list[str]] = None, invocation: Optional[str] = None,
+    event: Optional[str] = None, action: Optional[str] = None,
+    matcher: Optional[str] = None, body: Optional[str] = None,
+) -> str:
+    """Frontmatter+body for a project-scoped skill/command/hook (``scope: project``),
+    mirroring the global ``add-<kind>`` scaffolds. Frontmatter goes through the safe
+    YAML serializer so a metacharacter-laden value can't inject extra keys."""
+    if kind == "skill":
+        pairs = [("name", name), ("kind", "skill"), ("scope", "project"),
+                 ("description", description), ("targets", ["claude"]),
+                 ("display_name", display_name or name)]
+        if triggers:
+            pairs.insert(5, ("triggers", list(triggers)))
+        text = body.strip() if body else f"_{description} Describe when and how to use this skill._"
+    elif kind == "command":
+        pairs = [("name", name), ("kind", "command"), ("scope", "project"),
+                 ("description", description), ("targets", ["claude"]),
+                 ("invocation", invocation or name), ("dry_run", True)]
+        text = body.strip() if body else f"_{description} Spell out what this command does._"
+    elif kind == "hook":
+        if not (event and action):
+            raise AddSpecialistError("a hook needs both an event and an action")
+        pairs = [("name", name), ("kind", "hook"), ("scope", "project"),
+                 ("description", description), ("targets", ["claude"]),
+                 ("event", event), ("action", action)]
+        if matcher:
+            pairs.append(("matcher", matcher))
+        text = body.strip() if body else f"_{description}_"
+    else:
+        raise AddSpecialistError(f"unsupported project kind {kind!r}")
+    return f"{dump_frontmatter(pairs).rstrip(chr(10))}\n{text}\n"
+
+
+def do_add_project_artifact(
+    repo: Path, home: Path, kind: str, name: str, description: str, *,
+    display_name: Optional[str] = None, department: Optional[str] = None,
+    triggers: Optional[list[str]] = None, invocation: Optional[str] = None,
+    event: Optional[str] = None, action: Optional[str] = None,
+    matcher: Optional[str] = None, body: Optional[str] = None, dry_run: bool = False,
+) -> dict[str, Any]:
+    """Author a project-scoped artifact into ``<repo>/.cohort/canonical/<kind>/`` and
+    compile+place the project tier — the project analogue of the global authoring
+    commands, and the backend for the dashboard's project-level Create. Agents route
+    to :func:`do_add_specialist`; skill/command/hook are handled here."""
+    if kind == "agent":
+        return do_add_specialist(
+            repo, home, name, (display_name or name).strip() or name,
+            (department or "Project").strip() or "Project", description, dry_run, body=body,
+        )
+    if kind not in _PROJECT_KINDS:
+        raise AddSpecialistError(
+            f"cannot create a project {kind!r} here — supported: {', '.join(_PROJECT_KINDS)}"
+        )
+    from .install import do_install_project  # lazy: avoid import cycle
+
+    paths = CohortPaths.for_project(repo)
+    if not paths.manifest.exists():
+        raise AddSpecialistError("not a Cohort project; run `cohort init` first")
+    if not re.fullmatch(NAME_PATTERN, name):
+        raise AddSpecialistError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
+    try:
+        reject_control_chars(
+            display_name=display_name or "", description=description,
+            invocation=invocation or "", event=event or "", action=action or "",
+            matcher=matcher or "",
+        )
+    except ValueError as exc:
+        raise AddSpecialistError(str(exc))
+    if body is not None and not body.strip():
+        raise AddSpecialistError("body is empty")
+    dest = paths.canonical / KIND_DIRS[kind] / f"{name}.md"
+    if dest.exists():
+        raise AddSpecialistError(f"a project {kind} named {name!r} already exists in this repo")
+
+    content = _project_scaffold(
+        kind, name, description, display_name=display_name, triggers=triggers,
+        invocation=invocation, event=event, action=action, matcher=matcher, body=body,
+    )
+    if dry_run:
+        return {"action": "add-project-artifact", "dry_run": True, "kind": kind,
+                "name": name, "path": str(dest)}
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(content, encoding="utf-8")
+    errors = validate_frontmatter(load_artifact(dest).frontmatter, name)
+    if errors:
+        dest.unlink()  # never leave a source the project tier cannot compile
+        raise AddSpecialistError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
+    try:
+        report = do_install_project(repo)
+    except (CompileError, ClobberRefused) as exc:
+        dest.unlink()
+        raise AddSpecialistError(str(exc))
+    return {"action": "add-project-artifact", "dry_run": False, "kind": kind, "name": name,
+            "path": str(dest), "applied": report["applied"],
+            "scope_filtered": report.get("scope_filtered", [])}
 
 
 # --- remove-specialist -------------------------------------------------------

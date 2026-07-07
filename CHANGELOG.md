@@ -55,6 +55,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   state), and each card is clickable for a read-only detail view (description + body,
   served by `/api/artifact` for any layer). Per-card actions (rate, edit my-office,
   remove specialist) and the create/add affordances are preserved. Backend unchanged.
+- The dashboard's project section now offers **Create** (agent / skill / command /
+  hook) instead of the agent-only *Add specialist*, matching the user and company
+  levels. New `do_add_project_artifact` scaffolds any supported kind at `scope:
+  project` and compiles+places the project tier. (Project-scoped **memory** is a
+  separate follow-up — the project tier has no memory compile target yet.)
 
 ### Changed
 - The dashboard now presents the office as **three level sections** — **Company

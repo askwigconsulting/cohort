@@ -340,24 +340,9 @@
   </div>
 </dialog>
 
-<dialog id="dlg-add">
-  <h3>Add a project specialist</h3>
-  <p>Authors a canonical agent in this repo's <span style="font-family:var(--mono)">.cohort/canonical/agents/</span> and places it — advisory read-only, team-owned, git-tracked.</p>
-  <form id="add-form">
-    <label>name (kebab-case slug)</label><input id="ad-name" required pattern="[a-z][a-z0-9-]*" placeholder="data-modeler">
-    <label>display name</label><input id="ad-display" placeholder="DataModeler">
-    <label>department</label><input id="ad-dept" placeholder="Data">
-    <label>description</label><textarea id="ad-desc" rows="2" placeholder="Schema and data modeling advice."></textarea>
-    <div class="row">
-      <button class="btn" type="button" id="ad-cancel">Cancel</button>
-      <button class="btn primary" type="submit"><span class="spin"></span>Add specialist</button>
-    </div>
-  </form>
-</dialog>
-
 <dialog id="dlg-create">
-  <h3>Create an artifact</h3>
-  <p>Authors it in <b>my office</b> (<span style="font-family:var(--mono)">~/.cohort/my</span>) and recompiles — updates and proposals never touch it. Advisory read-only where it applies.</p>
+  <h3 id="cr-title">Create an artifact</h3>
+  <p id="cr-hint">Authors it in <b>my office</b> (<span style="font-family:var(--mono)">~/.cohort/my</span>) and recompiles — updates and proposals never touch it. Advisory read-only where it applies.</p>
   <form id="create-form">
     <label>kind</label>
     <select id="cr-kind">
@@ -613,12 +598,12 @@ function renderLevels() {
   renderLevel("my", "level-my", {
     countId: "cnt-my",
     empty: "Nothing that's just yours yet — create an agent, skill, command, or hook.",
-    addCard: { label: "＋ Create", onClick: () => $("dlg-create").showModal() },
+    addCard: { label: "＋ Create", onClick: () => openCreate("my") },
   });
   renderLevel("project", "level-project", {
     countId: "cnt-project",
-    empty: "No project specialists yet.",
-    addCard: { label: "＋ Add specialist", onClick: () => $("dlg-add").showModal() },
+    empty: "Nothing here yet — create an agent, skill, command, or hook for this repo.",
+    addCard: { label: "＋ Create", onClick: () => openCreate("project") },
   });
 }
 /* Click a card → full detail (metadata + body), fetched read-only for any layer. */
@@ -805,28 +790,28 @@ $("btn-reinit").addEventListener("click", async () => {
     "Re-runs cohort init --force: re-scaffolds anything missing and re-asserts the managed wiring block in this repo's CLAUDE.md. Your project context content is preserved.", "Re-init"))
     runAction($("btn-reinit"), "init", { force: true }, "Project re-initialized");
 });
-$("ad-cancel").addEventListener("click", () => $("dlg-add").close());
-$("add-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const btn = e.target.querySelector("button[type=submit]");
-  const name = $("ad-name").value.trim();
-  const r = await runAction(btn, "add-specialist", {
-    name: name,
-    display_name: $("ad-display").value.trim(),
-    department: $("ad-dept").value.trim(),
-    description: $("ad-desc").value.trim(),
-  }, "Specialist " + name + " added to this project");
-  if (r) { $("dlg-add").close(); e.target.reset(); }
-});
-
-/* ---------- create ---------- */
+/* ---------- create (my office OR the focused project) ---------- */
+let CREATE_LEVEL = "my";
 function syncCreateKind() {
   const kind = $("cr-kind").value;
   for (const g of document.querySelectorAll("#create-form [data-kind]"))
     g.hidden = g.getAttribute("data-kind") !== kind;
 }
+function openCreate(level) {
+  CREATE_LEVEL = level === "project" ? "project" : "my";
+  if (CREATE_LEVEL === "project") {
+    const p = (STATE && STATE.project && STATE.project.repo) ? STATE.project.repo.split("/").slice(-1)[0] : "this project";
+    $("cr-title").textContent = "Create in " + p;
+    $("cr-hint").innerHTML = "Authors it in <b>this project</b> (<span style=\"font-family:var(--mono)\">.cohort/canonical/</span>) so it travels with the repo, and recompiles. Advisory read-only where it applies.";
+  } else {
+    $("cr-title").textContent = "Create an artifact";
+    $("cr-hint").innerHTML = "Authors it in <b>my office</b> (<span style=\"font-family:var(--mono)\">~/.cohort/my</span>) and recompiles — updates and proposals never touch it. Advisory read-only where it applies.";
+  }
+  syncCreateKind();
+  $("dlg-create").showModal();
+}
 $("cr-kind").addEventListener("change", syncCreateKind);
-$("btn-create").addEventListener("click", () => { syncCreateKind(); $("dlg-create").showModal(); });
+$("btn-create").addEventListener("click", () => openCreate("my"));
 $("cr-cancel").addEventListener("click", () => $("dlg-create").close());
 $("create-form").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -838,7 +823,13 @@ $("create-form").addEventListener("submit", async (e) => {
   if (kind === "skill") args.triggers = $("cr-triggers").value;
   if (kind === "command") args.invocation = $("cr-invocation").value.trim();
   if (kind === "hook") { args.event = $("cr-event").value; args.action_cmd = $("cr-action").value.trim(); args.matcher = $("cr-matcher").value.trim(); }
-  const r = await runAction(btn, "add-" + kind, args, kind + " " + name + " created in my office");
+  let r;
+  if (CREATE_LEVEL === "project") {
+    args.kind = kind;
+    r = await runAction(btn, "create-project", args, kind + " " + name + " created in this project");
+  } else {
+    r = await runAction(btn, "add-" + kind, args, kind + " " + name + " created in my office");
+  }
   if (r) { $("dlg-create").close(); e.target.reset(); }
 });
 

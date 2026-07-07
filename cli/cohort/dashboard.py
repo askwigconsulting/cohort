@@ -66,6 +66,7 @@ from .source import SourceUnresolved, resolve_source, resolve_source_lenient
 from .specialists import (
     AddSpecialistError,
     RemoveSpecialistError,
+    do_add_project_artifact,
     do_add_specialist,
     do_remove_specialist,
 )
@@ -336,6 +337,20 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
                 str(args.get("department") or "").strip() or "Project",
                 str(args.get("description") or "").strip() or f"{name} (project specialist).",
                 dry_run=False,
+            )
+        elif action == "create-project":
+            name = str(args.get("name", "")).strip()
+            report = do_add_project_artifact(
+                repo, home, str(args.get("kind", "")), name,
+                str(args.get("description") or "").strip() or f"{name} (project artifact).",
+                display_name=str(args.get("display_name") or "").strip() or None,
+                department=str(args.get("department") or "").strip() or None,
+                triggers=_str_list(args.get("triggers")),
+                invocation=str(args.get("invocation") or "").strip() or None,
+                event=str(args.get("event") or "").strip() or None,
+                action=str(args.get("action_cmd") or "").strip() or None,
+                matcher=str(args.get("matcher") or "").strip() or None,
+                body=args.get("body") or None,
             )
         elif action == "propose-improvement":
             report = do_propose_improvement(repo, dry_run=False)
