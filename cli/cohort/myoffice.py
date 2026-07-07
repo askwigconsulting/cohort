@@ -50,12 +50,11 @@ class MySyncError(Exception):
 
 def _git(cwd: Path, *args: str, timeout: int = GIT_TIMEOUT) -> tuple[Optional[int], str]:
     try:
+        # credential.helper='' and the ext::/fd:: transport ban now live in the
+        # shared GIT_ENV (gitutil), so a crafted remote URL can't be a code path
+        # and no caller drifts by forgetting the -c flags.
         proc = subprocess.run(
-            # ext::/fd:: transports run an arbitrary command as the "transport";
-            # a crafted --remote could execute it on the first fetch. Ban them
-            # (leaving file/https/ssh) so a pasted URL can't be a code path.
-            ["git", "-C", str(cwd), "-c", "credential.helper=",
-             "-c", "protocol.ext.allow=never", "-c", "protocol.fd.allow=never", *args],
+            ["git", "-C", str(cwd), *args],
             capture_output=True, text=True, timeout=timeout, env={**os.environ, **GIT_ENV},
         )
         return proc.returncode, proc.stdout.strip()

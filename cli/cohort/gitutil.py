@@ -2,11 +2,42 @@
 
 A single home for the non-interactive git environment so every module that shells
 out to ``git``/``gh`` inherits the same hardening (never prompt for credentials or
-host keys; fail fast when offline) and the same default timeout — they can't drift
-apart over time.
+host keys; fail fast when offline; refuse dangerous remote transports) and the same
+default timeout — they can't drift apart over time.
 """
 
 from __future__ import annotations
+
+
+def _git_config_env(pairs: dict[str, str]) -> dict[str, str]:
+    """Encode git config as ``GIT_CONFIG_COUNT`` / ``GIT_CONFIG_KEY_n`` /
+    ``GIT_CONFIG_VALUE_n`` env vars — the environment-variable equivalent of ``-c
+    key=value``, so every git invocation that inherits this env gets the config
+    without each caller repeating ``-c`` flags (which is how they drift)."""
+    env = {"GIT_CONFIG_COUNT": str(len(pairs))}
+    for i, (key, value) in enumerate(pairs.items()):
+        env[f"GIT_CONFIG_KEY_{i}"] = key
+        env[f"GIT_CONFIG_VALUE_{i}"] = value
+    return env
+
+
+# Remote-transport allowlist (default-deny). The ``ext::``/``fd::`` transports run
+# an arbitrary command AS the "transport", so a crafted/attacker-supplied remote URL
+# is a code path on the first fetch. A blocklist of just those two is fragile — any
+# other exotic scheme slips through, and callers drift by forgetting the ``-c``
+# flags. Instead deny every transport by default and allow only the safe ones we
+# actually use (local paths, ssh, http/https). This bans ext/fd/git/etc. for EVERY
+# git call that inherits GIT_ENV — one place, no drift.
+_GIT_PROTOCOL_CONFIG = {
+    "protocol.allow": "never",         # default-deny for any protocol not listed below
+    "protocol.file.allow": "always",   # local paths: clones, file:// remotes, tests
+    "protocol.ssh.allow": "always",    # git@host:… / ssh://
+    "protocol.https.allow": "always",
+    "protocol.http.allow": "always",
+    # Empty credential.helper here too (not only per-caller -c) so no stored helper
+    # can prompt or leak; with GIT_ASKPASS this keeps git fully silent.
+    "credential.helper": "",
+}
 
 # Force git fully non-interactive: never prompt for credentials/host keys; fail
 # fast when offline. (``--quiet`` only silences progress — it does NOT stop prompts.)
@@ -15,6 +46,7 @@ GIT_ENV = {
     "GIT_ASKPASS": "",
     "SSH_ASKPASS": "",
     "GIT_SSH_COMMAND": "ssh -oBatchMode=yes -oConnectTimeout=5",
+    **_git_config_env(_GIT_PROTOCOL_CONFIG),
 }
 
 GIT_TIMEOUT = 10  # seconds; a hung git/gh must never stall the caller indefinitely

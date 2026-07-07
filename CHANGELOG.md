@@ -11,6 +11,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+- The `ext::`/`fd::` git transport ban (they run an arbitrary command *as* the
+  transport, so a crafted remote URL is a code path on first fetch) now lives in
+  the shared `GIT_ENV` as a default-deny transport allowlist — deny every scheme,
+  allow only `file`/`ssh`/`http`/`https`. Every git caller inherits it (previously
+  `update`'s fetch had no ban, only `my-office sync` did), so no path can drift and
+  any exotic scheme is refused, not just the two known-bad ones. (#122)
+
 ## [0.4.0] — 2026-07-07 · Dashboard & multi-level authoring
 
 A loopback web dashboard for the office; authoring across all three levels
