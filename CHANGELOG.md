@@ -58,8 +58,13 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 - The dashboard's project section now offers **Create** (agent / skill / command /
   hook) instead of the agent-only *Add specialist*, matching the user and company
   levels. New `do_add_project_artifact` scaffolds any supported kind at `scope:
-  project` and compiles+places the project tier. (Project-scoped **memory** is a
-  separate follow-up — the project tier has no memory compile target yet.)
+  project` and compiles+places the project tier.
+- **Memory can now be created at the user and project levels too** (it joins the
+  Create dialog everywhere). A user memory lands in `~/.claude`'s CLAUDE.md corpus;
+  a **project memory** compiles into the repo's own `.claude/cohort/CLAUDE.cohort.md`
+  corpus, and `do_install_project` wires a second `@import` into the managed
+  CLAUDE.md block when the project has memories (removed when the last one goes).
+  The `scope: project` constraint on memory is lifted.
 
 ### Changed
 - The dashboard now presents the office as **three level sections** — **Company

@@ -352,6 +352,7 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
                 event=str(args.get("event") or "").strip() or None,
                 action=str(args.get("action_cmd") or "").strip() or None,
                 matcher=str(args.get("matcher") or "").strip() or None,
+                priority=str(args.get("priority") or "").strip() or None,
                 body=args.get("body") or None,
             )
         elif action == "propose-improvement":

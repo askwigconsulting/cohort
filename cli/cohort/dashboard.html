@@ -812,9 +812,6 @@ function openCreate(level) {
     $("cr-title").textContent = "Create an artifact";
     $("cr-hint").innerHTML = "Authors it in <b>my office</b> (<span style=\"font-family:var(--mono)\">~/.cohort/my</span>) and recompiles — updates and proposals never touch it. Advisory read-only where it applies.";
   }
-  // Memory has no project compile target yet, so offer it only at the my level.
-  $("cr-opt-memory").hidden = CREATE_LEVEL === "project";
-  if (CREATE_LEVEL === "project" && $("cr-kind").value === "memory") $("cr-kind").value = "agent";
   syncCreateKind();
   $("dlg-create").showModal();
 }
