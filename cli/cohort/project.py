@@ -158,6 +158,44 @@ def refresh_project_context(
     }
 
 
+# Project memories compile into <repo>/.claude/cohort/CLAUDE.cohort.md; this @import
+# (relative to <repo>/.claude/CLAUDE.md) is added to the managed block alongside the
+# project-context import when the project has memories, and removed when it has none.
+MEMORY_CORPUS_IMPORT = "@import cohort/CLAUDE.cohort.md"
+
+
+def claude_import_block(has_memory: bool) -> str:
+    """The inner of the managed CLAUDE.md block: always the project-context import,
+    plus the memory-corpus import when the project has compiled memories."""
+    lines = [IMPORT_LINE] + ([MEMORY_CORPUS_IMPORT] if has_memory else [])
+    return "\n".join(lines) + "\n"
+
+
+def refresh_claude_imports(
+    paths: CohortPaths, repo: Path, has_memory: bool, *, force: bool = False
+) -> dict[str, Any]:
+    """Re-merge the repo's ``.claude/CLAUDE.md`` managed block so it imports the
+    project memory corpus iff the project has memories — the project-tier analogue
+    of the global CLAUDE.md corpus wiring. Called by ``do_install_project`` after
+    every project compile; a no-op when unchanged, and it respects a user-diverged
+    block (skip, never clobber), exactly like ``refresh_project_context``."""
+    manifest = load_manifest(paths.manifest)
+    if manifest is None:
+        return {"error": "not a Cohort project (run cohort init)"}
+    claude_md = repo / ".claude" / "CLAUDE.md"
+    if not claude_md.exists():
+        return {"changed": False}  # init hasn't wired it yet
+    src = _stage(paths.compiled / "project", "claude-import.txt", claude_import_block(has_memory))
+    merge_op = Op(OpType.MERGE.value, PROJECT_IDE, str(claude_md),
+                  src=src, strategy="block", preserve=False)
+    outcomes = apply([merge_op], paths, manifest, force=force)
+    manifest.persist(paths.manifest)
+    return {
+        "changed": any(o.status == "applied" for o in outcomes),
+        "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
+    }
+
+
 def render_snapshot_entry(repo: Path) -> str:
     """A dated session entry: frontmatter + Changed/Decisions/Open items/Notes."""
     author = _git(repo, "config", "user.name") or "unknown"
@@ -297,7 +335,10 @@ def _project_wiring(repo: Path) -> str:
     inner = merge.extract_block(claude_md.read_text(encoding="utf-8"))
     if inner is None:
         return "missing"
-    return "present" if inner.strip() == IMPORT_LINE else "diverged"
+    # Present in either managed form: the project-context import alone, or with the
+    # project-memory corpus import added (a project that has memories).
+    valid = {claude_import_block(False).strip(), claude_import_block(True).strip()}
+    return "present" if inner.strip() in valid else "diverged"
 
 
 def list_projects(home: Path) -> list[dict[str, Any]]:

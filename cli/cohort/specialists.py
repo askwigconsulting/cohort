@@ -178,22 +178,29 @@ def do_add_specialist(
 # The dashboard's project-level "Create" (and a future CLI) authors any supported
 # kind at project scope, the analogue of the global add-<kind> commands. Agents keep
 # their richer path (do_add_specialist: shadow detection, legacy-migration guard);
-# skill/command/hook are scaffolded here. Memory is deliberately excluded — the
-# project tier has no memory compile target (schema forbids scope:project memory).
+# skill/command/hook/memory are scaffolded here. Project memories compile into the
+# repo's own CLAUDE.md corpus (do_install_project wires the @import).
 
-_PROJECT_KINDS = ("agent", "skill", "command", "hook")
+_PROJECT_KINDS = ("agent", "skill", "command", "hook", "memory")
 
 
 def _project_scaffold(
     kind: str, name: str, description: str, *, display_name: Optional[str] = None,
     triggers: Optional[list[str]] = None, invocation: Optional[str] = None,
     event: Optional[str] = None, action: Optional[str] = None,
-    matcher: Optional[str] = None, body: Optional[str] = None,
+    matcher: Optional[str] = None, priority: Optional[str] = None,
+    body: Optional[str] = None,
 ) -> str:
-    """Frontmatter+body for a project-scoped skill/command/hook (``scope: project``),
-    mirroring the global ``add-<kind>`` scaffolds. Frontmatter goes through the safe
-    YAML serializer so a metacharacter-laden value can't inject extra keys."""
-    if kind == "skill":
+    """Frontmatter+body for a project-scoped skill/command/hook/memory (``scope:
+    project``), mirroring the global ``add-<kind>`` scaffolds. Frontmatter goes
+    through the safe YAML serializer so a metacharacter-laden value can't inject
+    extra keys."""
+    if kind == "memory":
+        pairs = [("name", name), ("kind", "memory"), ("scope", "project"),
+                 ("description", description), ("targets", ["claude"]),
+                 ("priority", priority or "normal"), ("display_name", display_name or name)]
+        text = body.strip() if body else f"_{description} (project memory — edit me)._"
+    elif kind == "skill":
         pairs = [("name", name), ("kind", "skill"), ("scope", "project"),
                  ("description", description), ("targets", ["claude"]),
                  ("display_name", display_name or name)]
@@ -224,7 +231,8 @@ def do_add_project_artifact(
     display_name: Optional[str] = None, department: Optional[str] = None,
     triggers: Optional[list[str]] = None, invocation: Optional[str] = None,
     event: Optional[str] = None, action: Optional[str] = None,
-    matcher: Optional[str] = None, body: Optional[str] = None, dry_run: bool = False,
+    matcher: Optional[str] = None, priority: Optional[str] = None,
+    body: Optional[str] = None, dry_run: bool = False,
 ) -> dict[str, Any]:
     """Author a project-scoped artifact into ``<repo>/.cohort/canonical/<kind>/`` and
     compile+place the project tier — the project analogue of the global authoring
@@ -262,7 +270,8 @@ def do_add_project_artifact(
 
     content = _project_scaffold(
         kind, name, description, display_name=display_name, triggers=triggers,
-        invocation=invocation, event=event, action=action, matcher=matcher, body=body,
+        invocation=invocation, event=event, action=action, matcher=matcher,
+        priority=priority, body=body,
     )
     if dry_run:
         return {"action": "add-project-artifact", "dry_run": True, "kind": kind,

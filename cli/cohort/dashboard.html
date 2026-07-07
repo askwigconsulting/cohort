@@ -350,6 +350,7 @@
       <option value="skill">skill</option>
       <option value="command">command</option>
       <option value="hook">hook</option>
+      <option value="memory" id="cr-opt-memory">memory</option>
     </select>
     <label>name (kebab-case slug)</label><input id="cr-name" required pattern="[a-z][a-z0-9-]*" placeholder="my-thing">
     <label>description</label><input id="cr-desc" required placeholder="What it's for.">
@@ -371,6 +372,10 @@
       </select>
       <label>action (command to run)</label><input id="cr-action" placeholder="cohort status">
       <label>matcher (optional)</label><input id="cr-matcher">
+    </div>
+    <div data-kind="memory" hidden>
+      <label>priority</label>
+      <select id="cr-priority"><option>normal</option><option>high</option><option>low</option></select>
     </div>
     <label>body (markdown, optional)</label><textarea id="cr-body" rows="4" placeholder="The instructions / content."></textarea>
     <div class="row">
@@ -823,6 +828,7 @@ $("create-form").addEventListener("submit", async (e) => {
   if (kind === "skill") args.triggers = $("cr-triggers").value;
   if (kind === "command") args.invocation = $("cr-invocation").value.trim();
   if (kind === "hook") { args.event = $("cr-event").value; args.action_cmd = $("cr-action").value.trim(); args.matcher = $("cr-matcher").value.trim(); }
+  if (kind === "memory") args.priority = $("cr-priority").value;
   let r;
   if (CREATE_LEVEL === "project") {
     args.kind = kind;

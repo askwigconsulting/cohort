@@ -311,10 +311,7 @@ class ClaudeRenderer:
             elif ir.kind == "hook":
                 hook_irs.append(ir)
             elif ir.kind == "memory":
-                if project_tier:
-                    skipped.append(ir.name)  # no CLAUDE.md merge at project tier
-                else:
-                    memory_irs.append(ir)
+                memory_irs.append(ir)  # both tiers compile memory into a corpus file
             elif ir.kind == "context":
                 # handled by `cohort init` (the project_context scaffold + managed
                 # block), deliberately NOT by the compile pipeline
@@ -327,7 +324,12 @@ class ClaudeRenderer:
         if memory_irs:
             corpus = render_memory_corpus(memory_irs)
             staged.append(StagedFile(CORPUS_REL, corpus.encode("utf-8")))
-            staged.append(StagedFile(IMPORT_BLOCK_REL, (IMPORT_LINE + "\n").encode("utf-8")))
+            # The global tier wires the corpus @import into ~/.claude/CLAUDE.md here.
+            # The project tier's CLAUDE.md block is init-owned (@import project_context);
+            # its corpus @import is added by do_install_project, not this renderer, so
+            # this global import line never clobbers the project block.
+            if not project_tier:
+                staged.append(StagedFile(IMPORT_BLOCK_REL, (IMPORT_LINE + "\n").encode("utf-8")))
         if hook_irs:
             import json as _json
 

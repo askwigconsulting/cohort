@@ -440,9 +440,15 @@ def do_install_project(repo: Path, mode: Optional[str] = None) -> dict[str, Any]
     # Keep the project-context specialist roster in step with what's placed (#24),
     # so ChiefOfStaff — which reads the always-@imported project context — routes
     # to the current set.
-    from .project import refresh_project_context  # lazy: avoid import cycle
+    from .adapters.claude import CORPUS_REL  # lazy: avoid import cycle
+    from .project import refresh_claude_imports, refresh_project_context
 
     refresh_project_context(ppaths)
+    # Wire (or unwire) the project memory corpus @import in the repo's CLAUDE.md so
+    # a project memory actually loads. Keyed off whether this compile produced the
+    # corpus, so removing the last memory reverts the block to the context-only form.
+    has_memory = any(sf.staged_rel == CORPUS_REL for sf in result.staged)
+    refresh_claude_imports(ppaths, repo, has_memory)
     return {
         "action": "project-recompile",
         "ide": ide,

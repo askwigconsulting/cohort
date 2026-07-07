@@ -1,7 +1,7 @@
 """Project-level authoring of any kind — the project analogue of the global
-add-<kind> commands. A skill/command/hook/agent can be created at project scope
-(`<repo>/.cohort/canonical/<kind>/`) and compiles+places into the repo's IDE tree.
-Memory is excluded (the project tier has no memory compile target)."""
+add-<kind> commands. A skill/command/hook/agent/memory can be created at project
+scope (`<repo>/.cohort/canonical/<kind>/`) and compiles+places into the repo's IDE
+tree; project memories compile into the repo's own CLAUDE.md corpus."""
 
 from __future__ import annotations
 
@@ -78,9 +78,35 @@ def test_create_project_agent_routes_through_specialist(repo, home):
     assert (repo / ".claude" / "agents" / "data-modeler.md").exists()
 
 
-def test_memory_is_refused_at_project_scope(repo, home):
-    with pytest.raises(AddSpecialistError, match="supported"):
-        do_add_project_artifact(repo, home, "memory", "team-context", "x.")
+def test_create_project_memory_compiles_into_corpus_and_wires_import(repo, home):
+    from cohort import merge as _merge
+
+    do_add_project_artifact(
+        repo, home, "memory", "repo-conventions", "How this repo works.",
+        priority="high", body="PROJECT-MEMORY-MARKER conventions.",
+    )
+    # source is project-scoped
+    assert "scope: project" in _src(repo, "memories", "repo-conventions").read_text(encoding="utf-8")
+    # compiled into the repo's own corpus
+    corpus = repo / ".claude" / "cohort" / "CLAUDE.cohort.md"
+    assert corpus.exists() and "PROJECT-MEMORY-MARKER" in corpus.read_text(encoding="utf-8")
+    # the managed CLAUDE.md block now imports both the context and the memory corpus
+    inner = _merge.extract_block((repo / ".claude" / "CLAUDE.md").read_text(encoding="utf-8"))
+    assert "@import ../.cohort/project_context.md" in inner
+    assert "@import cohort/CLAUDE.cohort.md" in inner
+
+
+def test_removing_last_project_memory_unwires_the_import(repo, home):
+    from cohort import merge as _merge
+    from cohort.install import do_install_project
+
+    do_add_project_artifact(repo, home, "memory", "temp", "Temp memory.")
+    # delete the source and recompile — the corpus import should drop back out
+    _src(repo, "memories", "temp").unlink()
+    do_install_project(repo)
+    inner = _merge.extract_block((repo / ".claude" / "CLAUDE.md").read_text(encoding="utf-8"))
+    assert "@import cohort/CLAUDE.cohort.md" not in inner
+    assert "@import ../.cohort/project_context.md" in inner
 
 
 def test_duplicate_is_refused(repo, home):

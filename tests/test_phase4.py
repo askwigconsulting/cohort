@@ -130,11 +130,11 @@ _MEMORY = ("---\nname: {n}\nkind: memory\nscope: project\ndescription: A project
            "targets: [claude]\n---\nRemember this.\n")
 
 
-def test_project_memory_refused_and_never_touches_init_claude_md_wiring(tmp_path):
-    """C1, fail-closed: `cohort init` owns the CLAUDE.md managed block (the
-    project_context @import) and the project tier has no memory merge, so a
-    project-scoped memory is refused at validation (E070) rather than silently
-    compiling nowhere — and the init wiring is never touched."""
+def test_project_memory_compiles_into_repo_corpus_and_wires_import(tmp_path):
+    """A project-scoped memory now compiles into the repo's OWN corpus
+    (`.claude/cohort/CLAUDE.cohort.md`), and `do_install_project` adds the corpus
+    `@import` to the managed CLAUDE.md block alongside the project_context import
+    (rather than being refused). The init-owned context import is preserved."""
     repo = tmp_path / "repo"
     ppaths = _project(repo)
     claude_md = repo / ".claude" / "CLAUDE.md"
@@ -142,10 +142,11 @@ def test_project_memory_refused_and_never_touches_init_claude_md_wiring(tmp_path
     claude_md.write_text(upsert_block("", IMPORT_LINE), encoding="utf-8")
     _add(ppaths, "memories", "notes", _MEMORY.format(n="notes"))
     _add(ppaths, "commands", "deploy", _CMD.format(n="deploy"))
-    with pytest.raises(CompileError, match="scope: global"):
-        do_install_project(repo)
-    assert extract_block(claude_md.read_text(encoding="utf-8")) == IMPORT_LINE
-    assert not (repo / ".claude" / "cohort").exists()  # no orphaned memory corpus
+    do_install_project(repo)  # no longer refused
+    assert (repo / ".claude" / "cohort" / "CLAUDE.cohort.md").exists()  # corpus placed
+    inner = extract_block(claude_md.read_text(encoding="utf-8"))
+    assert IMPORT_LINE in inner  # the init-owned context import is kept
+    assert "@import cohort/CLAUDE.cohort.md" in inner  # + the memory corpus import
 
 
 @requires_symlinks
