@@ -464,3 +464,30 @@ def test_action_add_skill_to_office_writes_clone(server, home, source):
                                  "args": {"name": "shared-skill", "description": "x.", "to": "office"}})
     assert status == 200, data
     assert (source / "canonical" / "skills" / "shared-skill.md").exists()
+
+
+def test_action_add_memory_creates_my_office_memory(server, home):
+    # user-level memory: authored in my office and compiled into the CLAUDE.md corpus
+    srv, _ = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "add-memory", "args": {
+                               "name": "team-norms", "description": "How we work.",
+                               "priority": "high", "body": "MEMORY-MARKER-XYZ team norms."}})
+    assert status == 200, data
+    src = home / ".cohort" / "my" / "canonical" / "memories" / "team-norms.md"
+    assert src.exists()
+    body = src.read_text(encoding="utf-8")
+    assert "kind: memory" in body and "scope: global" in body
+    corpus = home / ".claude" / "cohort" / "CLAUDE.cohort.md"
+    assert corpus.exists() and "MEMORY-MARKER-XYZ" in corpus.read_text(encoding="utf-8")
+
+
+def test_action_create_project_skill_places(server, home):
+    # project-level Create (Part A) via the dashboard action: a skill at project scope
+    srv, repo = server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "create-project", "args": {
+                               "kind": "skill", "name": "repo-lint", "description": "Repo lint rules."}})
+    assert status == 200, data
+    assert (repo / ".cohort" / "canonical" / "skills" / "repo-lint.md").exists()
+    assert (repo / ".claude" / "skills" / "repo-lint" / "SKILL.md").exists()

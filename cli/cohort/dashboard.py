@@ -54,11 +54,13 @@ from .parity import check_parity
 from .project import do_init, do_snapshot, find_repo_root, list_projects, resolve_registered
 from .roster import (
     AddAgentError,
+    AddMemoryError,
     AuthoringError,
     EditError,
     do_add_agent,
     do_add_command,
     do_add_hook,
+    do_add_memory,
     do_add_skill,
     do_edit,
 )
@@ -288,7 +290,7 @@ def _recompile_claude(home: Path, source: Path, roster: Optional[list]) -> dict[
 
 _ACTION_ERRORS = (
     FeedbackError, ProposeError, RemoveSpecialistError, AddSpecialistError,
-    AddAgentError, AuthoringError, EditError,
+    AddAgentError, AddMemoryError, AuthoringError, EditError,
     SetupError, CompileError, ClobberRefused, UsageError,
 )
 
@@ -402,6 +404,13 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
                 str(args.get("description") or "").strip(),
                 str(args.get("event", "")), str(args.get("action_cmd", "")),
                 matcher=str(args.get("matcher") or "").strip() or None,
+                body=args.get("body") or None, to=_to_layer(args),
+            )
+        elif action == "add-memory":
+            report = do_add_memory(
+                _require_source(home), home, str(args.get("name", "")).strip(),
+                str(args.get("description") or "").strip(),
+                priority=str(args.get("priority") or "normal"),
                 body=args.get("body") or None, to=_to_layer(args),
             )
         elif action == "edit":
