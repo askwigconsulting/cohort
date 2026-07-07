@@ -38,8 +38,11 @@ def _git(source: Path, *args: str, timeout: int = _GIT_TIMEOUT) -> tuple[Optiona
     """Run a git command in ``source``; return ``(returncode, stdout)`` or
     ``(None, "")`` on timeout/missing-git/any failure. Never raises."""
     try:
+        # credential.helper='' and the remote-transport allowlist (bans ext::/fd::)
+        # live in the shared GIT_ENV (gitutil) — so this path, which fetches from a
+        # config-derived upstream, can't be steered onto a code-executing transport.
         proc = subprocess.run(
-            ["git", "-C", str(source), "-c", "credential.helper=", *args],
+            ["git", "-C", str(source), *args],
             capture_output=True, text=True, timeout=timeout,
             env={**os.environ, **_GIT_ENV},
         )
@@ -239,7 +242,7 @@ def _commit_signer_allowed(source: Path, sha: str, pins: list[str]) -> bool:
         return False
     try:
         proc = subprocess.run(
-            ["git", "-C", str(source), "-c", "credential.helper=", "verify-commit", "--raw", sha],
+            ["git", "-C", str(source), "verify-commit", "--raw", sha],  # hardening via _GIT_ENV
             capture_output=True, text=True, timeout=_GIT_TIMEOUT, env={**os.environ, **_GIT_ENV},
         )
     except Exception:  # noqa: BLE001 - missing git / timeout → fail closed
