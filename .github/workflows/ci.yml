@@ -4,9 +4,19 @@ name: CI
 # every job here is runnable locally: `pip install -e .`, `cohort validate
 # ./canonical`, `shellcheck installer/bootstrap.sh`, `pytest`.
 on:
+  # Run once per change, not twice: a PR is validated by the `pull_request` event,
+  # and `push` fires only on the default branch (post-merge). Triggering `push` on
+  # every branch too made each PR spawn a duplicate run whose slower (Windows) half
+  # lingered `in_progress` and kept the PR `BLOCKED`.
   push:
-    branches: ["**"]
+    branches: [master]
   pull_request:
+
+# Supersede in-flight runs of the same ref: a new push cancels the older run
+# instead of leaving it pending against branch protection.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
