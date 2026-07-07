@@ -21,6 +21,7 @@ from .executor import path_hash
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
 from .loader import load_artifact
+from .quarantine import GATED_KINDS, QuarantineStateError, content_hash, pending_keys
 from .schema import discover_artifacts, validate_frontmatter
 
 # Renderers by IDE — each is a descriptor the pipeline drives off (P7-R1).
@@ -45,6 +46,10 @@ class CompileResult:
     scope_filtered: list[str] = field(default_factory=list)
     # Office artifacts deliberately replaced by a personalized my-layer copy.
     overridden: list[str] = field(default_factory=list)
+    # Pulled-but-unreviewed my-layer artifacts held back by the quarantine (#107),
+    # as "<kind> <name>" — surfaced so sync/status can tell the user what awaits
+    # `cohort my-office approve` instead of silently vanishing.
+    withheld: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -54,6 +59,7 @@ class CompileResult:
             "skipped": self.skipped,
             "scope_filtered": self.scope_filtered,
             "overridden": self.overridden,
+            "withheld": self.withheld,
         }
 
 
@@ -123,6 +129,7 @@ def compile_ide(
     source: Path, ide: str, scope: Optional[str] = None,
     only_agents: Optional[frozenset[str]] = None, project_tier: bool = False,
     overlay: Optional[Path] = None,
+    withhold: Optional[set[tuple[str, str, str]]] = None,
 ) -> CompileResult:
     """Render every targeting canonical artifact of ``scope`` into staged files for
     ``ide``. The global install passes ``scope="global"`` (the leak guard — project
@@ -136,6 +143,13 @@ def compile_ide(
     ``merge_layers``). Callers pass it explicitly; compile never derives it from
     ``Path.home()``, so in-process tests and goldens stay hermetic. The project
     tier never passes an overlay.
+
+    ``withhold`` is the quarantine (#107): a set of ``(kind, name, content-hash)``
+    identities — pulled-but-unreviewed my-layer hooks/memories — to hold back so no
+    recompile silently activates them. When ``None`` and an ``overlay`` is given, it
+    is derived from the overlay's sibling ``state/`` dir, so *every* compile path
+    withholds without each caller wiring it; pass an explicit set (or one derived
+    from a hermetic overlay) in tests. No overlay ⇒ nothing is withheld.
 
     ``only_agents`` restricts *office-layer* agent artifacts to the named subset
     (a tailored roster); my-layer agents always compile — the subset exists to
@@ -155,6 +169,37 @@ def compile_ide(
     if overlay is not None and (overlay / "canonical").exists():
         my_irs, my_filtered = _load_irs(overlay, scope, layer="my")
         result.scope_filtered.extend(f"{entry} [my]" for entry in my_filtered)
+        # Quarantine gate (#107): withhold pulled-but-unreviewed my-layer
+        # hooks/memories at the single compile chokepoint, so no recompile from any
+        # command silently activates them. Derived from the overlay's sibling
+        # state/ dir unless the caller passes an explicit set. A corrupt state file
+        # (keys is None) fails CLOSED — withhold every gated my-layer artifact —
+        # rather than read as "nothing pending" and activate them.
+        fail_closed = False
+        if withhold is not None:
+            keys = withhold
+        else:
+            try:
+                keys = pending_keys(overlay.parent / "state")
+            except QuarantineStateError:
+                keys, fail_closed = set(), True
+        if keys or fail_closed:
+            kept = []
+            for ir in my_irs:
+                gated = ir.kind in GATED_KINDS
+                # A gated artifact is withheld when the state is corrupt, when its
+                # identity is unverifiable (no source_path), or when its exact bytes
+                # are quarantined — every ambiguous case fails closed.
+                if gated and (
+                    fail_closed
+                    or ir.source_path is None
+                    or (ir.kind, ir.name, content_hash(ir.source_path)) in keys
+                ):
+                    result.withheld.append(f"{ir.kind} {ir.name}")
+                    continue
+                kept.append(ir)
+            my_irs = kept
+            result.withheld.sort()
         irs, result.overridden = merge_layers(irs, my_irs)
     if only_agents is not None:
         excluded = [

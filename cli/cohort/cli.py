@@ -813,6 +813,109 @@ def my_office_sync(
             bits.append("pushed")
         typer.echo(f"my-office sync: {', '.join(bits) or 'up to date'} · {r['remote']}"
                    + (" · recompiled" if r.get("recompiled") else ""))
+        if r.get("quarantine_state_unreadable"):
+            typer.echo(
+                "  ⚠ quarantine state is unreadable — every pulled hook/memory is "
+                "withheld. Run `cohort my-office review` to repair and see what is held."
+            )
+        held = r.get("quarantined") or []
+        if held:
+            typer.echo(
+                f"  ⚠ withheld {len(held)} pulled artifact(s) pending review: "
+                + ", ".join(held)
+                + "\n    They will NOT activate until you run `cohort my-office review` "
+                "and `cohort my-office approve`."
+            )
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+@my_office_app.command("review")
+def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
+    """List pulled-but-unreviewed artifacts held back by the quarantine (#107).
+
+    ``my-office sync`` withholds hooks and memories a pull introduced — a hook runs
+    on IDE events and a memory loads into every session, so on a shared remote they
+    are code/prompt-injection sinks. They stay withheld from *every* recompile until
+    you review the file in ~/.cohort/my/canonical and run ``my-office approve``.
+    """
+    from . import quarantine
+    from .install_model import CohortPaths
+
+    paths = CohortPaths.for_global(Path.home())
+    try:
+        pending = quarantine.reconcile(paths.state, paths.my)  # prune stale, then list
+    except quarantine.QuarantineStateError as exc:
+        typer.echo(
+            f"error: {exc}\nThe quarantine state is unreadable, so every pulled "
+            "hook/memory stays withheld. Delete the file to reset, then re-sync.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    report = {"action": "my-office-review", "pending": [a.to_dict() for a in pending]}
+
+    def human(r: dict) -> None:
+        items = r["pending"]
+        if not items:
+            typer.echo("my-office review: nothing pending — no pulled artifacts awaiting approval.")
+            return
+        typer.echo(
+            f"my-office review: {len(items)} pulled artifact(s) awaiting approval "
+            "(withheld from every recompile until approved):"
+        )
+        for a in items:
+            typer.echo(f"  • {a['kind']} {a['name']}  ({a['content_hash'][:12]}…)")
+        typer.echo(
+            "Review each file in ~/.cohort/my/canonical, then "
+            "`cohort my-office approve <name>` (or --all)."
+        )
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+@my_office_app.command("approve")
+def my_office_approve(
+    name: Optional[str] = typer.Argument(None, help="The artifact name to approve."),
+    approve_all: bool = typer.Option(False, "--all", help="Approve every pending artifact."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Clear the quarantine for reviewed artifacts, then recompile so they activate.
+
+    Approve pins nothing forever: it clears the exact bytes you reviewed. If the same
+    name is later pulled with different content, it is quarantined afresh.
+    """
+    from . import quarantine
+    from .install_model import CohortPaths
+    from .myoffice import _recompile_if_installed
+
+    if not approve_all and not name:
+        typer.echo("error: give an artifact name, or pass --all", err=True)
+        raise typer.Exit(code=1)
+
+    paths = CohortPaths.for_global(Path.home())
+    try:
+        cleared = quarantine.approve(paths.state, [name] if name else [], approve_all=approve_all)
+    except quarantine.QuarantineStateError as exc:
+        typer.echo(
+            f"error: {exc}\nRefusing to approve against unreadable state. Delete the "
+            "file to reset, then re-sync to re-record what is pending.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    recompiled = _recompile_if_installed(Path.home()) if cleared else False
+    report = {"action": "my-office-approve", "approved": cleared, "recompiled": recompiled}
+
+    def human(r: dict) -> None:
+        if not r["approved"]:
+            typer.echo("my-office approve: nothing matched (already approved, or wrong name?).")
+            return
+        typer.echo(
+            "my-office approve: cleared " + ", ".join(r["approved"])
+            + (" · recompiled" if r["recompiled"]
+               else " — run `cohort recompile` to place them.")
+        )
 
     _emit(report, json_output, human)
     raise typer.Exit(code=0)

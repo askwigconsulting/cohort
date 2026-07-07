@@ -17,8 +17,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from . import quarantine
 from .gitutil import GIT_ENV, GIT_TIMEOUT
 from .install_model import CohortPaths
+from .manifest import now_iso
 
 _BRANCH = "main"
 
@@ -87,6 +89,44 @@ def _ensure_repo(my: Path) -> None:
         _git(my, "config", "user.name", "Cohort")
 
 
+def _record_pulled_gated(
+    my: Path, state_dir: Path, *, before: str, after: str, unborn: bool
+) -> list[quarantine.QuarantinedArtifact]:
+    """Quarantine the gated artifacts a pull introduced or changed (#107).
+
+    The window is the pull itself (``before..after``); local authoring is committed
+    *after* the merge, so it is never in this delta and never quarantined —
+    distinguishing pulled content from the user's own without git archaeology. A
+    fresh adopt (unborn branch) quarantines every gated artifact in the adopted
+    history. Fail closed: if the diff cannot be computed, quarantine *every* gated
+    artifact present rather than risk activating an unreviewed one.
+
+    Gated-ness is decided by frontmatter ``kind`` (via ``quarantine``), NOT by the
+    on-disk directory — the compiler classifies by ``kind``, so a hook misfiled in
+    ``canonical/agents/`` still renders and must still be gated. The diff therefore
+    scans the whole ``canonical`` tree, not only the hook/memory directories.
+    Identity is the on-disk file's content hash, so approving pins the exact bytes.
+    """
+    # Persist the record even if nothing is installed yet: a later install's first
+    # recompile must still withhold this pull, not silently activate it.
+    state_dir.mkdir(parents=True, exist_ok=True)
+    canonical = my / "canonical"
+    if unborn or not before:
+        gated = quarantine.all_gated_in(canonical)
+    else:
+        rc, out = _git(my, "diff", "--name-only", "-z", before, after, "--", "canonical")
+        if rc != 0:  # a git hiccup must not silently activate a pulled sink
+            gated = quarantine.all_gated_in(canonical)
+        else:
+            changed = [my / rel for rel in out.split("\x00") if rel]
+            gated = quarantine.gated_artifacts(p for p in changed if p.exists())
+    items = [
+        quarantine.QuarantinedArtifact(kind, name, quarantine.content_hash(path), now_iso())
+        for kind, name, path in gated
+    ]
+    return quarantine.add_pending(state_dir, items)
+
+
 def do_my_sync(
     home: Path, *, remote: Optional[str] = None, dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -133,6 +173,9 @@ def do_my_sync(
             f"could not reach sync remote {safe_url} — check the URL, network, or access"
         )
     pulled = False
+    pull_before: Optional[str] = None  # None → no origin/main, no pull attempted
+    pull_after = ""
+    pull_unborn = False
     # Only fast-forward: a diverged personal history is the user's to reconcile.
     if _git(my, "rev-parse", "--verify", f"origin/{_BRANCH}")[0] == 0:
         unborn = _git(my, "rev-parse", "--verify", "HEAD")[0] != 0
@@ -148,7 +191,9 @@ def do_my_sync(
                 "my office has diverged from its remote — reconcile "
                 f"{my} by hand (git pull --rebase), then re-run sync"
             )
-        pulled = before != _git(my, "rev-parse", "HEAD")[1]
+        pull_after = _git(my, "rev-parse", "HEAD")[1]
+        pull_before, pull_unborn = before, unborn
+        pulled = before != pull_after
 
     # A real .gitignore (secret-excluding) only if the reconciled office lacks one.
     gitignore = my / ".gitignore"
@@ -169,10 +214,30 @@ def do_my_sync(
         )
     pushed = True
 
+    # Quarantine any gated (hook/memory) artifact this pull introduced BEFORE the
+    # recompile, so the recompile withholds it instead of activating it (#107). No
+    # pull attempted (no origin/main yet) → nothing to record.
+    newly_quarantined: list[quarantine.QuarantinedArtifact] = []
+    state_unreadable = False
+    if pull_before is not None:
+        try:
+            newly_quarantined = _record_pulled_gated(
+                my, CohortPaths.for_global(home).state,
+                before=pull_before, after=pull_after, unborn=pull_unborn,
+            )
+        except quarantine.QuarantineStateError:
+            # Existing state is corrupt; we can't append. Safe: the recompile below
+            # reads the same corrupt file and fails closed (withholds every gated
+            # artifact), so nothing pulled activates. Signal it so the user is told
+            # to run `my-office review` rather than seeing an empty quarantine list.
+            state_unreadable = True
+
     recompiled = _recompile_if_installed(home)
     # We only reach here past a successful fetch and push (both raise on failure).
     return {"action": "my-sync", "dry_run": False, "remote": safe_url,
-            "fetched": True, "pulled": pulled, "pushed": pushed, "recompiled": recompiled}
+            "fetched": True, "pulled": pulled, "pushed": pushed, "recompiled": recompiled,
+            "quarantined": [f"{a.kind} {a.name}" for a in newly_quarantined],
+            "quarantine_state_unreadable": state_unreadable}
 
 
 def _recompile_if_installed(home: Path) -> bool:
