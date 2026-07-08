@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-07 · Project doers & agent import
+
 ### Added
 - **`cohort adopt` imports pre-existing native Claude agents into the office** — a
   single file or a whole `.claude/agents/` directory at once. `--to project`
@@ -201,7 +203,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/askwigconsulting/cohort/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/askwigconsulting/cohort/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/askwigconsulting/cohort/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/askwigconsulting/cohort/compare/v0.1.0...v0.2.0
