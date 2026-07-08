@@ -44,6 +44,20 @@ class IRArtifact:
         return "all" in self.targets or ide in self.targets
 
 
+def is_doer(ir: IRArtifact) -> bool:
+    """Whether this agent may keep write/exec tools — a "doer".
+
+    The single source of truth every renderer keys off, so the three cannot drift.
+    A doer is permitted ONLY at ``scope: project`` (authored in a repo, reviewed via
+    PR, travels with the repo — no sync/trust boundary crossed). Every synced tier
+    (the shared office, my-office) is ``scope: global`` and stays advisory-only, so
+    a doer there is never rendered. The compound predicate — never ``advisory``
+    alone — is the render-time backstop behind the schema gate: even a mis-scoped or
+    scope-mutated artifact cannot emit write tools at a global compile.
+    """
+    return ir.kind == "agent" and ir.scope == "project" and ir.fields.get("advisory", True) is False
+
+
 def build_ir(frontmatter: dict[str, Any], body: str, source_path: Path | str | None = None) -> IRArtifact:
     """Normalize a validated frontmatter mapping + body into an ``IRArtifact``."""
     fm = apply_defaults(frontmatter)

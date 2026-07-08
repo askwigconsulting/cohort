@@ -35,7 +35,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from ..ir import IRArtifact
+from ..ir import IRArtifact, is_doer
 from .base import MergeTarget
 from .claude import (
     OFFICE_DIRECTORY_MARKER,
@@ -85,8 +85,9 @@ def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     ]
     # Advisory is enforced mechanically, not just in prose: Codex subagents honor
     # sandbox_mode = "read-only" (doc-confirmed), the Codex analogue of Claude's
-    # tool-strip. Every roster agent is advisory.
-    if ir.fields.get("advisory", True):
+    # tool-strip. Every agent gets it EXCEPT a scope:project doer (is_doer), which
+    # keeps write access — same rule the Claude renderer applies.
+    if not is_doer(ir):
         lines.append('sandbox_mode = "read-only"')
     # TOML literal (''') needs no escaping; our bodies never contain '''.
     lines += ["developer_instructions = '''", instructions, "'''"]

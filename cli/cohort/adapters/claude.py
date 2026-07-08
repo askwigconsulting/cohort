@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from ..ir import IRArtifact
+from ..ir import IRArtifact, is_doer
 from .base import MergeTarget
 
 # --- tool mapping (verified) -----------------------------------------------
@@ -89,17 +89,19 @@ def _norm_tool(name: str) -> Optional[str]:
 
 
 def claude_tools(ir: IRArtifact) -> list[str]:
-    """The read-only-enforced Claude tool list for an agent (R7).
+    """The Claude tool list for an agent (R7).
 
-    Maps canonical tool names, restricts to read-only when advisory, and falls
-    back to a sensible read-only default when nothing usable is requested.
+    Maps canonical tool names. A ``scope: project`` doer (``advisory: false``) keeps
+    its requested write/exec tools; every other agent — advisory, or any synced
+    (global) tier — is restricted to read-only, with a sensible read-only default
+    when nothing usable is requested. Keyed off ``is_doer`` (never ``advisory``
+    alone) so a mis-scoped artifact can't emit write tools at a global compile.
     """
-    advisory = bool(ir.fields.get("advisory", True))
     requested = [m for m in (_norm_tool(str(t)) for t in ir.fields.get("tools", [])) if m]
-    if advisory:
-        allowed = {t for t in requested if t in _READONLY} or set(_DEFAULT_READONLY)
-    else:  # not reachable while Phase 0 enforces advisory: true, but be explicit
+    if is_doer(ir):
         allowed = set(requested) or set(_DEFAULT_READONLY)
+    else:
+        allowed = {t for t in requested if t in _READONLY} or set(_DEFAULT_READONLY)
     return [t for t in _TOOL_ORDER if t in allowed]
 
 

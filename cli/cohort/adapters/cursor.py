@@ -25,7 +25,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from ..ir import IRArtifact
+from ..ir import IRArtifact, is_doer
 from .base import MergeTarget
 from .claude import (
     OFFICE_DIRECTORY_MARKER,
@@ -55,8 +55,11 @@ HOOK_EVENT_MAP = {
 
 
 def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
+    # readonly for every agent except a scope:project doer (is_doer) — same rule
+    # as the Claude tool-strip / Codex sandbox_mode.
     fm = _frontmatter(
-        [("name", ir.name), ("description", ir.description), ("readonly", "true")]
+        [("name", ir.name), ("description", ir.description),
+         ("readonly", "false" if is_doer(ir) else "true")]
     )
     label = ir.display_name or ir.name
     dept = ir.fields.get("department", "")

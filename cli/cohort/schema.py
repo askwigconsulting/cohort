@@ -293,9 +293,23 @@ def _validate_agent(fm: dict[str, Any], errors: list[ArtifactError]) -> None:
     _check_array_of_strings(fm, "tools", errors)
     # advisory: type before invariant (R6). Wrong type → E050 suppresses E060.
     if _check_type(fm, "advisory", "boolean", errors) and fm["advisory"] is False:
-        errors.append(
-            ArtifactError(E060_SAFETY_INVARIANT, "advisory", "agents must be advisory: true")
-        )
+        # A "doer" (write/exec tools) is permitted ONLY at scope: project — authored
+        # in a repo, reviewed via PR, travels with it (no sync/trust boundary). Every
+        # synced tier is scope: global and stays advisory-only. Fail closed: compare
+        # against "project", so a missing/global/malformed scope is rejected.
+        if fm.get("scope") != "project":
+            errors.append(ArtifactError(
+                E060_SAFETY_INVARIANT, "advisory",
+                "only scope: project agents may set advisory: false (a doer); "
+                "synced tiers (office, my-office) stay advisory: true",
+            ))
+        elif not fm.get("tools"):
+            # a doer with no tools silently renders read-only — almost always a
+            # mistake; make the author declare what the doer may do.
+            errors.append(ArtifactError(
+                E060_SAFETY_INVARIANT, "tools",
+                "a doer (advisory: false) must declare tools",
+            ))
 
 
 def _validate_command(fm: dict[str, Any], errors: list[ArtifactError]) -> None:
