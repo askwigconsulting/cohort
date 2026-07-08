@@ -31,14 +31,15 @@ class AdoptError(Exception):
 _KIND_BY_DIR = {"agents": "agent", "commands": "command"}
 
 
-def _infer_kind_and_name(path: Path, home: Path) -> tuple[str, str]:
-    """(kind, name) from the file's location — only ``~/.claude/agents/*.md`` and
-    ``~/.claude/commands/*.md`` are adoptable (the global Claude tier)."""
-    claude = (home / ".claude").resolve()
-    if path.suffix != ".md" or path.parent.parent != claude:
+def _infer_kind_and_name(path: Path) -> tuple[str, str]:
+    """(kind, name) from the file's location — a ``.claude/agents/*.md`` or
+    ``.claude/commands/*.md`` file. Accepts both the global tier (``~/.claude/``)
+    and a project's ``<repo>/.claude/`` (the import path), but still requires the
+    ``.claude/{agents,commands}/`` structure so an arbitrary path can't be adopted."""
+    if path.suffix != ".md" or path.parent.parent.name != ".claude":
         raise AdoptError(
-            f"{path} is not under {claude}/agents/ or {claude}/commands/ — "
-            "only loose global Claude artifacts can be adopted"
+            f"{path} is not under a .claude/agents/ or .claude/commands/ directory — "
+            "only native Claude agents/commands can be adopted"
         )
     kind = _KIND_BY_DIR.get(path.parent.name)
     if kind is None:
@@ -107,7 +108,7 @@ def do_adopt(
         # a pre-planted hardlink would copy some other file's content into the
         # (typically git-tracked) canonical tree — refuse the ambiguity
         raise AdoptError(f"{path} has multiple hard links; copy it to a fresh file first")
-    kind, name = _infer_kind_and_name(path, home)
+    kind, name = _infer_kind_and_name(path)
     if not re.fullmatch(NAME_PATTERN, name):
         raise AdoptError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
     raw = path.read_text(encoding="utf-8")
@@ -251,3 +252,185 @@ def _recompile_global_claude(home: Path, source: Path, gpaths: CohortPaths, kind
             fresh.roster = subset
             fresh.persist(gpaths.manifest)
     return report
+
+
+# --- import: bring pre-existing native Claude agents into the office ----------
+#
+# `adopt` above handles ONE loose file → my office (forced advisory). The importer
+# adds the two things a repo with pre-Cohort agents needs: a whole directory at
+# once, and the PROJECT tier (`--to project`) — where, since project-scope doers
+# are allowed, a write-capable source agent is imported as a real doer (tools
+# preserved) instead of being neutered. `--to my` still forces advisory (a synced
+# tier), so a doer source is imported read-only and flagged.
+
+_READONLY_CANON = frozenset({"read", "grep", "glob", "webfetch", "websearch"})
+
+
+def _native_tools(fm: dict[str, Any]) -> tuple[list[str], bool]:
+    """(canonical tool names, tools_were_declared) from a native agent's frontmatter.
+
+    Claude writes `tools` as a comma string or a YAML list; unknown/MCP tools drop
+    (they'd drop at render anyway). No `tools` key means Claude grants ALL tools —
+    we can't infer a safe doer set from that, so the caller treats it as advisory."""
+    from .adapters.claude import _TOOL_MAP  # canonical → Claude; keys are canonical
+
+    raw = fm.get("tools")
+    if raw is None:
+        return [], False
+    items = raw.split(",") if isinstance(raw, str) else list(raw)
+    known, out = set(_TOOL_MAP), []
+    for t in items:
+        key = str(t).strip().lower().replace(" ", "").replace("_", "")
+        if key in known and key not in out:
+            out.append(key)
+    return out, True
+
+
+class _Native:
+    """Parsed facts about a native agent file the importer needs."""
+
+    def __init__(self, path: Path, name: str, description: str, tools: list[str], is_doer: bool):
+        self.path, self.name, self.description = path, name, description
+        self.tools, self.is_doer = tools, is_doer
+
+
+def _read_native_agent(path: Path) -> _Native:
+    kind, name = _infer_kind_and_name(path)
+    if kind != "agent":
+        raise AdoptError(f"{path.name}: only agents import (got {kind})")
+    if not re.fullmatch(NAME_PATTERN, name):
+        raise AdoptError(f"{path.name}: name {name!r} must match the slug pattern {NAME_PATTERN}")
+    parsed = load_artifact(path)
+    if parsed.load_error is not None and path.read_text(encoding="utf-8").lstrip().startswith("---"):
+        raise AdoptError(f"{path.name}: frontmatter does not parse ({parsed.load_error.message})")
+    fm = parsed.frontmatter or {}
+    description = fm.get("description")
+    if not isinstance(description, str) or not description.strip():
+        raise AdoptError(f"{path.name}: no usable description; add one or pass --description")
+    tools, declared = _native_tools(fm)
+    # A doer only when it EXPLICITLY declares a write/exec tool. An implicit
+    # all-tools grant (no `tools` key) is imported advisory — safest, since we
+    # can't know which tools it actually needs; the author can widen it later.
+    is_doer = declared and any(t not in _READONLY_CANON for t in tools)
+    return _Native(path, name, description.strip(), tools, is_doer)
+
+
+def _project_agent_canonical(
+    n: _Native, department: str, display_name: str, *, as_doer: bool
+) -> str:
+    """Canonical for a project agent, preserving the source's doer/advisory nature."""
+    tools = n.tools if as_doer else READONLY_TOOLS_LIST
+    pairs = [
+        ("name", n.name), ("kind", "agent"), ("scope", "project"),
+        ("description", n.description), ("targets", ["claude"]),
+        ("department", department), ("topology", "specialist"),
+        ("advisory", not as_doer), ("tools", tools), ("display_name", display_name),
+    ]
+    body = load_artifact(n.path).body or ""
+    return f"{dump_frontmatter(pairs).rstrip(chr(10))}\n{body.strip()}\n"
+
+
+def do_import_agents(
+    home: Path, source: Path, target: Path, *,
+    to: str = "my", department: Optional[str] = None,
+    advisory_only: bool = False, dry_run: bool = False, repo: Optional[Path] = None,
+) -> dict[str, Any]:
+    """Import a native agent file — or a whole `.claude/agents/` directory — into
+    Cohort. `to="project"` preserves doers; `to="my"` forces advisory. `repo`
+    defaults to the current working repo (the CLI's caller)."""
+    if to not in ("my", "project"):
+        raise AdoptError(f"--to must be my|project, got {to!r}")
+    target = Path(target).expanduser()
+    if target.is_dir():
+        files = sorted(target.glob("*.md"))
+        if not files:
+            raise AdoptError(f"{target} contains no .md agent files")
+    elif target.is_file():
+        files = [target.resolve()]
+    else:
+        raise AdoptError(f"{target} not found")
+    if to == "my":
+        return _import_to_my(home, source, files, department, advisory_only, dry_run)
+    return _import_to_project(home, files, department, advisory_only, dry_run, repo)
+
+
+def _import_to_my(
+    home: Path, source: Path, files: list[Path],
+    department: Optional[str], advisory_only: bool, dry_run: bool,
+) -> dict[str, Any]:
+    imported, skipped, downgraded = [], [], []
+    for f in files:
+        n = _read_native_agent(f)
+        if n.is_doer and advisory_only:
+            skipped.append({"name": n.name, "reason": "doer skipped (--advisory-only)"})
+            continue
+        do_adopt(home, source, f, department=department, dry_run=dry_run)
+        imported.append({"name": n.name, "was_doer": n.is_doer})
+        if n.is_doer:  # my office is synced → advisory-only; the write tools are dropped
+            downgraded.append(n.name)
+    return {"action": "import", "to": "my", "dry_run": dry_run,
+            "imported": imported, "skipped": skipped, "doers_downgraded": downgraded}
+
+
+def _import_to_project(
+    home: Path, files: list[Path],
+    department: Optional[str], advisory_only: bool, dry_run: bool, repo: Optional[Path] = None,
+) -> dict[str, Any]:
+    from .install import do_install_project
+    from .project import find_repo_root
+
+    repo = repo or find_repo_root(Path.cwd())
+    ppaths = CohortPaths.for_project(repo)
+    if not ppaths.manifest.exists():
+        raise AdoptError("not a Cohort project; run `cohort init` in the repo first")
+    dept = department or "Imported"
+    natives = [_read_native_agent(f) for f in files]  # parse all before mutating (fail-closed)
+    agents_dir = ppaths.cohort_home / "canonical" / "agents"
+    for n in natives:
+        if (agents_dir / f"{n.name}.md").exists():
+            raise AdoptError(f"a project agent {n.name!r} already exists; remove it first")
+
+    to_import = [n for n in natives if not (n.is_doer and advisory_only)]
+    skipped = [{"name": n.name, "reason": "doer skipped (--advisory-only)"}
+               for n in natives if n.is_doer and advisory_only]
+    if dry_run:
+        return {"action": "import", "to": "project", "dry_run": True,
+                "imported": [{"name": n.name, "as_doer": n.is_doer} for n in to_import],
+                "skipped": skipped}
+
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    backup_dir = CohortPaths.for_global(home).state / "adopt-backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    backups: list[tuple[Path, Path]] = []  # (original, backup) to restore on failure
+    try:
+        for n in to_import:
+            dest = agents_dir / f"{n.name}.md"
+            dest.write_text(
+                _project_agent_canonical(n, dept, _default_display_name(n.name), as_doer=n.is_doer),
+                encoding="utf-8",
+            )
+            errors = validate_frontmatter(load_artifact(dest).frontmatter, n.name)
+            if errors:
+                dest.unlink()
+                raise AdoptError(f"{n.name}: {errors[0].code} {errors[0].message}")
+            written.append(dest)
+            # The source native file sits at the placement dest (<repo>/.claude/
+            # agents/<name>.md); back it up (never delete) so the managed symlink
+            # can land without a clobber.
+            if n.path.exists() and not n.path.is_symlink():
+                backup = backup_dir / f"agent-{n.name}-{_utc_compact()}-{_short_id()}.md"
+                shutil.move(str(n.path), str(backup))
+                backups.append((n.path, backup))
+        report = do_install_project(repo)
+    except Exception as exc:
+        for dest in written:
+            dest.unlink(missing_ok=True)
+        for original, backup in backups:
+            if not original.exists():
+                shutil.move(str(backup), str(original))
+        raise AdoptError(f"import failed; nothing changed: {exc}") from exc
+    return {"action": "import", "to": "project", "dry_run": False,
+            "imported": [{"name": n.name, "as_doer": n.is_doer} for n in to_import],
+            "skipped": skipped, "doers": report.get("doers", []),
+            "backups": [str(b) for _, b in backups]}
