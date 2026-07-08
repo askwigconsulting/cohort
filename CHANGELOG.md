@@ -11,6 +11,18 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- **Agents may now be "doers" (write/exec tools) — but only at `scope: project`.**
+  The advisory-only safety invariant is relaxed just for project-authored agents
+  (in a repo, reviewed via PR, travelling with the repo — no sync/trust boundary
+  crossed); every synced tier (the shared office, my-office — both `scope: global`)
+  stays advisory read-only, so a synced agent can never carry write access. Enforced
+  fail-closed in the schema (`advisory: false` rejected unless `scope: project`) and,
+  as a render-time backstop, in all three renderers via one shared `is_doer` helper.
+  `promote` refuses to lift a doer to a synced tier, and `do_install_project`
+  discloses a project's write-capable agents (flagging `Bash`) so a doer is never a
+  silent surprise on a teammate's clone. (#125-followup)
+
 ### Security
 - The `ext::`/`fd::` git transport ban (they run an arbitrary command *as* the
   transport, so a crafted remote URL is a code path on first fetch) now lives in

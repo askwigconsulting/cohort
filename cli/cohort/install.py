@@ -456,7 +456,30 @@ def do_install_project(repo: Path, mode: Optional[str] = None) -> dict[str, Any]
         "applied": sum(1 for o in outcomes if o.status == "applied"),
         "pruned": sum(1 for o in stale_outcomes if o.status == "removed"),
         "scope_filtered": result.scope_filtered,
+        # Disclosure: which placed agents are write-capable "doers". A doer placed
+        # on a teammate's clone is a materially louder thing than a passive file —
+        # surface it (and flag Bash, arbitrary execution) so it's never a surprise.
+        "doers": _project_doers(ppaths),
     }
+
+
+def _project_doers(ppaths: CohortPaths) -> list[dict[str, Any]]:
+    """Placed project agents that are doers (advisory: false), with their tools —
+    for a loud install-time disclosure. Bash (arbitrary execution) is flagged."""
+    from .loader import load_artifact  # lazy: avoid import cycle
+
+    doers = []
+    agents_dir = ppaths.cohort_home / "canonical" / "agents"
+    for src in sorted(agents_dir.glob("*.md")):
+        fm = load_artifact(src).frontmatter or {}
+        if fm.get("advisory") is False:
+            tools = [str(t) for t in fm.get("tools", []) if isinstance(t, str)]
+            doers.append({
+                "name": src.stem,
+                "tools": tools,
+                "bash": any(t.lower() == "bash" for t in tools),
+            })
+    return doers
 
 
 # --- uninstall --------------------------------------------------------------

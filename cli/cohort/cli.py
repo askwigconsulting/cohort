@@ -1591,6 +1591,24 @@ def monthly_report(
     _run_report("monthly", since, until, dry_run, json_output, ctx)
 
 
+def _warn_project_doers(report: dict) -> None:
+    """Loudly disclose write-capable ("doer") agents a project install placed —
+    a Bash/Edit-capable agent appearing on clone is materially louder than a
+    passive file, so it must never be a silent surprise."""
+    doers = report.get("doers") or []
+    if not doers:
+        return
+    typer.echo(
+        f"warning: this project defines {len(doers)} write-capable agent(s) "
+        "(advisory: false) — they can modify files/run commands when invoked:",
+        err=True,
+    )
+    for d in doers:
+        tools = ", ".join(d.get("tools") or []) or "(none)"
+        bash = "  ⚠ includes Bash (arbitrary execution)" if d.get("bash") else ""
+        typer.echo(f"  - {d['name']}: {tools}{bash}", err=True)
+
+
 @app.command("add-specialist")
 def add_specialist(
     ctx: typer.Context,
@@ -1644,6 +1662,7 @@ def add_specialist(
             f"artifact to the global office.",
             err=True,
         )
+    _warn_project_doers(report)
     raise typer.Exit(code=0)
 
 

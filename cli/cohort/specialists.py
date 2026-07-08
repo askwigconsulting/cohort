@@ -419,6 +419,18 @@ def do_promote(
     if errors:
         raise PromoteError(f"{name!r} is invalid: {errors[0].code} {errors[0].message}")
 
+    # Defense-in-depth (not just the schema's transitive re-check): a doer is
+    # project-scoped by definition; promoting it to a SYNCED tier (my office / the
+    # shared office) would make it a synced write-capable agent — the exact RCE
+    # surface the advisory-only rule exists to prevent. Refuse loudly rather than
+    # silently downgrade, so the author isn't misled into thinking it carried over.
+    if (loaded.frontmatter or {}).get("advisory") is False:
+        raise PromoteError(
+            f"{name!r} is a doer (advisory: false). Doers stay project-scoped — a "
+            "synced tier (my office / the shared office) is advisory-only. Keep it in "
+            "the project, or set advisory: true before promoting."
+        )
+
     if to == "office":
         dest = paths.cohort_home / "proposals" / f"{name}.md"
         if dry_run:
