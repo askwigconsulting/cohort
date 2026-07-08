@@ -493,7 +493,8 @@ function kindTag(kind) {
 /* the short metadata chips shown on a card, per kind */
 function metaBits(it) {
   const bits = [];
-  if (it.kind === "agent") bits.push(it.topology === "generalist" ? "triage" : "advisor");
+  if (it.kind === "agent") bits.push(
+    it.advisory === false ? "⚡ doer" : (it.topology === "generalist" ? "triage" : "advisor"));
   if (it.kind === "hook" && it.event) bits.push(it.event);
   if (it.department) bits.push(it.department);
   for (const t of (it.targets || [])) if (t !== "all") bits.push(t);
