@@ -11,6 +11,17 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- **ChiefOfStaff now routes to a repo's project specialists, confidently.** The
+  mechanism (a "Project specialists" roster kept current in each repo's
+  `project_context.md`, `@import`ed into the project `CLAUDE.md`) was already in place,
+  but rested on an unverified assumption. It's now **verified against the Claude Code
+  docs**: a custom subagent inherits the full memory hierarchy the main conversation
+  loads (user + project `CLAUDE.md` and its `@import`s) except Explore/Plan — so
+  ChiefOfStaff receives the project roster at spawn. Its routing instruction is upgraded
+  from a hedged "a repo may add specialists" pointer to a confident rule with
+  project-over-global precedence, locked by a test so it can't regress to a no-op.
+
 ## [0.5.0] — 2026-07-07 · Project doers & agent import
 
 ### Added

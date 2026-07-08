@@ -50,11 +50,18 @@ structural and testable.
   `--force` (`init`/`context refresh`/`recompile`) deliberately re-asserts Cohort's
   content. **Every divergence warning names its own restore command** — an accidental
   deletion is recoverable, not a dead end. Phase-7 adapters inherit this.
-- **[O] ChiefOfStaff project-awareness is deferred, mechanism anchored.** Project
-  specialists are directly invocable and shown by `status`, but not yet in the global
-  generalist's routing. When added, inject a "Project specialists" list into the
-  already-loaded project memory (the Phase-3 directory injection at project scope) —
-  **not** a per-repo clone/override of the global generalist.
+- **[O] ChiefOfStaff project-awareness — delivered and verified.** The mechanism is
+  a "Project specialists" roster kept current in each repo's `project_context.md`
+  (`managed_context_block`, #24), `@import`ed into `<repo>/.claude/CLAUDE.md` by
+  `init` — **not** a per-repo clone/override of the global generalist. The load-bearing
+  assumption (that a subagent actually *receives* that project memory) was
+  asserted-not-proven; it is now **verified against the Claude Code docs**: a custom
+  subagent inherits every level of the memory hierarchy the main conversation loads —
+  user + project `CLAUDE.md` and its `@import`s — *except* Explore and Plan, which skip
+  it. So ChiefOfStaff (a custom subagent) receives the project roster at spawn. Its body
+  reflects this with a confident routing rule (project specialists are first-class and
+  override a same-named global one for that repo), locked by a test so the wording can't
+  regress to a no-op instruction. See the verified-facts entry below.
 - **[P] The global scope is two layers: the office and my office (#84).** Personal
   content lives in the machine-local overlay `~/.cohort/my/canonical/`, merged
   *additively* over the source clone's canonical at compile time — a `(kind, name)`
@@ -149,6 +156,11 @@ structural and testable.
 - Claude settings hooks: `{hooks: {<Event>: [{matcher, hooks:[{type:"command",command}]}]}}`.
 - **Project-level subagents override user-level** on a name collision (priority 3 > 4) —
   the basis for the shadow-name warning.
+- **A custom subagent inherits the full memory hierarchy** the main conversation loads —
+  user + project `CLAUDE.md` and its `@import`s — *except* Explore and Plan, which skip
+  CLAUDE.md (and git status) for speed. This is what makes ChiefOfStaff project-aware ([O]):
+  the repo's `@import`ed `project_context.md` reaches the subagent's context at spawn. (Docs:
+  code.claude.com/docs sub-agents "what loads at startup".)
 - Codex: per-file subagents `.codex/agents/*.toml` with `sandbox_mode`; skills under
   `.agents/skills/`; `config.toml` is TOML (managed-block), `hooks.json` is JSON
   (key-merge). Custom prompts are deprecated → `command` is a declared gap.

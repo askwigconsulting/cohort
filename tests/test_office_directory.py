@@ -120,3 +120,16 @@ def test_missing_marker_is_compile_error(tmp_path):
     chief.write_text(chief.read_text().replace(OFFICE_DIRECTORY_MARKER, ""), encoding="utf-8")
     with pytest.raises(CompileError):
         compile_ide(src, "claude")
+
+
+def test_chief_routes_to_project_specialists_confidently():
+    """DESIGN [O]: a subagent receives the repo's @imported project_context, so the
+    generalist's body must ACTIVELY route to project specialists — a confident,
+    precedence-aware rule, not a hedged 'may add / not listed' pointer that reads as a
+    no-op. A golden-regen locks the exact bytes; this locks the semantics so a rewrite
+    can't silently weaken them."""
+    body = load_artifact(CANON_AGENTS / "chief-of-staff.md").body.lower()
+    assert "project specialist" in body                 # it addresses them at all
+    assert "your context includes" in body              # confident delivery (not "may add")
+    assert "governs for that repo" in body              # project-over-global precedence rule
+    assert "not listed below" not in body               # the old hedge is gone
