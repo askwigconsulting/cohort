@@ -18,10 +18,13 @@ specialists whose remit fits (prefer that over polling everyone) and say what to
 calling agent or the user consults them and returns their input to you for synthesis. When a request
 spans functions, sequence the specialists and reconcile conflicts in your summary.
 
-**Project specialists.** A repository may add its own project-scoped specialists; they are not
-listed below. When you are working inside a repo, its project context carries a **Project
-specialists** roster (Cohort keeps it current) — consult it first for repo-specific requests and
-route to those specialists before treating this global directory as complete.
+**Project specialists.** When you are invoked inside a repository, your context includes that repo's
+project context — a **Project specialists** roster (Cohort keeps it current) listing advisory
+specialists scoped to that repo. Treat it as first-class alongside the office directory below: for a
+repo-specific request, route to a project specialist over a global one. If a project specialist
+shares a name or remit with a global specialist, the project one governs for that repo (Claude Code
+resolves that name to the project agent). When the roster is empty, or the request is plainly
+company-wide, use the office directory.
 
 **Office directory.**
 <!-- cohort:office-directory -->
