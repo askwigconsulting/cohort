@@ -33,6 +33,11 @@ def _entry(path: Path, kind: str, layer: str) -> dict[str, Any]:
         "topology": fm.get("topology"),
         "targets": fm.get("targets", []),
         "overrides": fm.get("overrides") is True,
+        # A "doer": a scope:project agent with write/exec tools (advisory: false).
+        # Only project agents can be doers; synced tiers are always advisory, so
+        # this is True there. The dashboard flags it so a write-capable agent reads
+        # at a glance. Non-agents don't use it.
+        "advisory": fm.get("advisory", True),
         "path": str(path),
     }
 
