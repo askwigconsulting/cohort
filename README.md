@@ -13,9 +13,12 @@ experimental** — the renderers are complete but doc-cited, not yet locked agai
 - **Canonical is law.** Every agent/skill/command/hook/memory/context is authored once and
   schema-validated; per-IDE adapters compile it into each IDE's native files. Never hand-edit a
   compiled output — edit canonical and recompile.
-- **Advisory by default.** Every office agent is read-only and advisory: it recommends; a human
-  decides. The renderer enforces this (Claude tool-strip, Codex `sandbox_mode = "read-only"`, Cursor
-  `readonly: true`).
+- **Advisory by default.** Office agents are read-only advisors: they recommend; a human decides.
+  The renderer enforces this (Claude tool-strip, Codex `sandbox_mode = "read-only"`, Cursor
+  `readonly: true`). The one exception is a **project-scoped doer**: an agent authored in a repo
+  (reviewed via PR, travelling with the repo — no sync boundary crossed) may set `advisory: false`
+  to keep write/exec tools. Every **synced** tier — the shared office and your my-office — stays
+  advisory-only, so a synced agent can never carry write access.
 - **Three levels of config.** **The office** — the shared roster from the Cohort repo (or your
   company's fork); it changes only via `cohort update` and pull requests. **My office** — your
   personal overlay at `~/.cohort/my/`: agents and memories you add for yourself; updates never touch
