@@ -1139,45 +1139,93 @@ def add_agent(
 def adopt(
     ctx: typer.Context,
     path: str = typer.Argument(
-        ..., help="A loose file under ~/.claude/agents/ or ~/.claude/commands/ to adopt."
+        ..., help="A native Claude agent/command .md file, OR a whole .claude/agents/ directory."
+    ),
+    to: str = typer.Option(
+        "my", "--to", help="Where to import: 'my' (your office, advisory) or 'project' (this repo)."
     ),
     description: Optional[str] = typer.Option(
-        None, "--description", help="Required if the file's frontmatter has none."
+        None, "--description", help="Single file: required if the file's frontmatter has none."
     ),
-    department: Optional[str] = typer.Option(None, "--department", help="Agents only; default: Adopted."),
-    display_name: Optional[str] = typer.Option(None, "--display-name", help="Agents only."),
+    department: Optional[str] = typer.Option(None, "--department", help="Agents only; default: Imported."),
+    display_name: Optional[str] = typer.Option(None, "--display-name", help="Single file, --to my only."),
+    advisory_only: bool = typer.Option(
+        False, "--advisory-only", help="Skip write-capable (doer) agents instead of importing them."
+    ),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Lift a loose, unmanaged Claude agent/command into canonical and recompile.
+    """Bring pre-existing native Claude agents/commands into the office.
 
-    The original is backed up under ~/.cohort/state/adopt-backups/, never deleted.
-    Adopted agents become advisory read-only like the rest of the roster.
+    A single file OR a whole `.claude/agents/` directory. `--to project` imports
+    into this repo's project tier, PRESERVING write-capable "doer" agents (tools
+    kept); `--to my` (default) imports into your office, where the advisory-only
+    safety invariant applies (a doer is imported read-only and flagged). Originals
+    are backed up under ~/.cohort/state/adopt-backups/, never deleted.
     """
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    if to not in ("my", "project"):
+        typer.echo("error: --to must be my|project", err=True)
+        raise typer.Exit(code=2)
+
+    # Single loose file → my, with no import-only flags: the classic single-file
+    # adopt (keeps its precise message + backup path). Everything else — a
+    # directory, or --to project, or --advisory-only — goes through the importer.
+    single = Path(path).expanduser().is_file()
+    if single and to == "my" and not advisory_only:
+        try:
+            source_path = resolve_source(source)
+            report = do_adopt(
+                Path.home(), source_path, Path(path),
+                description=description, department=department, display_name=display_name,
+                dry_run=effective_dry_run,
+            )
+        except SourceUnresolved as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2)
+        except AdoptError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+        _emit(report, json_output, lambda r: typer.echo(
+            f"adopt: {'(dry-run) ' if r['dry_run'] else ''}{r['kind']} {r['name']} → {r['path']}"))
+        if report.get("advisory_enforced"):
+            typer.echo(
+                "note: adopted agents are advisory read-only in your office (a synced tier); "
+                "use `--to project` to keep a write-capable agent as a project doer.", err=True)
+        raise typer.Exit(code=0)
+
+    from .adopt import do_import_agents
     try:
-        source_path = resolve_source(source)
+        # source is only needed to recompile the global tier (--to my)
+        source_path = resolve_source(source) if to == "my" else Path.cwd()
+        report = do_import_agents(
+            Path.home(), source_path, Path(path),
+            to=to, department=department, advisory_only=advisory_only, dry_run=effective_dry_run,
+        )
     except SourceUnresolved as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=2)
-    try:
-        report = do_adopt(
-            Path.home(), source_path, Path(path),
-            description=description, department=department, display_name=display_name,
-            dry_run=effective_dry_run,
-        )
     except AdoptError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
-    _emit(report, json_output, lambda r: typer.echo(
-        f"adopt: {'(dry-run) ' if r['dry_run'] else ''}{r['kind']} {r['name']} → {r['path']}"))
-    if report.get("advisory_enforced"):
+    if json_output:
+        typer.echo(_json.dumps(report))
+        raise typer.Exit(code=0)
+    pre = "(dry-run) " if report["dry_run"] else ""
+    where = "this project" if to == "project" else "your office"
+    typer.echo(f"import: {pre}{len(report['imported'])} agent(s) → {where}")
+    for a in report["imported"]:
+        kind = "doer" if a.get("as_doer") or a.get("was_doer") else "advisory"
+        typer.echo(f"  - {a['name']} ({kind})")
+    for s in report.get("skipped", []):
+        typer.echo(f"  - {s['name']}: {s['reason']}", err=True)
+    if report.get("doers_downgraded"):
         typer.echo(
-            "note: adopted agents are advisory read-only (Cohort's v1 safety invariant), "
-            "even if the loose original inherited all tools.",
-            err=True,
-        )
+            f"note: {', '.join(report['doers_downgraded'])} had write tools but were imported "
+            "read-only (your office is a synced, advisory-only tier). Use `--to project` to keep "
+            "them as doers.", err=True)
+    _warn_project_doers(report)  # loud disclosure of placed write-capable agents
     raise typer.Exit(code=0)
 
 

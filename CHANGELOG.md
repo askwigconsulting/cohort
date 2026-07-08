@@ -11,6 +11,17 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`cohort adopt` imports pre-existing native Claude agents into the office** — a
+  single file or a whole `.claude/agents/` directory at once. `--to project`
+  imports into the current repo's project tier and **preserves write-capable
+  "doer" agents** (tools kept, as a `scope: project` doer); `--to my` imports into
+  your office, where the advisory-only rule applies (a doer source is imported
+  read-only and flagged, with a pointer to `--to project`). `--advisory-only`
+  skips doers. Native frontmatter (description, tools) is parsed; the required
+  `department` is supplied via `--department`. Originals are backed up (never
+  deleted) and every file is parsed before any mutation, with rollback on failure.
+
 ### Changed
 - **Agents may now be "doers" (write/exec tools) — but only at `scope: project`.**
   The advisory-only safety invariant is relaxed just for project-authored agents
