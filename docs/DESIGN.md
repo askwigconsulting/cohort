@@ -87,7 +87,19 @@ structural and testable.
 - **Advisory is enforced at render time, per IDE** — Claude tool-strip (read-only tool
   set), Codex `sandbox_mode = "read-only"`, Cursor `readonly: true`. The safety
   invariant becomes a property of the *compiled* agent, not just the canonical one; the
-  renderer strips mutating tools even if canonical requests them.
+  renderer strips mutating tools even if canonical requests them — **except a
+  `scope: project` doer** (`advisory: false`), which keeps its write/exec tools. The
+  relaxation is gated in one place, `is_doer(ir)` (`scope == "project" AND advisory is
+  False`), which all three renderers call, so they cannot drift and a synced (`global`)
+  tier can never emit a doer. The schema enforces the same rule fail-closed
+  (`advisory: false` rejected unless `scope: project`; a doer must declare `tools`);
+  `promote` refuses to lift a doer into a synced tier (defense-in-depth, not the schema's
+  transitive re-check alone); and `do_install_project` discloses placed write-capable
+  agents (flagging `Bash`) so a doer is never a silent surprise on a teammate's clone.
+  Rationale: a project agent crosses no sync/trust boundary beyond "you already trust
+  code in a repo you cloned"; a doer in a *synced* tier would be an RCE vector on every
+  install that pulls it — the surface `signed_by` pinning and the my-office quarantine
+  exist to contain.
 - **Delegation is a derived invariant.** ChiefOfStaff's office directory is generated
   from the roster at compile time (the `<!-- cohort:office-directory -->` marker); a
   generalist missing it — or a specialist carrying it — is a compile error, so the
