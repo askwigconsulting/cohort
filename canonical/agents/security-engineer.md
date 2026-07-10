@@ -7,6 +7,7 @@ targets: [all]
 department: Security
 topology: specialist
 advisory: true
+model: top
 tools: [read, grep, glob]
 display_name: SecurityEngineer
 ---

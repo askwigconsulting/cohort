@@ -26,6 +26,13 @@ LOOSE_AGENT = (
 LOOSE_COMMAND = "Run the full build and report failures.\n"
 
 
+def _loose_agent_with_model(name: str, model: str) -> str:
+    return (
+        f"---\nname: {name}\ndescription: Reviews diffs for defects.\n"
+        f"model: {model}\n---\n# Reviewer\n\nYou review code.\n"
+    )
+
+
 def run_cli(*args, home, cwd=None):
     env = dict(os.environ)
     env["HOME"] = str(home)
@@ -81,6 +88,32 @@ def test_adopted_agent_appears_in_chief_directory(source, home):
     run_cli("adopt", str(loose), "--source", str(source), home=home)
     chief = (home / ".claude" / "agents" / "chief-of-staff.md").read_text(encoding="utf-8")
     assert "**PerfAuditor**" in chief  # no longer invisible to the router
+
+
+# --- model tier (#143): concrete model names found in the wild --------------
+
+
+@pytest.mark.parametrize(
+    "concrete,tier",
+    [("opus", "top"), ("claude-3-5-haiku-20241022", "fast"), ("sonnet", "default")],
+)
+def test_adopt_maps_concrete_model_to_nearest_tier(source, home, concrete, tier):
+    loose = _loose(home, "agents", "model-agent", _loose_agent_with_model("model-agent", concrete))
+    proc = run_cli("adopt", str(loose), "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    canonical = home / ".cohort" / "my" / "canonical" / "agents" / "model-agent.md"
+    assert f"model: {tier}" in canonical.read_text(encoding="utf-8")
+
+
+def test_adopt_drops_unrecognized_model_without_failing_validation(source, home):
+    loose = _loose(
+        home, "agents", "model-agent", _loose_agent_with_model("model-agent", "gpt-5")
+    )
+    proc = run_cli("adopt", str(loose), "--source", str(source), home=home)
+    assert proc.returncode == 0, proc.stderr
+    canonical = home / ".cohort" / "my" / "canonical" / "agents" / "model-agent.md"
+    text = canonical.read_text(encoding="utf-8")
+    assert "model:" not in text  # dropped, never guessed — and never schema-invalid
 
 
 def test_adopt_command_requires_description_flag_when_file_has_none(source, home):
