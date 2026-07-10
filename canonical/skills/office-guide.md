@@ -19,6 +19,12 @@ agents (legal, finance, security, cloud, HR, and more) plus a ChiefOfStaff triag
   `cohort` CLI. `/plan` can optionally file its decomposed tasks as GitHub issues at the end —
   opt-in, and only after confirming the target repo (and board, if `.cohort/cohort.toml` sets
   `[tracker]`) with the human.
+- **Compounding memory.** `cohort distill [--days N]` rolls recent `sessions/` + `feedback/`
+  into a dated, append-only `## Distilled` section of `project_context.md` — durable memory,
+  distinct from `weekly-report` (a human report) and `propose-improvement` (a harness proposal).
+  `sessions/` and `feedback/` are git-tracked and contributor-writable, so they are **untrusted
+  input**: distill quotes them verbatim with provenance and applies nothing until you confirm a
+  diff — the confirm diff is the security gate; review provenance before approving.
 - **Health.** `cohort status` shows wiring and roster health; `cohort dashboard` serves a
   local view at `http://127.0.0.1:8787`.
 
