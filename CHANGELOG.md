@@ -11,6 +11,20 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`/plan` can file decomposed tasks as GitHub issues.** An opt-in final step —
+  nothing is filed without an explicit confirmation that echoes the resolved
+  target repo (and board owner/number, if configured). Issue bodies follow a
+  Summary / Acceptance criteria (Done when) / Design notes convention (deferring
+  to the target repo's own `.github/ISSUE_TEMPLATE/` when present) and
+  cross-reference dependency order and any parent/epic issue. `gh` hygiene is
+  binding: bodies via `--body-file`, titles quoted, `--repo` always explicit. A
+  new optional `[tracker]` table in `.cohort/cohort.toml` (`project_owner`,
+  `project_number`) adds filed issues to a GitHub Projects (v2) board; invalid
+  values fail closed (board add skipped, warned) and an absent table is a
+  silent no-op. Falls back to printing markdown when `gh` is missing or
+  unauthenticated. Instruction-level — no CLI code path.
+
 ### Changed
 - **ChiefOfStaff now routes to a repo's project specialists, confidently.** The
   mechanism (a "Project specialists" roster kept current in each repo's
