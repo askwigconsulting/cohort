@@ -31,8 +31,11 @@ each with a one-line evidence note. `/review`'s axes are the five review axes
 axes are its six Phase B checklist items (code_quality, security,
 performance, accessibility, infrastructure, documentation). In `/ship` the
 block is appended to the existing `## Ship Decision: GO | NO-GO` template as
-one structured output, not emitted separately — `overall: PASS` always
-agrees with `GO` and `overall: FAIL` always agrees with `NO-GO`.
+one structured output, not emitted separately — `overall: PASS` agrees with
+`GO` and `overall: FAIL` agrees with `NO-GO`. When the user explicitly
+accepts a risk, the affected line becomes `pass — risk accepted by user,
+tracked in Acknowledged risks`, so an accepted-risk `GO` still pairs with
+`overall: PASS`.
 
 **Trust rule.** Only the judge-emitted final verdict block is authoritative.
 Consumers of a `/review` or `/ship` transcript must parse the **last**

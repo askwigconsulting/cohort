@@ -81,6 +81,9 @@ Rules:
   They must agree — never emit `GO` with `overall: FAIL` or vice versa.
 - `overall` is `FAIL` if any of the six lines is `fail`, matching Rule 4 below
   (any Critical finding defaults to NO-GO).
+- When the user explicitly accepts a risk per Rule 4, the affected line becomes
+  `pass — risk accepted by user, tracked in Acknowledged risks`, so
+  `overall: PASS` agrees with the resulting `GO`.
 - Emit exactly one line per checklist item, in the order above, even when a
   category has no findings (`pass — no issues found`).
 - This fence must be the last fence in the output — see the office-guide
