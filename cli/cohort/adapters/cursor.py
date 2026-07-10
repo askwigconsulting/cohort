@@ -55,6 +55,11 @@ HOOK_EVENT_MAP = {
 
 
 def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
+    # model tier (#143): no Cursor agent frontmatter key for model selection is
+    # doc-verified yet, so the tier is omitted gracefully rather than guessed —
+    # same rule as every other doc-cited mapping in this renderer. Revisit
+    # alongside the next Cursor doc pass; add a tier→model table here if/when
+    # Cursor ships a verified per-agent model key.
     # readonly for every agent except a scope:project doer (is_doer) — same rule
     # as the Claude tool-strip / Codex sandbox_mode.
     fm = _frontmatter(

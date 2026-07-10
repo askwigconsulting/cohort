@@ -31,6 +31,14 @@ COHORT_TOML_CONTENT = (
     "# Opt-in: write a minimal session record at session end (fuels weekly-report\n"
     "# and propose-improvement). Off by default; observation stays explicit.\n"
     "auto_capture = false\n"
+    "\n"
+    "# Opt-in: let /plan add filed issues to a GitHub Projects (v2) board once\n"
+    "# it has created them. project_number must be an integer; project_owner\n"
+    "# must be a GitHub user/org login. Absent, or either value invalid, means\n"
+    "# the board add is skipped (issues are still filed).\n"
+    "# [tracker]\n"
+    '# project_owner = "my-org"\n'
+    "# project_number = 4\n"
 )
 INDEX_EMPTY = "_No sessions yet._"
 INDEX_LIMIT = 10

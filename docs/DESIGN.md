@@ -88,6 +88,20 @@ structural and testable.
   hermeticity. Cleared by an explicit `cohort my-office review` + `approve`. Skills
   are out of scope (advisory text, not an execute-on-event sink); agents/commands
   likewise. Supersedes the incomplete "exclude hooks at sync time" of #103/PR #106.
+- **[Q] Model tier is an abstract cost/latency hint, resolved per renderer (#143).**
+  Canonical agents may declare `model: fast|default|top`; canonical never names a
+  concrete model ID, so it stays IDE-agnostic and doesn't rot when model names
+  change. Each renderer owns exactly one tier→model table: Claude's maps
+  `fast→haiku`, `top→opus`, and **omits the field for `default`** (Claude's own
+  behavior with no `model:` key is to inherit the conversation's model, which is
+  what "default" means, so there's nothing to spell out). Codex/Cursor have no
+  doc-verified per-agent model key yet, so both omit the field gracefully rather
+  than guess — no compile break, consistent with every other doc-cited mapping in
+  those renderers. `cohort adopt`/import maps a concrete model name found in the
+  wild (`opus|sonnet|haiku`, substring-matched) to its nearest tier and drops
+  anything unrecognized; it never emits a value outside the schema's enum, so
+  adoption can't produce a schema-invalid artifact. Purely a hint — no behavioral
+  semantics, fail-closed like every other enum (`_check_enum`, E020).
 
 ## Other load-bearing rules
 

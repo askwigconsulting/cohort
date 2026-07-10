@@ -2,6 +2,7 @@
 name: data-analyst
 description: Reading and interpreting data — CSVs, logs, reports, metrics.
 tools: Read, Grep, Glob
+model: haiku
 ---
 
 > **DataAnalyst** — Data · specialist (advisory office agent)

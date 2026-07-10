@@ -30,6 +30,28 @@ class AdoptError(Exception):
 
 _KIND_BY_DIR = {"agents": "agent", "commands": "command"}
 
+# Concrete model names found in the wild (#143) → nearest abstract tier. Substring
+# match on the lowercased value so date-suffixed IDs (e.g. "claude-3-5-haiku-20241022")
+# and short aliases ("opus") both resolve. A canonical tier value already present
+# (fast/default/top) passes through unchanged. Anything unrecognized is dropped
+# (documented, never guessed) — `_render_adopted` never emits an unmapped value, so
+# adoption can never produce a schema-invalid `model:` field.
+_CANONICAL_TIERS = ("fast", "default", "top")
+_MODEL_TIER_HINTS = (("opus", "top"), ("haiku", "fast"), ("sonnet", "default"))
+
+
+def _map_concrete_model_to_tier(value: Any) -> Optional[str]:
+    """Nearest abstract tier for a loose ``model`` value, or ``None`` to drop it."""
+    if not isinstance(value, str):
+        return None
+    lowered = value.strip().lower()
+    if lowered in _CANONICAL_TIERS:
+        return lowered
+    for hint, tier in _MODEL_TIER_HINTS:
+        if hint in lowered:
+            return tier
+    return None
+
 
 def _infer_kind_and_name(path: Path) -> tuple[str, str]:
     """(kind, name) from the file's location — a ``.claude/agents/*.md`` or
@@ -52,7 +74,13 @@ def _default_display_name(name: str) -> str:
 
 
 def _render_adopted(
-    kind: str, name: str, description: str, department: str, display_name: str, body: str
+    kind: str,
+    name: str,
+    description: str,
+    department: str,
+    display_name: str,
+    body: str,
+    model_tier: Optional[str] = None,
 ) -> str:
     if kind == "agent":
         pairs = [
@@ -67,6 +95,11 @@ def _render_adopted(
             ("tools", READONLY_TOOLS_LIST),
             ("display_name", display_name),
         ]
+        # A concrete model name found in the wild (#143) is mapped to its nearest
+        # abstract tier by the caller; an unrecognized value is dropped rather than
+        # guessed, so this never emits anything outside the schema's fast|default|top.
+        if model_tier is not None:
+            pairs.append(("model", model_tier))
     else:  # command
         pairs = [
             ("name", name),
@@ -154,7 +187,10 @@ def do_adopt(
         if (layer_dir / f"{name}.md").exists():
             raise AdoptError(f"{kind} {name!r} already exists in {where}; refusing to overwrite")
 
-    content = _render_adopted(kind, name, description, department, display_name, body_text)
+    model_tier = _map_concrete_model_to_tier(fm.get("model")) if kind == "agent" else None
+    content = _render_adopted(
+        kind, name, description, department, display_name, body_text, model_tier
+    )
     if dry_run:
         return {
             "action": "adopt", "dry_run": True, "kind": kind, "name": name, "path": str(dest),
@@ -289,9 +325,18 @@ def _native_tools(fm: dict[str, Any]) -> tuple[list[str], bool]:
 class _Native:
     """Parsed facts about a native agent file the importer needs."""
 
-    def __init__(self, path: Path, name: str, description: str, tools: list[str], is_doer: bool):
+    def __init__(
+        self,
+        path: Path,
+        name: str,
+        description: str,
+        tools: list[str],
+        is_doer: bool,
+        model_tier: Optional[str] = None,
+    ):
         self.path, self.name, self.description = path, name, description
         self.tools, self.is_doer = tools, is_doer
+        self.model_tier = model_tier
 
 
 def _read_native_agent(path: Path) -> _Native:
@@ -308,11 +353,12 @@ def _read_native_agent(path: Path) -> _Native:
     if not isinstance(description, str) or not description.strip():
         raise AdoptError(f"{path.name}: no usable description; add one or pass --description")
     tools, declared = _native_tools(fm)
+    model_tier = _map_concrete_model_to_tier(fm.get("model"))
     # A doer only when it EXPLICITLY declares a write/exec tool. An implicit
     # all-tools grant (no `tools` key) is imported advisory — safest, since we
     # can't know which tools it actually needs; the author can widen it later.
     is_doer = declared and any(t not in _READONLY_CANON for t in tools)
-    return _Native(path, name, description.strip(), tools, is_doer)
+    return _Native(path, name, description.strip(), tools, is_doer, model_tier)
 
 
 def _project_agent_canonical(
@@ -326,6 +372,11 @@ def _project_agent_canonical(
         ("department", department), ("topology", "specialist"),
         ("advisory", not as_doer), ("tools", tools), ("display_name", display_name),
     ]
+    # A concrete model name found in the wild (#143) is mapped to its nearest
+    # abstract tier at read time (`_read_native_agent`); an unrecognized value was
+    # already dropped there, so this never emits anything outside the schema.
+    if n.model_tier is not None:
+        pairs.append(("model", n.model_tier))
     body = load_artifact(n.path).body or ""
     return f"{dump_frontmatter(pairs).rstrip(chr(10))}\n{body.strip()}\n"
 
