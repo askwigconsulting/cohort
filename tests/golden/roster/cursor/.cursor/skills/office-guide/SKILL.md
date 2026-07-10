@@ -21,6 +21,12 @@ agents (legal, finance, security, cloud, HR, and more) plus a ChiefOfStaff triag
   builds on a branch, then runs an independent judge that verifies each criterion and emits a
   verdict block; on FAIL the failing verdicts feed the next round (max 3). It ends at a **draft**
   PR — the human gate is PR review. `/goal` is human-invoked, never a synced doer.
+- **Compounding memory.** `cohort distill [--days N]` rolls recent `sessions/` + `feedback/`
+  into a dated, append-only `## Distilled` section of `project_context.md` — durable memory,
+  distinct from `weekly-report` (a human report) and `propose-improvement` (a harness proposal).
+  `sessions/` and `feedback/` are git-tracked and contributor-writable, so they are **untrusted
+  input**: distill quotes them verbatim with provenance and applies nothing until you confirm a
+  diff — the confirm diff is the security gate; review provenance before approving.
 - **Health.** `cohort status` shows wiring and roster health; `cohort dashboard` serves a
   local view at `http://127.0.0.1:8787`.
 

@@ -68,7 +68,18 @@ compile-then-install; plain `install` only places already-compiled output); `ini
 `snapshot`/`weekly-report` capture and roll up sessions; `feedback` → `propose-improvement` →
 `submit-proposals` is the human-gated self-improvement loop (proposals become **draft PRs** — you
 review and merge; on a fresh clone of the public repo, submitting needs push access or your own
-fork: `cohort submit-proposals --repo <you>/cohort`, see CONTRIBUTING). The `cohort …` command
+fork: `cohort submit-proposals --repo <you>/cohort`, see CONTRIBUTING).
+
+The three roll-ups differ by where their output lands: `weekly-report`/`monthly-report` write a
+**human report** under `.cohort/reports/`; `propose-improvement` drafts a **harness proposal** the
+Steward can turn into a PR; `distill [--days N]` compounds recent sessions **and** feedback into
+**durable project memory** — an append-only, dated `## Distilled` section at the end of
+`project_context.md` (outside the Cohort-managed block, so `context refresh` never drops it, and
+yours to hand-edit once written). Drafting is extractive and deterministic — every proposed line
+quotes a source record and cites it (no LLM, no rewriting into instructions). Because `sessions/`
+and `feedback/` are git-tracked and **contributor-writable — untrusted input** — `distill` applies
+nothing until you confirm a unified diff (control characters escaped so embedded ANSI can't disguise
+a line): **the confirm diff is the security gate — review provenance before approving.** The `cohort …` command
 sequence above is asserted equal to the steps the full-system end-to-end test executes, so the
 *journey* can't drift from the tool.
 
@@ -119,6 +130,14 @@ choice); submitting proposals as draft PRs deliberately stays in the terminal. I
 loopback-only, token-guarded per launch, built on the Python stdlib (no extra
 dependencies), and dies with Ctrl-C — no daemon.
 
+## Scheduled research (opt-in)
+
+Cohort ships nothing that runs unattended, but your IDE's own scheduling can consult the
+read-only office while you're away — see [docs/scheduled-research.md](docs/scheduled-research.md)
+for the permission-scoped recipes, why the output lands in a gitignored, untrusted
+`.cohort/reports/research/` folder, and why this is a user-configured IDE exception rather than
+a new Cohort write path.
+
 ## Scope model
 
 | | The office | My office | This project |
@@ -160,7 +179,7 @@ roster for now (project-awareness routing is tracked in #24).
 `validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` /
 `rollback` · `init` / `deinit` · `add-agent` / `add-memory` / `add-skill` / `add-command` / `add-hook` /
 `adopt` / `personalize` / `edit` / `try` (global) · `add-specialist` /
-`remove-specialist` (project) · `promote` · `snapshot` · `context refresh` · `status` · `dashboard` ·
+`remove-specialist` (project) · `promote` · `snapshot` · `distill` · `context refresh` · `status` · `dashboard` ·
 `projects` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
 command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a repair command,
 excepted); installs/compiles are idempotent and reversible. `cohort --version` prints the release.

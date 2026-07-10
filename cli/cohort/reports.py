@@ -67,6 +67,7 @@ def collect_sessions(paths: CohortPaths, since: datetime, until: datetime) -> li
         if since <= ts <= until:
             entries.append({
                 "ts": ts,
+                "file": p.name,
                 "decisions": _section_bullets(loaded.body, "Decisions"),
                 "open_items": _section_bullets(loaded.body, "Open items"),
             })
