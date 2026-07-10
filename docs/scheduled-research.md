@@ -108,23 +108,47 @@ should be revisited — until then, these recipes are Claude Code Desktop-only.
 
 ## Setting the permission profile
 
-Restrict the task with an `allow`/`deny` block in `settings.json` (project `.claude/settings.json`
+Restrict the task with a `permissions` block in `settings.json` (project `.claude/settings.json`
 recommended, so the restriction travels with the recipe rather than living only in your global
 config):
 
 ```json
 {
   "permissions": {
-    "allow": ["Write(.cohort/reports/research/**)"],
-    "deny": ["Bash", "Write"]
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Write(.cohort/reports/research/**)",
+      "WebFetch",
+      "WebSearch"
+    ],
+    "deny": ["Bash"]
   }
 }
 ```
 
-Deny rules take precedence over allow rules and hold regardless of the task's permission mode
-(including `acceptEdits`), so `deny: ["Bash"]` blocks all shell access — including `git` and
-`gh`, since both run through the Bash tool — and `deny: ["Write"]` blocks every write except the
-one path the `allow` rule opens back up.
+How this works, per [the permissions docs](https://code.claude.com/docs/en/permissions): rules
+evaluate deny → ask → allow, first match wins, and **a broad deny cannot carry allow-rule
+exceptions** — so don't try to write `deny: ["Write"]` with an allow "opening the path back up";
+a bare-tool-name deny removes the tool from the session's context entirely and the allow never
+gets evaluated. The boxing-in instead comes from two pieces working together:
+
+- `deny: ["Bash"]` removes the shell tool outright, which is what denies git and `gh` mutation —
+  both run through Bash.
+- `"defaultMode": "dontAsk"` closes everything else: it auto-denies any tool call not
+  pre-approved by an allow rule. The only approvals the session then holds are writes under
+  `.cohort/reports/research/` (path relative to the task's working folder) and the web tools the
+  research itself needs. Read-only tools (Read, Grep, Glob) never require approval, so
+  consulting the read-only office agents still works.
+
+When creating the Desktop task, set the task's own permission-mode picker to the same
+deny-by-default mode — the per-task mode and the settings rules should agree, not fight.
+
+One dependency to know about the project-settings recommendation: allow rules in a project's
+`.claude/settings.json` **grant** capability, so Claude Code applies them only after you accept
+the workspace trust dialog for that folder — until then they are read but not applied (`deny`
+rules, which only restrict, are unaffected). Desktop prompts you to trust the working folder
+before it will save the task, so accepting that prompt is what puts the project-level allow rule
+into effect; it is not unconditional.
 
 **Verify it before trusting it unattended.** Permission-rule precedence has version-specific
 edge cases. After creating the task, click **Run now** and confirm in the transcript that a
@@ -135,7 +159,10 @@ case from the framing above — don't leave the task scheduled.
 ## Recipes
 
 Each recipe below assumes the permission profile from the previous section and a Desktop local
-scheduled task pointed at your project's working folder.
+scheduled task pointed at your project's working folder. One timing caveat: local tasks only
+fire while the Desktop app is open and the machine is awake — a missed run gets a single
+catch-up when the machine wakes — so for an overnight morning brief either enable **Keep
+computer awake** in Desktop settings or expect the brief to arrive as a wake-time catch-up run.
 
 ### 1. Morning brief
 
