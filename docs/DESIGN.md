@@ -124,6 +124,21 @@ structural and testable.
   or push a default branch (proven by a recording fake git/gh that fails on any merge or
   `main`/`master` push); PRs are drafts. Promotions and improvements share one
   `proposals/` format and one submit gate.
+- **`distill` is the one memory-loop child that writes context — its shape is its safety
+  model (#144).** It compounds recent `sessions/` + `feedback/` (never `reports/`) into
+  project memory, and stays safe by construction, not by policy: (1) **append-only, dated,
+  outside the managed block** — each run appends `## Distilled (YYYY-MM-DD)` at the end of
+  `project_context.md`, after the block `refresh_project_context` regenerates *in place*, so
+  distilled content survives `context refresh`; (2) **user-owned on write, not hash-owned** —
+  append-only is what prevents clobbering, so a later hand-edit never forks (a `[K]`-style
+  skip+warn would permanently fork on the first edit — the wrong semantic for memory meant to
+  be edited); (3) **extractive, never rewritten** — every line quotes a source record and
+  cites file + date, because `sessions/`/`feedback/` are contributor-writable *untrusted*
+  input and the confirm diff (control-chars escaped so ANSI can't disguise a line) is the
+  security gate; (4) **confirm-gated and fail-closed** — a real write needs an affirmative
+  confirm; no confirm callback (an unattended/hooked path) never writes, and it is wired to no
+  hook. Deterministic (no LLM, no network), preserving the compile/merge invariant; an
+  LLM-written distill can still arrive interactively via `/snapshot`.
 - **Generated text never breaks frontmatter.** All metadata writers emit frontmatter via
   `yaml.safe_dump` (safe by construction — quoting is the serializer's job, not a
   heuristic); `check_frontmatter_safety` is the CI lint, proven against a seeded bad
