@@ -119,6 +119,14 @@ choice); submitting proposals as draft PRs deliberately stays in the terminal. I
 loopback-only, token-guarded per launch, built on the Python stdlib (no extra
 dependencies), and dies with Ctrl-C — no daemon.
 
+## Scheduled research (opt-in)
+
+Cohort ships nothing that runs unattended, but your IDE's own scheduling can consult the
+read-only office while you're away — see [docs/scheduled-research.md](docs/scheduled-research.md)
+for the permission-scoped recipes, why the output lands in a gitignored, untrusted
+`.cohort/reports/research/` folder, and why this is a user-configured IDE exception rather than
+a new Cohort write path.
+
 ## Scope model
 
 | | The office | My office | This project |
