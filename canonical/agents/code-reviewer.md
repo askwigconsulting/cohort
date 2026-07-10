@@ -8,6 +8,7 @@ targets:
 department: Engineering
 topology: specialist
 advisory: true
+model: top
 tools:
 - read
 - grep

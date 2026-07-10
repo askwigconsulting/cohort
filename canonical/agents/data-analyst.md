@@ -7,6 +7,7 @@ targets: [all]
 department: Data
 topology: specialist
 advisory: true
+model: fast
 tools: [read, grep, glob]
 display_name: DataAnalyst
 ---
