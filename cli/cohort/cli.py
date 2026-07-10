@@ -56,6 +56,7 @@ from .project import (
     staleness_check,
 )
 from .reports import do_report
+from .distill import DEFAULT_DAYS, do_distill
 from .adopt import AdoptError, do_adopt
 from .roster import (
     AddAgentError,
@@ -1849,6 +1850,58 @@ def propose_improvement(
         _emit(report, json_output, lambda r: typer.echo(
             f"propose-improvement: proposals/{r['file']} (upstream candidate: {flag})"
         ))
+    raise typer.Exit(code=0)
+
+
+@app.command()
+def distill(
+    ctx: typer.Context,
+    days: int = typer.Option(
+        DEFAULT_DAYS, "--days",
+        help="Look back this many days over sessions/ + feedback/ (not --since; "
+        "--since means an ISO date in weekly-report/monthly-report).",
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Compound recent sessions + feedback into a provenance-cited addition to
+    project_context.md — shown as a diff, appended only on explicit confirm.
+
+    sessions/ and feedback/ are git-tracked and contributor-writable, therefore
+    untrusted input; the confirm diff is the security gate — review provenance before
+    approving. Deterministic (no LLM, no network); never invoked from a hook.
+    """
+    effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+
+    def _confirm(diff: str) -> bool:
+        # The diff is the review gate; print it (already control-char-escaped) to
+        # stderr so stdout stays clean for --json, then prompt.
+        typer.echo(diff, err=True)
+        return typer.confirm("Append this distilled section to project_context.md?")
+
+    report = do_distill(
+        find_repo_root(Path.cwd()), days, effective_dry_run,
+        confirm=None if effective_dry_run else _confirm,
+    )
+    if "error" in report:
+        typer.echo(f"error: {report['error']}", err=True)
+        raise typer.Exit(code=1)
+    if report.get("empty"):
+        _emit(report, json_output, lambda r: typer.echo(
+            f"distill: no sessions or feedback in the last {r['days']} days — "
+            "nothing to distill."))
+        raise typer.Exit(code=0)
+    if report.get("dry_run"):
+        typer.echo(_json.dumps(report, indent=2)) if json_output else typer.echo(report["diff"])
+        raise typer.Exit(code=0)
+
+    def human(r: dict) -> None:
+        if r.get("applied"):
+            typer.echo(f"distill: appended '## {r['header']}' to project_context.md")
+        else:
+            typer.echo("distill: declined — project_context.md unchanged.")
+
+    _emit(report, json_output, human)
     raise typer.Exit(code=0)
 
 
