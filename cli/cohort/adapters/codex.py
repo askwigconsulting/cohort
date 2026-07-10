@@ -71,6 +71,11 @@ def _toml_basic(value: str) -> str:
 
 
 def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
+    # model tier (#143): no Codex subagent TOML key for model selection is
+    # doc-verified yet, so the tier is omitted gracefully rather than guessed —
+    # same rule as every other doc-cited mapping in this renderer. Revisit
+    # alongside the next Codex doc pass; add a tier→model table here if/when
+    # Codex ships a verified per-subagent model key.
     label = ir.display_name or ir.name
     dept = ir.fields.get("department", "")
     topology = ir.fields.get("topology", "specialist")

@@ -41,6 +41,15 @@ _TOOL_MAP = {
 }
 _READONLY = frozenset({"Read", "Grep", "Glob", "WebFetch", "WebSearch"})
 _DEFAULT_READONLY = ("Read", "Grep", "Glob", "WebFetch", "WebSearch")
+
+# --- model-tier mapping (verified) ------------------------------------------
+
+# canonical abstract tier → Claude model alias. The single place this renderer
+# maps tiers to concrete names (R1-style: never scattered). "default" has no
+# entry: Claude's own behavior when `model:` is absent is to inherit the main
+# conversation's model, which is exactly what "default" means — so the field
+# is simply omitted rather than spelling out an explicit "inherit" value.
+_MODEL_MAP = {"fast": "haiku", "top": "opus"}
 # Stable emit order so output is byte-deterministic.
 _TOOL_ORDER = (
     "Read", "Grep", "Glob", "WebFetch", "WebSearch",
@@ -105,6 +114,12 @@ def claude_tools(ir: IRArtifact) -> list[str]:
     return [t for t in _TOOL_ORDER if t in allowed]
 
 
+def claude_model(ir: IRArtifact) -> Optional[str]:
+    """The Claude ``model:`` value for this agent's tier, or ``None`` to omit
+    the field (the "default" tier — inherit the conversation's model)."""
+    return _MODEL_MAP.get(ir.fields.get("model", "default"))
+
+
 # --- byte-stable file assembly ---------------------------------------------
 
 
@@ -159,9 +174,11 @@ def _resolve_marker(ir: IRArtifact, body: str, directory: Optional[str]) -> str:
 
 def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     tools = ", ".join(claude_tools(ir))
-    fm = _frontmatter(
-        [("name", ir.name), ("description", ir.description), ("tools", tools)]
-    )
+    pairs = [("name", ir.name), ("description", ir.description), ("tools", tools)]
+    model = claude_model(ir)
+    if model is not None:
+        pairs.append(("model", model))
+    fm = _frontmatter(pairs)
     label = ir.display_name or ir.name
     department = ir.fields.get("department", "")
     topology = ir.fields.get("topology", "specialist")

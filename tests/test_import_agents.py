@@ -125,6 +125,39 @@ def test_import_to_project_refuses_non_project(tmp_path):
         do_import_agents(home, tmp_path, f, to="project", department="X", repo=repo)
 
 
+@requires_symlinks
+def test_project_import_maps_concrete_model_to_tier(tmp_path):
+    # a concrete model name found in the wild (#143) maps to its nearest tier
+    repo, home = tmp_path / "repo", tmp_path / HOME
+    _project(repo)
+    d = repo / ".claude" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "reviewer.md"
+    f.write_text(
+        "---\nname: reviewer\ndescription: A native agent.\nmodel: claude-opus-4\n"
+        "tools: [Read, Grep]\n---\nBody.\n",
+        encoding="utf-8",
+    )
+    do_import_agents(home, tmp_path, f, to="project", department="Eng", repo=repo)
+    assert _canon_fm(repo, "reviewer")["model"] == "top"
+
+
+@requires_symlinks
+def test_project_import_drops_unrecognized_model(tmp_path):
+    repo, home = tmp_path / "repo", tmp_path / HOME
+    _project(repo)
+    d = repo / ".claude" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "reviewer.md"
+    f.write_text(
+        "---\nname: reviewer\ndescription: A native agent.\nmodel: gpt-5\n"
+        "tools: [Read, Grep]\n---\nBody.\n",
+        encoding="utf-8",
+    )
+    do_import_agents(home, tmp_path, f, to="project", department="Eng", repo=repo)
+    assert "model" not in _canon_fm(repo, "reviewer")  # dropped, never guessed
+
+
 def test_import_to_my_downgrades_a_doer(tmp_path):
     # --to my is a synced tier → advisory-only; a doer source is flagged as
     # downgraded. Dry-run so we don't need a full global recompile.

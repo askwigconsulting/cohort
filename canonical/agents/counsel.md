@@ -7,6 +7,7 @@ targets: [all]
 department: Legal
 topology: specialist
 advisory: true
+model: top
 tools: [read, grep, glob, webfetch, websearch]
 display_name: Counsel
 ---

@@ -291,6 +291,9 @@ def _validate_agent(fm: dict[str, Any], errors: list[ArtifactError]) -> None:
     _check_type(fm, "department", "string", errors)
     _check_enum(fm, "topology", ("specialist", "generalist"), errors)
     _check_array_of_strings(fm, "tools", errors)
+    # model: an abstract cost/latency tier, never a concrete model ID (fail-closed —
+    # anything outside the three values is rejected, consistent with topology/scope).
+    _check_enum(fm, "model", ("fast", "default", "top"), errors)
     # advisory: type before invariant (R6). Wrong type → E050 suppresses E060.
     if _check_type(fm, "advisory", "boolean", errors) and fm["advisory"] is False:
         # A "doer" (write/exec tools) is permitted ONLY at scope: project — authored
@@ -419,9 +422,10 @@ def apply_defaults(fm: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``fm`` with documented defaults filled in.
 
     Defaults: ``version=0.1.0``; agent ``topology=specialist``, ``advisory=true``,
-    ``tools=[]``; command ``dry_run=true`` and per-arg ``required=false``; memory
-    ``priority=normal``. Validation operates on the *raw* mapping, so omitting a
-    field never trips its invariant — defaults are for the normalized artifact.
+    ``tools=[]``, ``model=default``; command ``dry_run=true`` and per-arg
+    ``required=false``; memory ``priority=normal``. Validation operates on the
+    *raw* mapping, so omitting a field never trips its invariant — defaults are
+    for the normalized artifact.
     """
     out = dict(fm)
     out.setdefault("version", DEFAULT_VERSION)
@@ -430,6 +434,7 @@ def apply_defaults(fm: dict[str, Any]) -> dict[str, Any]:
         out.setdefault("topology", "specialist")
         out.setdefault("advisory", True)
         out.setdefault("tools", [])
+        out.setdefault("model", "default")
     elif kind == "command":
         out.setdefault("dry_run", True)
         if isinstance(out.get("args"), list):

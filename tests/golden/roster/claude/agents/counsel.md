@@ -2,6 +2,7 @@
 name: counsel
 description: Contracts, terms, and risk framing.
 tools: Read, Grep, Glob, WebFetch, WebSearch
+model: opus
 ---
 
 > **Counsel** — Legal · specialist (advisory office agent)

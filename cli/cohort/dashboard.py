@@ -41,8 +41,11 @@ from .improve import (
     FeedbackError,
     ProposeError,
     aggregate_signals,
+    agent_scorecards,
     do_feedback,
     do_propose_improvement,
+    load_feedback_entries,
+    load_session_entries,
 )
 from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
@@ -77,6 +80,7 @@ from .update import do_update, update_status
 
 _UPDATE_TTL_SECONDS = 900  # update_status fetches the network; don't per-poll it
 _RECENT_LIMIT = 10
+_ACTIVITY_LIMIT = 20  # cross-project activity feed cap (dashboard, #145)
 
 
 _resolve_source_lenient = resolve_source_lenient  # shared with status (source.py)
@@ -193,6 +197,41 @@ def _agent_cards(agents_dir: Path) -> list[dict[str, Any]]:
     return cards
 
 
+def cross_project_activity(home: Path, limit: int = _ACTIVITY_LIMIT) -> list[dict[str, Any]]:
+    """Recent session records aggregated across every initialized Cohort project —
+    the office-wide activity feed (#145). Loops ``list_projects`` over
+    ``improve.load_session_entries`` (the dated half of the ``aggregate_signals``
+    shared extraction), tags each entry with its owning project, and merges
+    newest-first, capped at ``limit``. Distinct from ``state["project"]["sessions"]``
+    below, which is the focused project's own feed."""
+    merged: list[dict[str, Any]] = []
+    for proj in list_projects(home):
+        paths = CohortPaths.for_project(Path(proj["path"]))
+        for entry in load_session_entries(paths):
+            merged.append({
+                "project": proj["name"],
+                "timestamp": entry["timestamp"],
+                "author": entry["author"],
+                "branch": entry["branch"],
+            })
+    merged.sort(key=lambda e: e["timestamp"] or "", reverse=True)
+    return merged[:limit]
+
+
+def cross_project_scorecards(home: Path) -> list[dict[str, Any]]:
+    """Per-agent up/down scorecards aggregated across every initialized Cohort
+    project — Cohort's lightweight answer to agent benchmarking (#145). Agents are
+    shared across the office, so a single project's feedback undercounts real
+    usage; this loops ``list_projects`` over ``improve.load_feedback_entries``
+    (the dated half of the ``aggregate_signals`` shared extraction) and scores the
+    merged entries with ``improve.agent_scorecards``."""
+    entries: list[dict[str, Any]] = []
+    for proj in list_projects(home):
+        paths = CohortPaths.for_project(Path(proj["path"]))
+        entries.extend(load_feedback_entries(paths))
+    return agent_scorecards(entries)
+
+
 def collect_state(
     home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = None,
     project_index: Any = None,
@@ -207,6 +246,10 @@ def collect_state(
     state["projects"] = list_projects(home)
     state["focused_project"] = state.get("project", {}).get("repo")
     state["version"] = __version__
+    # Cross-project views (#145): office-wide, independent of the focused project —
+    # every initialized project contributes, never just the one being managed.
+    state["activity"] = cross_project_activity(home)
+    state["scorecards"] = cross_project_scorecards(home)
     source = _resolve_source_lenient(home)
     state["global"]["update"] = (update_cache or _UpdateCache()).get(source, home)
     parity = {}

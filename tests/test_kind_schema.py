@@ -104,6 +104,24 @@ def test_agent_omitting_advisory_defaults_true_and_passes():
     assert result.status == "pass", [e.to_dict() for e in result.errors]
 
 
+# --- model tier (#143): fail-closed schema validation ------------------------
+
+
+def test_agent_bad_model_is_e020():
+    assert E020_BAD_ENUM in code_set(_agent(model="opus"))
+
+
+@pytest.mark.parametrize("tier", ["fast", "default", "top"])
+def test_agent_valid_model_tier_passes(tier):
+    result = validate_text(_agent(model=tier))
+    assert result.status == "pass", [e.to_dict() for e in result.errors]
+
+
+def test_agent_omitting_model_defaults_and_passes():
+    result = validate_text(_drop(_agent, "model"))
+    assert result.status == "pass", [e.to_dict() for e in result.errors]
+
+
 # --- command ----------------------------------------------------------------
 
 
@@ -192,6 +210,7 @@ def test_defaults_applied_for_agent():
     assert out["topology"] == "specialist"
     assert out["advisory"] is True
     assert out["tools"] == []
+    assert out["model"] == "default"
     assert out["version"] == "0.1.0"
 
 

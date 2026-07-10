@@ -2,6 +2,7 @@
 name: it-support
 description: Tooling, environments, access patterns.
 tools: Read, Grep, Glob
+model: haiku
 ---
 
 > **ITSupport** — IT · specialist (advisory office agent)
