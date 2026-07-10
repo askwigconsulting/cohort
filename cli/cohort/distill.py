@@ -40,18 +40,41 @@ from .reports import _utc_now, _to_utc, collect_sessions
 
 DEFAULT_DAYS = 30
 
-# All C0 control characters except newline (\x0a) and tab (\x09), plus DEL (\x7f).
-# CR (\x0d) and ESC (\x1b) are stripped here on purpose: they are the exact bytes an
-# attacker would embed in a session record to visually disguise the lines being
-# approved in the diff preview (CR overwrites, ESC opens an ANSI sequence).
-_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+# All C0 control characters except newline (\x0a) and tab (\x09), plus DEL (\x7f),
+# the C1 range \x80-\x9f (\x9b is a one-byte CSI introducer — ANSI without ESC; \x85
+# is NEL), and the Unicode line separators U+2028/U+2029 (which could split a diff
+# line). CR (\x0d) and ESC (\x1b) are stripped here on purpose: they are the exact
+# bytes an attacker would embed in a session record to visually disguise the lines
+# being approved in the diff preview (CR overwrites, ESC opens an ANSI sequence).
+_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def _sanitize(text: str) -> str:
-    """Escape control characters (all C0 except newline/tab, plus DEL) to a visible
-    ``\\xNN`` form so embedded ANSI/CR cannot disguise approved lines. Applied to the
-    extracted content itself, so what is previewed is exactly what is written."""
+    """Escape control characters (C0 except newline/tab, DEL, C1, U+2028/U+2029) to
+    a visible ``\\xNN`` form so embedded ANSI/CR cannot disguise approved lines.
+    Applied to the extracted content itself, so what is previewed is exactly what is
+    written."""
     return _CONTROL.sub(lambda m: repr(m.group())[1:-1], text)
+
+
+def _inline(text: str) -> str:
+    """Sanitize a field that must occupy exactly one physical line (a rating, agent
+    name, or cited filename): control chars escaped, embedded newlines made visible.
+    Together with ``_first_line`` this keeps the per-line invariant — no record field
+    can inject a bare, uncited line into the distilled section."""
+    return _sanitize(text).replace("\n", "\\n")
+
+
+def _first_line(text: str) -> str:
+    """Collapse a multi-line note to its first non-empty line, marking clipped
+    content with ``[…]``. Keeps the per-line invariant — every physical line in the
+    distilled section carries its prefix and citation — so a contributor-writable
+    note can never inject a bare markdown line (e.g. a forged ``## Distilled``
+    header) between cited lines."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    return lines[0] + (" […]" if len(lines) > 1 else "")
 
 
 def _quote(bullet: str) -> str:
@@ -87,7 +110,7 @@ def collect_feedback(paths: CohortPaths, since, until) -> list[dict[str, Any]]:
 
 
 def _cite(kind: str, filename: str, ts) -> str:
-    return f" — _{kind}/{_sanitize(filename)} · {ts.date()}_"
+    return f" — _{kind}/{_inline(filename)} · {ts.date()}_"
 
 
 def render_distilled_section(
@@ -109,12 +132,18 @@ def render_distilled_section(
         f"- {_quote(b)}{_cite('sessions', s['file'], s['ts'])}"
         for s in sessions for b in s["open_items"]
     ]
-    fb_lines = [
-        f"- {_sanitize(f['rating'])}"
-        f"{(' on ' + _sanitize(f['agent'])) if f['agent'] else ''}: "
-        f"{_quote('- ' + f['note'])}{_cite('feedback', f['file'], f['ts'])}"
-        for f in feedback if f["note"]
-    ]
+    fb_lines = []
+    for f in feedback:
+        # Collapse the note to one physical line before sanitizing: a multi-line
+        # note must never inject bare (unprefixed, uncited) lines into the section.
+        note = _first_line(f["note"])
+        if not note:
+            continue
+        fb_lines.append(
+            f"- {_inline(f['rating'])}"
+            f"{(' on ' + _inline(f['agent'])) if f['agent'] else ''}: "
+            f"{_sanitize(note)}{_cite('feedback', f['file'], f['ts'])}"
+        )
     for header, body in (("Decisions", decisions), ("Open items", open_items),
                          ("Feedback", fb_lines)):
         if body:
