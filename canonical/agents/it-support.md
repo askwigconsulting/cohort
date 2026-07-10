@@ -7,6 +7,7 @@ targets: [all]
 department: IT
 topology: specialist
 advisory: true
+model: fast
 tools: [read, grep, glob]
 display_name: ITSupport
 ---

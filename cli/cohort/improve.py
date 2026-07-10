@@ -27,6 +27,7 @@ import subprocess
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -38,6 +39,7 @@ from .project import _short_id, _stage, _utc_compact, now_iso
 from .update import resolve_upstream
 
 RATINGS = ("up", "down")
+TREND_DAYS = 30  # window for the per-agent scorecard trend (dashboard, #145)
 
 
 class FeedbackError(Exception):
@@ -275,32 +277,131 @@ def validate_enrichment_body(text: str) -> str:
     return text
 
 
-def aggregate_signals(paths: CohortPaths) -> dict[str, Any]:
-    """Deterministic evidence from feedback/ + sessions/ — no LLM, no network."""
+def load_feedback_entries(paths: CohortPaths) -> list[dict[str, Any]]:
+    """Raw ``feedback/*.md`` records (rating, agent, command, timestamp), oldest
+    first. The dated half of the shared extraction ``aggregate_signals`` composes
+    into project-scoped, dateless counts; the dashboard's cross-project activity
+    feed and per-agent scorecards (#145) loop ``project.list_projects`` over this
+    directly, because they need the timestamps ``aggregate_signals`` discards."""
     fb_dir = paths.cohort_home / "feedback"
+    entries = []
+    for f in sorted(fb_dir.glob("*.md")) if fb_dir.exists() else []:
+        fm = load_artifact(f).frontmatter or {}
+        entries.append({
+            "rating": fm.get("rating"),
+            "agent": fm.get("agent"),
+            "command": fm.get("command"),
+            "timestamp": fm.get("timestamp"),
+        })
+    return entries
+
+
+def load_session_entries(paths: CohortPaths) -> list[dict[str, Any]]:
+    """Raw ``sessions/*.md`` records (timestamp, author, branch), oldest first —
+    the sessions-side counterpart to ``load_feedback_entries``, used the same way
+    by ``aggregate_signals`` (count only) and the cross-project activity feed
+    (needs the dates)."""
     sessions_dir = paths.cohort_home / "sessions"
+    entries = []
+    for f in sorted(sessions_dir.glob("*.md")) if sessions_dir.exists() else []:
+        fm = load_artifact(f).frontmatter or {}
+        entries.append({
+            "timestamp": fm.get("timestamp"),
+            "author": fm.get("author"),
+            "branch": fm.get("branch"),
+        })
+    return entries
+
+
+def aggregate_signals(paths: CohortPaths) -> dict[str, Any]:
+    """Deterministic evidence from feedback/ + sessions/ — no LLM, no network.
+
+    Built on ``load_feedback_entries``/``load_session_entries`` (the shared, dated
+    extraction); this view collapses the dates back out into per-project counts,
+    which is all the improvement-proposal loop has ever needed."""
     up: Counter = Counter()
     down: Counter = Counter()
     cmd_down: Counter = Counter()
-    total = 0
-    for f in sorted(fb_dir.glob("*.md")) if fb_dir.exists() else []:
-        fm = load_artifact(f).frontmatter or {}
-        total += 1
-        rating, agent, command = fm.get("rating"), fm.get("agent"), fm.get("command")
+    feedback = load_feedback_entries(paths)
+    for entry in feedback:
+        rating, agent, command = entry["rating"], entry["agent"], entry["command"]
         if agent:
             (up if rating == "up" else down)[agent] += 1
         if command and rating == "down":
             cmd_down[command] += 1
-    sessions = len(list(sessions_dir.glob("*.md"))) if sessions_dir.exists() else 0
     usage = up + down
     low_rated = sorted(a for a in down if down[a] > up.get(a, 0))
     return {
-        "feedback_total": total,
-        "sessions": sessions,
+        "feedback_total": len(feedback),
+        "sessions": len(load_session_entries(paths)),
         "agent_usage": dict(sorted(usage.items())),
         "low_rated_agents": low_rated,
         "friction_commands": sorted(cmd_down),
     }
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime]:
+    """Best-effort ISO-8601 parse of a feedback timestamp; ``None`` if missing or
+    malformed (a hand-edited or pre-migration record shouldn't crash the trend)."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        dt = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def agent_scorecards(
+    entries: list[dict[str, Any]], *, now: Optional[datetime] = None
+) -> list[dict[str, Any]]:
+    """Per-agent benchmarking cards from raw feedback entries (e.g. from
+    ``load_feedback_entries``, one project's or many merged) — Cohort's
+    lightweight answer to agent benchmarking.
+
+    Ratings are binary (``up``/``down``); there is no numeric average. Each card
+    carries the up/down counts, ``net`` (up - down), an ``up_ratio`` (``None`` when
+    there's no feedback at all), and ``trend`` — a day-by-day up/down count over
+    the last ``TREND_DAYS`` days (from entry timestamps), oldest day first, for a
+    sparkline. Entries without an ``agent`` (command-only feedback) or with an
+    unrecognized rating are excluded. Cards are ordered by total feedback volume
+    (most-rated agent first), then name.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=TREND_DAYS)
+    totals: dict[str, Counter] = {}
+    days: dict[str, dict[str, Counter]] = {}
+    for entry in entries:
+        agent, rating = entry.get("agent"), entry.get("rating")
+        if not agent or rating not in RATINGS:
+            continue
+        totals.setdefault(agent, Counter())[rating] += 1
+        ts = _parse_timestamp(entry.get("timestamp"))
+        if ts is not None and ts >= cutoff:
+            days.setdefault(agent, {}).setdefault(ts.date().isoformat(), Counter())[rating] += 1
+
+    def _sort_key(agent: str) -> tuple[int, str]:
+        c = totals[agent]
+        return (-(c["up"] + c["down"]), agent)
+
+    cards = []
+    for agent in sorted(totals, key=_sort_key):
+        up, down = totals[agent]["up"], totals[agent]["down"]
+        total = up + down
+        agent_days = days.get(agent, {})
+        trend = [
+            {"date": d, "up": agent_days[d]["up"], "down": agent_days[d]["down"]}
+            for d in sorted(agent_days)
+        ]
+        cards.append({
+            "agent": agent,
+            "up": up,
+            "down": down,
+            "net": up - down,
+            "up_ratio": round(up / total, 3) if total else None,
+            "trend": trend,
+        })
+    return cards
 
 
 def _deterministic_summary(ev: dict) -> str:

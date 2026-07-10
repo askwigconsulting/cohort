@@ -159,6 +159,58 @@ def test_collect_state_surfaces_proposals(home, tmp_path, source):
     assert prop["submitted_at"] is None
 
 
+# === cross-project activity & scorecards (#145) ==============================
+
+
+def test_collect_state_activity_and_scorecards_are_empty_with_no_projects(home, tmp_path):
+    plain = make_git_repo(tmp_path / "plain")
+    state = collect_state(home, plain)
+    assert state["activity"] == []
+    assert state["scorecards"] == []
+
+
+def test_collect_state_activity_and_scorecards_present_with_no_signal(home, tmp_path, source):
+    # A registered project with no sessions/feedback yet still yields the
+    # empty-state shape, not an error.
+    repo = inited_repo(tmp_path, source, home)
+    state = collect_state(home, repo)
+    assert state["activity"] == []
+    assert state["scorecards"] == []
+
+
+def test_collect_state_activity_aggregates_sessions_across_projects(home, tmp_path, source):
+    repo_a = inited_repo(tmp_path, source, home, name="repo-a")
+    repo_b = inited_repo(tmp_path, source, home, name="repo-b")
+    run_cli("snapshot", home=home, cwd=repo_a)
+    run_cli("snapshot", home=home, cwd=repo_b)
+    # collect_state's cross-project views are office-wide, independent of the
+    # focused project (here, neither repo_a nor repo_b — a third, plain cwd).
+    plain = make_git_repo(tmp_path / "plain")
+    state = collect_state(home, plain)
+    assert len(state["activity"]) == 2
+    projects_seen = {entry["project"] for entry in state["activity"]}
+    assert projects_seen == {"repo-a", "repo-b"}
+    # newest-first
+    timestamps = [entry["timestamp"] for entry in state["activity"]]
+    assert timestamps == sorted(timestamps, reverse=True)
+
+
+def test_collect_state_scorecards_aggregate_feedback_across_projects(home, tmp_path, source):
+    repo_a = inited_repo(tmp_path, source, home, name="repo-a")
+    repo_b = inited_repo(tmp_path, source, home, name="repo-b")
+    run_cli("feedback", "--rating", "up", "--agent", "counsel", home=home, cwd=repo_a)
+    run_cli("feedback", "--rating", "up", "--agent", "counsel", home=home, cwd=repo_b)
+    run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=repo_b)
+    plain = make_git_repo(tmp_path / "plain")
+    state = collect_state(home, plain)
+    assert len(state["scorecards"]) == 1
+    card = state["scorecards"][0]
+    assert card["agent"] == "counsel"
+    assert card["up"] == 2
+    assert card["down"] == 1
+    assert card["net"] == 1
+
+
 # === server: guard rails =====================================================
 
 

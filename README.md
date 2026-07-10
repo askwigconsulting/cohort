@@ -104,7 +104,12 @@ sequence above.
 stop). It shows *how the office works* — the canonical → compiled → placed → in-session
 pipeline with live health at each stage — plus the roster (agents grouped by department)
 and a full inventory of every artifact (skills, commands, hooks, memories) across the
-office, my office, and this project, each layer-badged. Day-to-day operations run from
+office, my office, and this project, each layer-badged. Two office-wide views aggregate
+across every initialized project: a recent-activity feed of session records, and
+per-agent scorecards — up/down feedback counts, net score, and a last-30-day trend
+(ratings are binary, so there is no numeric average) — Cohort's lightweight answer to
+agent benchmarking. Both are read-only, pulled from disk at request time, and rendered
+as text nodes only. Day-to-day operations run from
 the UI: **update**, **recompile**, **re-init**, **creating and editing** any artifact
 (agents, skills, commands, hooks) in your personal layer, adding/removing project
 specialists, rating agents, snapshots, and improvement proposals. The dashboard has no
