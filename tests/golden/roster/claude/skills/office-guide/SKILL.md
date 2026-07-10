@@ -13,18 +13,14 @@ agents (legal, finance, security, cloud, HR, and more) plus a ChiefOfStaff triag
   office.
 - **Daily loop.** `/feedback` rates an agent or command, `/snapshot` records the session into
   the repo's shared context, `/update` pulls the latest office. These wrap the human-gated
-<<<<<<< HEAD
   `cohort` CLI. `/plan` can optionally file its decomposed tasks as GitHub issues at the end —
   opt-in, and only after confirming the target repo (and board, if `.cohort/cohort.toml` sets
   `[tracker]`) with the human.
-=======
-  `cohort` CLI.
 - **Build loops.** `/build` is the plan-driven **inner** loop (implement–test–verify–commit).
   `/goal <issue>` is the issue-driven **outer** loop: it reads an issue's acceptance criteria,
   builds on a branch, then runs an independent judge that verifies each criterion and emits a
   verdict block; on FAIL the failing verdicts feed the next round (max 3). It ends at a **draft**
   PR — the human gate is PR review. `/goal` is human-invoked, never a synced doer.
->>>>>>> 856ba1f (Add /goal command: issue-driven build loop)
 - **Health.** `cohort status` shows wiring and roster health; `cohort dashboard` serves a
   local view at `http://127.0.0.1:8787`.
 
