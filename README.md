@@ -166,7 +166,10 @@ command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a
 excepted); installs/compiles are idempotent and reversible. `cohort --version` prints the release.
 
 Daily life happens in the IDE — `/feedback`, `/snapshot`, and `/update` wrap the same human-gated
-commands; the `cohort` CLI is the plumbing and scripting layer; the dashboard is a viewer.
+commands; the `cohort` CLI is the plumbing and scripting layer; the dashboard is a viewer. `/plan`
+can end with an opt-in offer to file its decomposed tasks as GitHub issues — nothing is created
+without an explicit confirmation naming the target repo, and a `[tracker]` table in
+`.cohort/cohort.toml` (`project_owner`, `project_number`) optionally adds them to a project board.
 
 ## Versioning
 
