@@ -44,9 +44,10 @@ Once all three reports are back, the main agent (not a sub-persona) synthesizes 
 
 ## Phase C — Decision and rollback
 
-Produce a single output:
+Produce a single output — the verdict block is appended to this same template,
+not emitted as a separate or competing structure:
 
-```markdown
+````markdown
 ## Ship Decision: GO | NO-GO
 
 ### Blockers (must fix before ship)
@@ -67,7 +68,29 @@ Produce a single output:
 - [code-reviewer report]
 - [security-engineer report]
 - [test-engineer report]
+
+```verdict
+overall: PASS|FAIL
+code_quality: pass|fail — one-line evidence
+security: pass|fail — one-line evidence
+performance: pass|fail — one-line evidence
+accessibility: pass|fail — one-line evidence
+infrastructure: pass|fail — one-line evidence
+documentation: pass|fail — one-line evidence
 ```
+````
+
+The fenced ` ```verdict ` block is the last thing in the output, after the
+prose template above — one line per Phase B checklist item plus `overall`.
+Rules:
+- `overall: PASS` corresponds to `GO`; `overall: FAIL` corresponds to `NO-GO`.
+  They must agree — never emit `GO` with `overall: FAIL` or vice versa.
+- `overall` is `FAIL` if any of the six lines is `fail`, matching Rule 4 below
+  (any Critical finding defaults to NO-GO).
+- Emit exactly one line per checklist item, in the order above, even when a
+  category has no findings (`pass — no issues found`).
+- This fence must be the last fence in the output — see the office-guide
+  skill's "Verdict blocks" section for the full trust rule.
 
 ## Rules
 
