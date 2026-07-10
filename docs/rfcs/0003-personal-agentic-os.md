@@ -1,6 +1,7 @@
 # RFC 0003 — Personal agentic OS: the life project
 
-- Status: **Draft** (office-reviewed 2026-07-10; revised per reconciled review)
+- Status: **Draft** (office-reviewed 2026-07-10; revised per reconciled review; §4 reworked to
+  interactive mission control after a second Security + Steward review — enqueue-and-run model)
 - Author: Cohort maintainers
 - Created: 2026-07-10
 - Depends on: epic #139 (loop operating model — delivered), RFC 0001 (multi-install), docs/scheduled-research.md (#147)
@@ -39,8 +40,11 @@ analysis is small because #139 built most of the machinery:
 ## Design principles (inherited, non-negotiable)
 
 1. **stdlib-only CLI.** No Google SDKs, no OAuth libraries, no new dependencies.
-2. **Daemon-free.** Cohort ships nothing that runs unattended. Scheduled runs are the user's
-   own IDE scheduled tasks (docs/scheduled-research.md pattern).
+2. **Daemon-free; the dashboard never spawns an agent.** Cohort ships nothing that runs
+   unattended. Scheduled runs are the user's own IDE scheduled tasks (docs/scheduled-research.md
+   pattern). The interactive dashboard may write bounded files (edits, job *requests*) but must
+   **not** `subprocess`-launch `claude`; a job is executed only by a human-started foreground
+   `cohort run`. The actor is always your own session, never the http.server (§4).
 3. **Connectors are MCP, configured not implemented.** Cohort scaffolds an example config and a
    permission profile; Claude Code owns transport, auth, and token lifecycle. Cohort never
    reads a token, never calls a server, never parses a credential.
@@ -247,28 +251,72 @@ to report, not a command to follow, exactly as `/goal`'s judge treats repo conte
 claims. This is wording-locked, but it sits *behind* the egress denial and read-only scopes of
 this section: a prose instruction to a probabilistic model is never the boundary.
 
-### 4. Read-only life views in the dashboard
+### 4. Interactive mission control in the dashboard
 
-When the focused project has `template = "life"`, the dashboard adds three **display-only**
-views (v1 — no life-file mutation from the dashboard; there is no CLI action to dispatch a
-checkbox write to, and a new write path is exactly what the product direction says to guard):
+When the focused project has `template = "life"`, the dashboard becomes an **interactive**
+mission control — you click to edit, and you launch jobs — while holding the egress-isolation
+invariant. Three views feed from a small stdlib parser (`lifedata.py`: headings + checklist
+states + dates → dicts, no new deps) that extends `collect_state`, gated on the template marker,
+with missing-known-heading diagnostics (§1a):
 
-- **Today** — agenda + top-3 + open tasks parsed from `days/<today>.md`; the latest briefing
-  rendered from quarantine under a visible "untrusted, connector-derived" banner.
+- **Today** — agenda + top-3 + open tasks from `days/<today>.md`; latest briefing rendered from
+  quarantine under a visible "untrusted, connector-derived" banner.
 - **Week** — the current `weeks/` file: plan vs. done checkbox states, carry-overs.
 - **Goals** — `goals/` progress with linked week mentions.
 
-A small stdlib parser (`lifedata.py`: headings + checklist states + dates → dicts, no new deps)
-feeds `collect_state`, gated on the template marker. Missing-known-heading diagnostics surface
-per §1a.
+**The confirm gate is client-side only — this reframes what "interactive" may do.** Today the
+dashboard's confirm dialog is pure UX: `do_POST` runs the action immediately, so any code holding
+the per-launch token can `POST /api/action` with no human present. That is tolerable while every
+action is a bounded my-office file write; it is **not** tolerable if a token-authenticated POST
+can spawn a mail-reading subprocess. So the interactive design is bounded by two hard rules:
 
-**Briefing rendering is `textContent`/DOM-construction only — never `innerHTML` /
-`insertAdjacentHTML`** (the pattern the rest of `dashboard.html` already follows). The dashboard
-CSP is `script-src 'unsafe-inline'`, so injected `<script>` in an email-derived briefing would
-otherwise run in the dashboard origin and steal the per-launch `__COHORT_TOKEN__` → drive
-`POST /api/action`. WS-B additionally tightens the CSP for the life views (drop `'unsafe-inline'`
-via a nonce/external same-origin script; `img-src 'none'` for briefing content — a rendered
-remote/`data:` image is an exfil beacon). The untrusted banner is a human signal, not a control.
+1. **The http.server never spawns an agent.** It can write bounded files (edits, job *requests*);
+   it must not `subprocess`-launch `claude`. The actor that executes a job is a **human-started
+   foreground `cohort run`** — preserving daemon-free and "your own session is the actor"
+   (docs/scheduled-research.md). This is stated as a first-class invariant, not an implementation
+   note (see principle 2).
+2. **No-inline-script CSP is a prerequisite for any interactive version.** Drop
+   `script-src 'unsafe-inline'` (move the page JS to an external same-origin file or a per-launch
+   nonce) so injected `<script>` in rendered briefing/job output cannot execute and read the
+   in-DOM token. This hardens the *existing* dashboard and lands first, before the interactive
+   verbs. `img-src 'none'` for connector-derived content (a rendered image is an exfil beacon).
+
+**Editing (ships in v1).** Clicking a checkbox, setting your top-3, or adding a task dispatches a
+new **`cohort life <verb>`** CLI function through the existing confirm bridge — the dashboard
+gains **no mutation logic of its own** (the stated `run_action` invariant); it calls a `do_*`
+function exactly as `do_snapshot` does. Verbs (`life toggle-task`, `life set-top3`,
+`life add-task`, …) are deterministic markdown writes to `days/`/`weeks/`, target resolved by
+**enumeration** (never a raw client path or a `name` with `..`/separators — the `read_artifact`
+pattern), unit-testable at the `do_*` layer. These files are the *trusted* tier (auto-loaded into
+future sessions), so the write endpoint is a higher-value injection sink than my-office authoring
+— hence the enumerated-target rule and the CSP prerequisite both apply.
+
+**Kick off jobs (enqueue-and-run, v1).** Clicking "Run /briefing" dispatches a `cohort life
+enqueue <command>` verb that writes a **bounded job-request** file (`.cohort/jobs/<command>-<ts>.json`
+— an allowlisted command name + timestamp + status; **never a free-text prompt**). A
+human-started foreground **`cohort run`** watches `.cohort/jobs/`, executes each request by
+spawning `claude -p "/command"` under the profile the *runner* pins per command (briefing/triage
+under the egress-closed `settings.briefing.json`), and writes output to the quarantine; the
+dashboard shows it live. The runner — not the browser — is the only thing that spawns a process,
+and it dies with the terminal you started. Fail-closed construction (in `cohort run`): argv is a
+**constant** built from an exact-key command allowlist (`_JOBS[command]`), `shell=False`, the
+caller contributes **zero** argv tokens (a crafted name like `briefing --permission-mode=…` misses
+the key and is refused), `--settings` is a server-side constant path never a client value, minimal
+curated env (not `{**os.environ}`), cwd pinned from the resolved registry, a `timeout`,
+**single-flight per command** (reject with 409 if already running, never queue-storm), and child
+PIDs terminated on shutdown so nothing outlives the terminal. All job stdout is untrusted
+quarantine content: rendered `textContent`-only, never `@import`ed, never auto-loaded.
+
+**Ask questions — deferred to v2.** A conversational Q&A box has the same spawn-a-session cost as
+jobs; it rides on the proven enqueue model and is a separate milestone. When built, it routes to
+the advisory read-only life-chief-of-staff under a strictly egress-closed profile (no web, no
+send/write/exec; calendar read from a **local cache**, not a live networked call — a live MCP call
+is itself outbound reachability the invariant forbids for a mail-adjacent session).
+
+**Rendering discipline (all connector/job-derived content).** `textContent`/DOM-construction only,
+never `innerHTML`/`insertAdjacentHTML` — extend `dashboard.html`'s stated "no disk/subprocess-derived
+string reaches innerHTML" invariant to cover live job stdout. The untrusted banner is a human
+signal, not a control; the CSP fix is the control.
 
 **Privacy.** `dashboard.private = true` is the **fail-safe default** for the life template
 (absent key ⇒ private). Private means the project is excluded from `state["projects"]` (the
@@ -352,15 +400,19 @@ wording is out of scope for the office review — have counsel/privacy lead conf
   adopt --to my|office` must read the source project's `template = "life"` marker and refuse to
   lift a life-project agent into a synced tier (the marker lives in cohort.toml, not the
   artifact, so adopt must check it — mirroring the doer-promotion guard).
-- No dashboard mutation of life files in v1; no task-manager lock-in — the data model is plain
-  markdown in the user's repo; removing `.cohort/` leaves a usable plain-text life system.
+- **The http.server never spawns a `claude` process.** Interactive editing and job *requests*
+  are bounded file writes; job *execution* is only ever a human-started foreground `cohort run`.
+- No conversational Q&A box in v1 (deferred to v2, rides the enqueue model).
+- No task-manager lock-in — the data model is plain markdown in the user's repo; removing
+  `.cohort/` leaves a usable plain-text life system.
 
 ## Workstreams (three, parallel, contract-pinned)
 
-The file layout + format (§1, §1a), both permission profiles (§3), and command names (§5) are
-the shared contract; each workstream implements against this RFC, not against another's branch.
+The file layout + format (§1, §1a), both permission profiles (§3), the `cohort life`/`cohort run`
+CLI contract (§4), and command names (§5) are the shared contract; each workstream implements
+against this RFC, not against another's branch.
 
-### WS-A — Fable: template engine, connector surface, boundaries
+### WS-A — Fable: template engine, connector surface, boundaries, life/run CLI
 
 Introduce the template concept in `project.py` (per-template init-plan contributions;
 `template`/`dashboard.private` read via one shared `read_project_config`; first-init-only marker
@@ -369,40 +421,58 @@ with refusing re-init semantics); the life scaffold (non-dated files + example c
 SCAFFOLD manifest so `deinit --purge` can't delete it; connector-*presence* reporting + the
 server-key-mismatch warning in `cohort status`; the sync-boundary refusals (distill life-target +
 `project_context.md` refusal; `adopt` template-marker check); large `staleness_hours` so the
-daily rhythm doesn't trigger the snapshot nag. Tests: template init idempotence/refusal, purge
-leaves life data, profile-content locks (outbound tools + WebFetch/WebSearch/Bash denied, no
-server wildcard), distill refuses `project_context.md` in a life project, adopt refuses a life
-agent.
+daily rhythm doesn't trigger the snapshot nag. **Plus the interactive CLI surface WS-B dispatches
+to:** a `life.py` module with `cohort life <verb>` deterministic markdown writers (`toggle-task`,
+`set-top3`, `add-task`, …; enumerated targets, `do_*`-testable) and `cohort life enqueue <command>`
+(writes a bounded job-request); and the **`cohort run`** foreground runner (watches `.cohort/jobs/`,
+constant-argv command allowlist `_JOBS`, `shell=False`, dashboard-pinned `--settings`, minimal env,
+pinned cwd, `timeout`, single-flight per command, child-PID reaping on shutdown). Tests: template
+init idempotence/refusal, purge leaves life data, profile-content locks (outbound + WebFetch/
+WebSearch/Bash denied, no server wildcard), distill refuses `project_context.md`, adopt refuses a
+life agent, `cohort life` enumerated-target rejection (`..`/paths), `cohort run` argv-allowlist
+fail-closed (crafted command name refused, no caller flag reaches argv), single-flight 409.
 
-### WS-B — Opus: read-only mission-control life views
+### WS-B — Opus: interactive mission control
 
 `lifedata.py` (stdlib parser: the §1a format → dicts, missing-known-heading diagnostics,
 timezone passed in); `collect_state` extension gated on the marker; Today/Week/Goals views in
-dashboard.html (**display-only**, existing style); briefing rendered **`textContent`-only** under
-an untrusted banner; life-view CSP tightening (`img-src 'none'`, no `'unsafe-inline'`);
-`dashboard.private` honored fail-safe across switcher + feed + scorecards. Tests: parser
-round-trips (user-edited files, unknown sections preserved, missing-heading diagnostic),
-timezone boundary, no-`innerHTML` lock on briefing render, private-flag exclusion from all three
-surfaces.
+dashboard.html. **Interactive:** edit controls (checkbox toggle, set-top3, add-task) that
+dispatch `cohort life` verbs through the confirm bridge (no mutation logic in the dashboard);
+"Run <command>" buttons that dispatch `cohort life enqueue`; a live job-output panel reading the
+quarantine. **Security-load-bearing (all in WS-B's file territory, land the CSP fix first):**
+drop `script-src 'unsafe-inline'` (external same-origin JS or per-launch nonce) + `img-src 'none'`
+for connector/job content; briefing **and** job stdout rendered **`textContent`-only** under an
+untrusted banner (extend the stated no-`innerHTML` invariant to job output); `dashboard.private`
+honored fail-safe across switcher + feed + scorecards. Tests: parser round-trips (user-edited
+files, unknown sections preserved, missing-heading diagnostic), timezone boundary, no-`innerHTML`
+lock on briefing + job output, no-inline-script CSP assertion, private-flag exclusion from all
+three surfaces, edit/enqueue actions dispatch the CLI verb (no inline write).
 
 ### WS-C — Sonnet: rhythms, briefing, agent, recipes, docs
 
 Canonical `/today`, `/briefing`, `/triage`, `/week`, `/month` command texts (each embedding the
 injection-stance paragraph and minimization rules — wording-locked like `/goal`'s push
 discipline; `/briefing` entirely egress-safe; `/month` reads no connectors; `/triage` never
-sends/drafts/labels); the life-chief-of-staff agent; docs: MCP connector setup guide (Google
-official servers, OAuth read-only scopes, canonical server keys, what each relaxation costs, the
-verify-before-trust checklist), the §7 disclosure, the morning-briefing scheduled recipe;
-README section; goldens regenerated. Tests: wording-locks for the injection stance, the
-never-sends rules, the disclosure/checklist presence, and `/month`-reads-no-connectors.
+sends/drafts/labels). **Every command runnable as an enqueued job must be `claude -p`-clean /
+headless-safe — no mid-run interactive prompt** (a stronger property than `/goal`'s graceful
+degradation); wording-lock it. The life-chief-of-staff agent; docs: MCP connector setup guide
+(Google official servers, OAuth read-only scopes, canonical server keys, what each relaxation
+costs, the verify-before-trust checklist), the §7 disclosure, the morning-briefing scheduled
+recipe, and the `cohort run` runner usage; README section; goldens regenerated. Tests:
+wording-locks for the injection stance, the never-sends rules, the disclosure/checklist presence,
+`/month`-reads-no-connectors, and headless-safety (no interactive-confirm text on job commands).
 
 ### Dependencies
 
-WS-B and WS-C consume only this RFC's contract (§1a format + §3 profiles + §5 command names).
-The one cross-workstream seam is the `template = "life"` marker (WS-A) that gates WS-B's views;
-WS-B develops against a §1a-conformant fixture project until WS-A merges. WS-C has no code
-dependency. **Resolve blockers in the contract sections (this document) before spawning
-workstreams** — every blocking review finding sits inside the shared contract.
+The interactive design adds a second cross-workstream seam beyond the `template = "life"` marker:
+the **`cohort life`/`cohort run` CLI contract** (§4), owned by WS-A and consumed by WS-B's action
+dispatch. So WS-B now depends on WS-A for the interactive verbs (it can still build read views +
+the CSP fix against a §1a fixture first, then wire edit/enqueue once WS-A lands). WS-C gains a
+soft dependency: its job-runnable commands must be headless-clean before `cohort run` executes
+them. **Suggested order:** WS-A lands the template marker + `cohort life`/`run` early → WS-B wires
+interactivity; WS-C proceeds in parallel (canonical + docs, no code dependency). **Resolve
+blockers in the contract sections (this document) before spawning workstreams** — every blocking
+review finding sits inside the shared contract.
 
 ## Resolved review decisions (was: open questions)
 
@@ -413,3 +483,11 @@ workstreams** — every blocking review finding sits inside the shared contract.
    approval. The scopes are the control.
 3. **`dashboard.private` — default true for the life template, fail-safe (absent = private)**,
    scope widened to switcher + activity feed + scorecards. Opt-out is the deliberate act.
+4. **Interactive mission control — job execution model is enqueue-and-run, not shell-from-browser**
+   (maintainer decision, both reviewers concur). The dashboard writes a bounded job-request; a
+   human-started foreground `cohort run` executes it. The http.server never spawns `claude`.
+   Editing ships in v1 via `cohort life` verbs; the no-inline-script CSP is a prerequisite and
+   hardens the existing dashboard regardless.
+5. **Conversational Q&A — deferred to v2.** Same spawn-a-session cost as jobs; rides the proven
+   enqueue model; when built, routes to the advisory read-only life-chief-of-staff under an
+   egress-closed profile with a local-cache (not live) calendar read.
