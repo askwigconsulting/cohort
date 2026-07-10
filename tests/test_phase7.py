@@ -88,6 +88,43 @@ def test_cursor_agent_advisory_readonly():
     assert "readonly: true" in agent.content.decode()
 
 
+# === model tier (#143): Codex/Cursor omit it gracefully, no compile break ===
+
+
+def _ir_with_model(tier: str):
+    from cohort.ir import build_ir
+    from cohort.loader import load_artifact
+
+    p = PHASE2_SRC / "canonical" / "agents" / "security-engineer.md"
+    lr = load_artifact(p)
+    ir = build_ir(lr.frontmatter, lr.body, p)
+    ir.fields["model"] = tier
+    return ir
+
+
+def _has_model_field(text: str) -> bool:
+    # field-line check, not substring — the body legitimately says "threat-model".
+    return any(
+        ln.startswith("model =") or ln.startswith("model:") for ln in text.splitlines()
+    )
+
+
+@pytest.mark.parametrize("tier", ["fast", "default", "top"])
+def test_codex_agent_render_omits_model_for_every_tier(tier):
+    from cohort.adapters.codex import render_agent as codex_render_agent
+
+    text = codex_render_agent(_ir_with_model(tier)).content.decode()
+    assert not _has_model_field(text)
+
+
+@pytest.mark.parametrize("tier", ["fast", "default", "top"])
+def test_cursor_agent_render_omits_model_for_every_tier(tier):
+    from cohort.adapters.cursor import render_agent as cursor_render_agent
+
+    text = cursor_render_agent(_ir_with_model(tier)).content.decode()
+    assert not _has_model_field(text)
+
+
 # === P7-T1: Codex AGENTS.md merge data-safety ([K]/[L]) =====================
 
 

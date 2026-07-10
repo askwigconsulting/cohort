@@ -2,6 +2,7 @@
 name: security-engineer
 description: Threat modeling, secure-by-default review, secret hygiene, and security audits of specific changes. Use for a security-focused pass on a diff, file, or design.
 tools: Read, Grep, Glob
+model: opus
 ---
 
 > **SecurityEngineer** — Security · specialist (advisory office agent)

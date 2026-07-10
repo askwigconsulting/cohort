@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from cohort.adapters.claude import ClaudeRenderer, claude_tools, render_agent
+from cohort.adapters.claude import ClaudeRenderer, claude_model, claude_tools, render_agent
 from cohort.compile import compile_ide, scan_staging_ops, staging_tree_hash, write_staging
 from cohort.install_model import CohortPaths
 from cohort.ir import build_ir
@@ -153,6 +153,33 @@ def test_body_header_preserves_display_name_department_topology():
     assert "ChiefOfStaff" in text
     assert "Orchestration" in text
     assert "generalist" in text
+
+
+# --- model tier (#143) -------------------------------------------------------
+
+
+def test_default_tier_omits_model_field():
+    ir = load_ir("agents/security-engineer.md")  # fixture declares no model → default
+    assert ir.fields["model"] == "default"
+    assert claude_model(ir) is None
+    text = render_agent(ir).content.decode("utf-8")
+    assert "model:" not in text
+
+
+def test_fast_tier_maps_to_haiku():
+    ir = load_ir("agents/security-engineer.md")
+    ir.fields["model"] = "fast"
+    assert claude_model(ir) == "haiku"
+    text = render_agent(ir).content.decode("utf-8")
+    assert "model: haiku" in text
+
+
+def test_top_tier_maps_to_opus():
+    ir = load_ir("agents/security-engineer.md")
+    ir.fields["model"] = "top"
+    assert claude_model(ir) == "opus"
+    text = render_agent(ir).content.decode("utf-8")
+    assert "model: opus" in text
 
 
 # --- P2-T2: op emission -----------------------------------------------------

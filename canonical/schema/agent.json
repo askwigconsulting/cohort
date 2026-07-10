@@ -22,6 +22,12 @@
       "type": "array",
       "items": { "type": "string" },
       "default": []
+    },
+    "model": {
+      "type": "string",
+      "enum": ["fast", "default", "top"],
+      "default": "default",
+      "description": "Abstract cost/latency tier — never a concrete model ID. Each renderer maps it to that IDE's model names at compile time."
     }
   }
 }
