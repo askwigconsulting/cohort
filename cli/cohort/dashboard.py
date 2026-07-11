@@ -486,6 +486,12 @@ def load_page() -> str:
     return (resources.files("cohort") / "dashboard.html").read_text(encoding="utf-8")
 
 
+def load_js() -> str:
+    """The page script, served as a same-origin static file so the CSP can drop
+    ``script-src 'unsafe-inline'``. It carries no token (read from a meta tag)."""
+    return (resources.files("cohort") / "dashboard.js").read_text(encoding="utf-8")
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """Routes: GET / (the page), GET /api/state, POST /api/action."""
 
@@ -501,10 +507,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         if content_type.startswith("text/html"):
+            # No 'unsafe-inline' for scripts: the page JS is an external same-origin
+            # file (dashboard.js) and the per-launch token rides a <meta> tag, so an
+            # injected <script> in rendered briefing/job output cannot execute and
+            # read the in-DOM token. img-src is 'none' (no connector/job-derived
+            # image can beacon out). style-src stays inline for the single <style>.
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
-                "connect-src 'self'; img-src data:",
+                "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
+                "connect-src 'self'; img-src 'none'",
             )
         self.end_headers()
         self.wfile.write(body)
@@ -530,6 +541,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             page = load_page().replace("__COHORT_TOKEN__", self.server.token)
             self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+        elif self.path == "/dashboard.js":
+            # Same-origin static script (no token inside it). Loopback Host is
+            # still required; it needs no token because a <script src> cannot
+            # carry one and the file is not sensitive.
+            if not _host_is_loopback(self.headers.get("Host", "")):
+                self._send_json(403, {"error": "forbidden host"})
+                return
+            self._send(200, load_js().encode("utf-8"), "application/javascript; charset=utf-8")
         elif self.path == "/api/state" or self.path.startswith("/api/state?"):
             if not self._guard():
                 return
