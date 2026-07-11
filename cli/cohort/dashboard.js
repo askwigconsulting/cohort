@@ -426,18 +426,19 @@ function diagChips(host, diagnostics) {
     host.appendChild(s);
   }
 }
-/* One checklist item. Interactive scopes ("day-top3", "week-plan") dispatch a
-   toggle by ENUMERATED index; a null scope renders read-only (e.g. goals). */
-function checkItem(item, index, scope) {
+/* One checklist item. An enumerated target ("today"/"week"/"inbox") dispatches a
+   toggle by the item's 1-based file-order line (WS-A do_toggle_task); a null
+   target renders read-only (e.g. goals in v1). */
+function checkItem(item, target) {
   const li = document.createElement("li"); li.className = "check" + (item.done ? " done" : "");
   const box = document.createElement("input"); box.type = "checkbox"; box.checked = !!item.done;
   const label = document.createElement("label"); label.textContent = item.text || "(empty)";
-  if (scope) {
+  if (target) {
     box.title = "Toggle via cohort life toggle-task";
     box.addEventListener("change", () => {
       // The server re-resolves the target by enumeration and rewrites the file;
       // refresh() then re-renders from disk truth, so no optimistic state is kept.
-      runAction(null, "life-toggle-task", { scope, index },
+      runAction(null, "life-toggle-task", { target, line: item.line },
         (item.done ? "Reopened: " : "Completed: ") + (item.text || ""));
     });
   } else {
@@ -446,9 +447,9 @@ function checkItem(item, index, scope) {
   li.appendChild(box); li.appendChild(label);
   return li;
 }
-function checkList(items, scope) {
+function checkList(items, target) {
   const ul = document.createElement("ul"); ul.className = "checks";
-  items.forEach((it, i) => ul.appendChild(checkItem(it, i, scope)));
+  items.forEach((it) => ul.appendChild(checkItem(it, target)));
   if (!items.length) {
     const e = document.createElement("li"); e.className = "empty"; e.textContent = "Nothing here yet.";
     ul.appendChild(e);
@@ -480,7 +481,7 @@ function renderToday(today) {
   editTop3.className = "thumb"; editTop3.textContent = "✎ edit"; editTop3.title = "Set today's top 3";
   editTop3.addEventListener("click", () => openTop3(today.top3 || []));
   const top = lifeGroup("Top 3", editTop3);
-  top.appendChild(checkList(today.top3 || [], "day-top3"));
+  top.appendChild(checkList(today.top3 || [], "today"));
   host.appendChild(top);
 
   if (today.log) {
@@ -498,7 +499,7 @@ function renderWeek(week) {
   diagChips(host, week.diagnostics);
 
   const plan = lifeGroup("Plan");
-  plan.appendChild(checkList(week.plan || [], "week-plan"));
+  plan.appendChild(checkList(week.plan || [], "week"));
   const row = document.createElement("div"); row.className = "addrow";
   const input = document.createElement("input");
   input.placeholder = "Add a task to this week's plan…"; input.maxLength = 200;
@@ -506,7 +507,7 @@ function renderWeek(week) {
   const submit = () => {
     const text = input.value.trim();
     if (!text) return;
-    runAction(add, "life-add-task", { scope: "week-plan", text }, "Task added").then((r) => { if (r) input.value = ""; });
+    runAction(add, "life-add-task", { target: "week", text }, "Task added").then((r) => { if (r) input.value = ""; });
   };
   add.addEventListener("click", submit);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } });
@@ -544,14 +545,27 @@ function renderGoals(goalFiles) {
     const e = document.createElement("div"); e.className = "empty"; e.textContent = "No goals yet — add them in goals/."; host.appendChild(e);
   }
 }
-function renderRunbar(commands) {
+function renderRunbar(commands, jobs) {
   const bar = $("life-runbar"); bar.textContent = "";
+  // Single-flight is enforced at enqueue (WS-A): one outstanding request per
+  // command. Grey out a command whose job is already queued/running so the UI
+  // reflects the rejection before the click.
+  const active = new Set();
+  for (const j of (jobs || [])) {
+    if (j.status === "queued" || j.status === "running") active.add(j.command);
+  }
   for (const cmd of (commands || [])) {
     const b = document.createElement("button"); b.className = "btn";
-    b.appendChild(document.createTextNode("▶ /" + cmd));
-    b.title = "Enqueue /" + cmd + " (a human-started `cohort run` executes it)";
-    b.addEventListener("click", () => runAction(b, "life-enqueue", { command: cmd },
-      "Enqueued /" + cmd + " — run it with `cohort run`"));
+    const busy = active.has(cmd);
+    b.appendChild(document.createTextNode((busy ? "● /" : "▶ /") + cmd));
+    if (busy) {
+      b.disabled = true;
+      b.title = "/" + cmd + " is already queued or running — single-flight per command";
+    } else {
+      b.title = "Enqueue /" + cmd + " (a human-started `cohort run` executes it)";
+      b.addEventListener("click", () => runAction(b, "life-enqueue", { command: cmd },
+        "Enqueued /" + cmd + " — run it with `cohort run`"));
+    }
     bar.appendChild(b);
   }
 }
@@ -562,9 +576,19 @@ function renderJobsAndBriefing(life) {
     for (const j of list) {
       const row = document.createElement("div"); row.className = "job-row";
       const cmd = document.createElement("span"); cmd.className = "meta"; cmd.textContent = "/" + (j.command || "?");
-      const st = document.createElement("span"); st.className = "meta"; st.textContent = j.status || "queued";
+      const failed = j.status === "failed" || j.status === "rejected";
+      const st = document.createElement("span"); st.className = "meta" + (failed ? " bad" : ""); st.textContent = j.status || "queued";
       const when = document.createElement("span"); when.className = "when"; when.textContent = (j.requested_at || "").replace("T", " ").slice(0, 16);
-      row.appendChild(cmd); row.appendChild(st); row.appendChild(when); jobs.appendChild(row);
+      row.appendChild(cmd); row.appendChild(st); row.appendChild(when);
+      if (j.output) {  // quarantine-relative path the runner wrote (text only)
+        const out = document.createElement("span"); out.className = "when"; out.textContent = "→ " + j.output;
+        row.appendChild(out);
+      }
+      if (j.error) {  // failure detail, rendered as text
+        const err = document.createElement("span"); err.className = "diag"; err.textContent = j.error;
+        row.appendChild(err);
+      }
+      jobs.appendChild(row);
     }
   } else {
     const e = document.createElement("div"); e.className = "empty";
@@ -597,7 +621,7 @@ function renderLife(life) {
   renderToday(life.today || {});
   renderWeek(life.week || {});
   renderGoals(life.goals || []);
-  renderRunbar(life.commands || []);
+  renderRunbar(life.commands || [], life.jobs || []);
   renderJobsAndBriefing(life);
 }
 function render(s) {

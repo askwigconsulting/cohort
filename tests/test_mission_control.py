@@ -115,9 +115,10 @@ def test_parse_day_extracts_agenda_top3_and_log():
     # agenda: timed + non-timed events, time+title only
     assert day["agenda"][0] == {"time": "09:00", "title": "Standup"}
     assert day["agenda"][-1] == {"time": None, "title": "Lunch with Sam"}
-    # checklist states: [x] done, [ ] open
-    assert day["top3"][0] == {"text": "Ship the CSP fix", "done": True}
+    # checklist states: [x] done, [ ] open; line is 1-based file order
+    assert day["top3"][0] == {"text": "Ship the CSP fix", "done": True, "line": 1}
     assert [t["done"] for t in day["top3"]] == [True, False, False]
+    assert [t["line"] for t in day["top3"]] == [1, 2, 3]
     assert "focused this morning" in day["log"]
 
 
@@ -152,8 +153,8 @@ def test_checklist_tolerates_one_indent_level_and_x_casing():
     text = "# 2026-07-10\n\n## Agenda\n\n## Top 3\n  - [X] indented done\n\t- [ ] tabbed open\n\n## Log\n"
     day = lifedata.parse_day(text, expected_date="2026-07-10")
     assert day["top3"] == [
-        {"text": "indented done", "done": True},
-        {"text": "tabbed open", "done": False},
+        {"text": "indented done", "done": True, "line": 1},
+        {"text": "tabbed open", "done": False, "line": 2},
     ]
 
 
@@ -164,14 +165,14 @@ def test_parse_week_and_goals():
     )
     assert week["week"] == "2026-W28"
     assert week["diagnostics"] == []
-    assert week["plan"][0] == {"text": "Land RFC 0003", "done": True}
+    assert week["plan"][0] == {"text": "Land RFC 0003", "done": True, "line": 1}
 
     goals = lifedata.parse_goals((FIXTURE_LIFE / "goals" / "2026.md").read_text(encoding="utf-8"))
     assert goals["title"] == "2026 goals"
     assert goals["diagnostics"] == []
     names = [g["goal"] for g in goals["goals"]]
     assert names == ["Ship Cohort 1.0", "Health"]
-    assert goals["goals"][0]["items"][0] == {"text": "RFC 0003 accepted", "done": True}
+    assert goals["goals"][0]["items"][0] == {"text": "RFC 0003 accepted", "done": True, "line": 1}
 
 
 def test_parse_goals_diagnoses_empty_file():
@@ -206,7 +207,7 @@ def test_load_life_views_picks_today_from_the_passed_now(tmp_path):
     west = instant.astimezone(timezone(timedelta(hours=-5)))
     views = lifedata.load_life_views(repo, west)
     assert views["today"]["date"] == "2026-07-10"
-    assert views["today"]["top3"] == [{"text": "tenth", "done": False}]
+    assert views["today"]["top3"] == [{"text": "tenth", "done": False, "line": 1}]
 
 
 def test_load_life_views_missing_files_diagnose_not_crash(tmp_path):
@@ -341,9 +342,10 @@ from test_dashboard import tree_hash  # noqa: E402
 
 @pytest.fixture
 def fake_life(monkeypatch):
-    """Inject a fake WS-A ``cohort.life`` module that only records its calls (it
-    performs no write), so a dispatch test proves the dashboard routes to the
-    verb and holds no mutation logic of its own."""
+    """Inject a fake ``cohort.life`` module (WS-A's shape) that only records its
+    calls (it performs no write), so a dispatch test proves the dashboard routes
+    to the verb with WS-A's final positional signatures and holds no mutation
+    logic of its own."""
     import cohort
 
     calls = []
@@ -353,16 +355,16 @@ def fake_life(monkeypatch):
         pass
 
     def _rec(name):
-        def fn(repo, **kw):
-            calls.append((name, Path(repo), kw))
-            return {"action": name, **kw}
+        def fn(repo, *args, **kw):
+            calls.append((name, Path(repo), args, kw))
+            return {"action": "life-" + name}
         return fn
 
     mod.LifeError = LifeError
-    mod.do_toggle_task = _rec("toggle-task")
-    mod.do_set_top3 = _rec("set-top3")
-    mod.do_add_task = _rec("add-task")
-    mod.do_enqueue = _rec("enqueue")
+    mod.do_toggle_task = _rec("toggle-task")  # (repo, target, line)
+    mod.do_set_top3 = _rec("set-top3")        # (repo, items)
+    mod.do_add_task = _rec("add-task")        # (repo, target, text)
+    mod.do_enqueue = _rec("enqueue")          # (repo, command)
     monkeypatch.setitem(sys.modules, "cohort.life", mod)
     monkeypatch.setattr(cohort, "life", mod, raising=False)
     return calls
@@ -371,9 +373,10 @@ def fake_life(monkeypatch):
 def test_life_toggle_dispatches_verb_and_writes_nothing_inline(home, tmp_path, source, fake_life):
     repo = make_life_project(tmp_path, source, home)
     before = tree_hash(repo)
-    report = run_action(home, repo, "life-toggle-task", {"scope": "day-top3", "index": 1})
-    assert report["action"] == "toggle-task"
-    assert fake_life == [("toggle-task", repo, {"scope": "day-top3", "index": 1, "dry_run": False})]
+    report = run_action(home, repo, "life-toggle-task", {"target": "today", "line": 2})
+    assert report["action"] == "life-toggle-task"
+    # WS-A's positional signature: do_toggle_task(repo, target, line)
+    assert fake_life == [("toggle-task", repo, ("today", 2), {})]
     # The dashboard performed no write of its own — the (stubbed) verb is the only
     # writer, and it wrote nothing, so the tree is byte-identical.
     assert tree_hash(repo) == before
@@ -382,34 +385,44 @@ def test_life_toggle_dispatches_verb_and_writes_nothing_inline(home, tmp_path, s
 def test_life_set_top3_and_add_task_dispatch(home, tmp_path, source, fake_life):
     repo = make_life_project(tmp_path, source, home)
     run_action(home, repo, "life-set-top3", {"items": ["ship", "sleep"]})
-    run_action(home, repo, "life-add-task", {"scope": "week-plan", "text": "  book dentist "})
-    assert fake_life[0] == ("set-top3", repo, {"items": ["ship", "sleep"], "dry_run": False})
-    assert fake_life[1] == ("add-task", repo, {"scope": "week-plan", "text": "book dentist", "dry_run": False})
+    run_action(home, repo, "life-add-task", {"target": "week", "text": "  book dentist "})
+    assert fake_life[0] == ("set-top3", repo, (["ship", "sleep"],), {})
+    assert fake_life[1] == ("add-task", repo, ("week", "book dentist"), {})
+
+
+def test_life_add_task_defaults_to_week(home, tmp_path, source, fake_life):
+    repo = make_life_project(tmp_path, source, home)
+    run_action(home, repo, "life-add-task", {"text": "no target given"})
+    assert fake_life[-1] == ("add-task", repo, ("week", "no target given"), {})
 
 
 def test_life_enqueue_enforces_command_allowlist(home, tmp_path, source, fake_life):
     repo = make_life_project(tmp_path, source, home)
     run_action(home, repo, "life-enqueue", {"command": "briefing"})
-    assert fake_life[-1] == ("enqueue", repo, {"command": "briefing", "dry_run": False})
-    # a name that isn't an allowlisted command is refused before the verb is called
-    with pytest.raises(ActionError, match="not an enqueueable command"):
-        run_action(home, repo, "life-enqueue", {"command": "briefing --dangerously-skip"})
-    assert fake_life[-1][0] == "enqueue" and fake_life[-1][2]["command"] == "briefing"
+    assert fake_life[-1] == ("enqueue", repo, ("briefing",), {})
+    # Only briefing/triage are enqueueable jobs (WS-A). today/week/month and any
+    # crafted name are refused before the verb is called.
+    for bad in ("today", "month", "briefing --dangerously-skip"):
+        with pytest.raises(ActionError, match="not an enqueueable command"):
+            run_action(home, repo, "life-enqueue", {"command": bad})
+    assert fake_life[-1] == ("enqueue", repo, ("briefing",), {})  # unchanged since the ok call
 
 
-def test_life_toggle_rejects_unknown_scope_and_bad_index(home, tmp_path, source, fake_life):
+def test_life_toggle_rejects_unknown_target_and_bad_line(home, tmp_path, source, fake_life):
     repo = make_life_project(tmp_path, source, home)
-    with pytest.raises(ActionError, match="unknown toggle scope"):
-        run_action(home, repo, "life-toggle-task", {"scope": "../etc", "index": 0})
-    with pytest.raises(ActionError, match="index must be"):
-        run_action(home, repo, "life-toggle-task", {"scope": "day-top3", "index": "nope"})
+    with pytest.raises(ActionError, match="unknown target"):
+        run_action(home, repo, "life-toggle-task", {"target": "../etc", "line": 1})
+    with pytest.raises(ActionError, match="line is 1-based"):
+        run_action(home, repo, "life-toggle-task", {"target": "today", "line": 0})
+    with pytest.raises(ActionError, match="line must be an integer"):
+        run_action(home, repo, "life-toggle-task", {"target": "today", "line": "nope"})
     assert fake_life == []  # nothing dispatched on a refusal
 
 
 def test_life_add_task_refuses_empty_text(home, tmp_path, source, fake_life):
     repo = make_life_project(tmp_path, source, home)
     with pytest.raises(ActionError, match="task text is empty"):
-        run_action(home, repo, "life-add-task", {"scope": "week-plan", "text": "   "})
+        run_action(home, repo, "life-add-task", {"target": "week", "text": "   "})
     assert fake_life == []
 
 
@@ -436,8 +449,8 @@ def test_life_enqueue_over_http_dispatches(life_server, fake_life):
     status, data = request(srv, "POST", "/api/action", token=srv.token,
                            body={"action": "life-enqueue", "args": {"command": "triage"}})
     assert status == 200, data
-    assert json.loads(data)["action"] == "enqueue"
-    assert fake_life[-1][0] == "enqueue" and fake_life[-1][2]["command"] == "triage"
+    assert json.loads(data)["action"] == "life-enqueue"
+    assert fake_life[-1] == ("enqueue", Path(life_server[1]), ("triage",), {})
 
 
 def test_life_block_reaches_state_over_http(life_server):

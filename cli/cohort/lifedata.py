@@ -38,10 +38,12 @@ DAY_HEADINGS = ("Agenda", "Top 3", "Log")
 WEEK_HEADINGS = ("Plan", "Review")
 MAX_TOP3 = 3
 
-# The commands the "Run <command>" buttons may enqueue (RFC §5). The dashboard
-# only *names* an allowlisted command; the runner (WS-A ``cohort run``) pins the
-# profile per command and is the sole allowlist authority.
-LIFE_COMMANDS = ("briefing", "triage", "today", "week", "month")
+# The commands the "Run <command>" buttons may enqueue. Per WS-A's final
+# contract, ONLY ``briefing`` and ``triage`` are enqueueable jobs (the two
+# commands pinned to the egress-closed briefing profile); today/week/month are
+# interactive-only and never enqueued. The dashboard only *names* an allowlisted
+# command; WS-A's ``cohort run`` (``_JOBS``) is the sole allowlist authority.
+ENQUEUE_COMMANDS = ("briefing", "triage")
 
 
 # --- date resolution (timezone passed in, computed once) --------------------
@@ -88,12 +90,23 @@ def _split_sections(text: str) -> tuple[Optional[str], dict[str, list[str]]]:
 
 
 def _checklist(lines: list[str]) -> list[dict[str, Any]]:
-    """Every checklist item in ``lines`` as ``{"text", "done"}`` (order preserved)."""
+    """Every checklist item in ``lines`` as ``{"text", "done", "line"}``.
+
+    ``line`` is the 1-based position of the item among the checklist items in this
+    section — which equals WS-A ``do_toggle_task``'s file-order index for a §1a
+    file, where the only checkboxes live in the section they belong to (Top 3 /
+    Plan / inbox). The dashboard sends this ``line`` straight to the verb."""
     items: list[dict[str, Any]] = []
+    n = 0
     for line in lines:
         m = _CHECKBOX.match(line)
         if m:
-            items.append({"text": m.group(2).strip(), "done": m.group(1).strip().lower() == "x"})
+            n += 1
+            items.append({
+                "text": m.group(2).strip(),
+                "done": m.group(1).strip().lower() == "x",
+                "line": n,
+            })
     return items
 
 
@@ -309,10 +322,13 @@ def read_quarantine(cohort_home: Path) -> list[dict[str, Any]]:
 
 
 def read_jobs(cohort_home: Path) -> list[dict[str, Any]]:
-    """Recent job-request records from ``.cohort/jobs/`` (command + status + ts).
+    """Recent job records from ``.cohort/jobs/`` (WS-A's bounded schema).
 
-    Bounded fields only; a request is a small allowlisted-command descriptor, not
-    a free-text prompt (RFC §4). Malformed JSON is skipped."""
+    Surfaces ``command``/``status``/``requested_at`` plus the runner-written
+    ``output`` (a quarantine-relative path), ``error`` and ``exit_code`` so the
+    live panel can show progress (queued→running→done|failed|rejected). Every
+    field is bounded — a request is an allowlisted-command descriptor, never a
+    free-text prompt (RFC §4). Malformed JSON is skipped."""
     import json
 
     jdir = Path(cohort_home) / "jobs"
@@ -332,6 +348,9 @@ def read_jobs(cohort_home: Path) -> list[dict[str, Any]]:
             "command": str(data.get("command", ""))[:64],
             "status": str(data.get("status", ""))[:32],
             "requested_at": str(data.get("requested_at", ""))[:32],
+            "output": str(data.get("output", ""))[:256],  # quarantine-relative path
+            "error": str(data.get("error", ""))[:256],
+            "exit_code": data.get("exit_code"),
         })
     return out
 
@@ -349,5 +368,5 @@ def collect_life(repo: Path, cohort_home: Path, now: datetime) -> dict[str, Any]
         "briefing": quarantine[0] if quarantine else None,
         "quarantine": quarantine,
         "jobs": read_jobs(cohort_home),
-        "commands": list(LIFE_COMMANDS),
+        "commands": list(ENQUEUE_COMMANDS),
     }
