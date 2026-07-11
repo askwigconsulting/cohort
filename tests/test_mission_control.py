@@ -327,3 +327,122 @@ def test_private_life_project_refused_by_resolve_registered(home, tmp_path, sour
         assert resolve_registered(home, entry["index"]) == Path(entry["path"])
     # the life project stays in the registry (not pruned) — re-listing is stable
     assert {p["path"] for p in list_projects(home)} == listed
+
+
+# === interactive life dispatch (edit + enqueue) ==============================
+
+import sys  # noqa: E402
+import threading  # noqa: E402
+import types  # noqa: E402
+
+from cohort.dashboard import ActionError, DashboardServer, run_action  # noqa: E402
+from test_dashboard import tree_hash  # noqa: E402
+
+
+@pytest.fixture
+def fake_life(monkeypatch):
+    """Inject a fake WS-A ``cohort.life`` module that only records its calls (it
+    performs no write), so a dispatch test proves the dashboard routes to the
+    verb and holds no mutation logic of its own."""
+    import cohort
+
+    calls = []
+    mod = types.ModuleType("cohort.life")
+
+    class LifeError(Exception):
+        pass
+
+    def _rec(name):
+        def fn(repo, **kw):
+            calls.append((name, Path(repo), kw))
+            return {"action": name, **kw}
+        return fn
+
+    mod.LifeError = LifeError
+    mod.do_toggle_task = _rec("toggle-task")
+    mod.do_set_top3 = _rec("set-top3")
+    mod.do_add_task = _rec("add-task")
+    mod.do_enqueue = _rec("enqueue")
+    monkeypatch.setitem(sys.modules, "cohort.life", mod)
+    monkeypatch.setattr(cohort, "life", mod, raising=False)
+    return calls
+
+
+def test_life_toggle_dispatches_verb_and_writes_nothing_inline(home, tmp_path, source, fake_life):
+    repo = make_life_project(tmp_path, source, home)
+    before = tree_hash(repo)
+    report = run_action(home, repo, "life-toggle-task", {"scope": "day-top3", "index": 1})
+    assert report["action"] == "toggle-task"
+    assert fake_life == [("toggle-task", repo, {"scope": "day-top3", "index": 1, "dry_run": False})]
+    # The dashboard performed no write of its own — the (stubbed) verb is the only
+    # writer, and it wrote nothing, so the tree is byte-identical.
+    assert tree_hash(repo) == before
+
+
+def test_life_set_top3_and_add_task_dispatch(home, tmp_path, source, fake_life):
+    repo = make_life_project(tmp_path, source, home)
+    run_action(home, repo, "life-set-top3", {"items": ["ship", "sleep"]})
+    run_action(home, repo, "life-add-task", {"scope": "week-plan", "text": "  book dentist "})
+    assert fake_life[0] == ("set-top3", repo, {"items": ["ship", "sleep"], "dry_run": False})
+    assert fake_life[1] == ("add-task", repo, {"scope": "week-plan", "text": "book dentist", "dry_run": False})
+
+
+def test_life_enqueue_enforces_command_allowlist(home, tmp_path, source, fake_life):
+    repo = make_life_project(tmp_path, source, home)
+    run_action(home, repo, "life-enqueue", {"command": "briefing"})
+    assert fake_life[-1] == ("enqueue", repo, {"command": "briefing", "dry_run": False})
+    # a name that isn't an allowlisted command is refused before the verb is called
+    with pytest.raises(ActionError, match="not an enqueueable command"):
+        run_action(home, repo, "life-enqueue", {"command": "briefing --dangerously-skip"})
+    assert fake_life[-1][0] == "enqueue" and fake_life[-1][2]["command"] == "briefing"
+
+
+def test_life_toggle_rejects_unknown_scope_and_bad_index(home, tmp_path, source, fake_life):
+    repo = make_life_project(tmp_path, source, home)
+    with pytest.raises(ActionError, match="unknown toggle scope"):
+        run_action(home, repo, "life-toggle-task", {"scope": "../etc", "index": 0})
+    with pytest.raises(ActionError, match="index must be"):
+        run_action(home, repo, "life-toggle-task", {"scope": "day-top3", "index": "nope"})
+    assert fake_life == []  # nothing dispatched on a refusal
+
+
+def test_life_add_task_refuses_empty_text(home, tmp_path, source, fake_life):
+    repo = make_life_project(tmp_path, source, home)
+    with pytest.raises(ActionError, match="task text is empty"):
+        run_action(home, repo, "life-add-task", {"scope": "week-plan", "text": "   "})
+    assert fake_life == []
+
+
+def test_life_action_without_ws_a_module_refuses_cleanly(home, tmp_path, source):
+    # No cohort.life module installed yet (WS-A) → a clean refusal, never a 500.
+    repo = make_life_project(tmp_path, source, home)
+    with pytest.raises(ActionError, match="not available yet"):
+        run_action(home, repo, "life-toggle-task", {"scope": "day-top3", "index": 0})
+
+
+@pytest.fixture
+def life_server(home, tmp_path, source):
+    repo = make_life_project(tmp_path, source, home)
+    srv = DashboardServer(home, repo, 0)
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    yield srv, repo
+    srv.shutdown()
+    srv.server_close()
+
+
+def test_life_enqueue_over_http_dispatches(life_server, fake_life):
+    srv, _ = life_server
+    status, data = request(srv, "POST", "/api/action", token=srv.token,
+                           body={"action": "life-enqueue", "args": {"command": "triage"}})
+    assert status == 200, data
+    assert json.loads(data)["action"] == "enqueue"
+    assert fake_life[-1][0] == "enqueue" and fake_life[-1][2]["command"] == "triage"
+
+
+def test_life_block_reaches_state_over_http(life_server):
+    srv, _ = life_server
+    status, data = request(srv, "GET", "/api/state", token=srv.token)
+    assert status == 200
+    state = json.loads(data)
+    assert "life" in state and state["life"]["briefing"]["untrusted"] is True

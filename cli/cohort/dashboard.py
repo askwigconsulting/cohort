@@ -50,7 +50,7 @@ from .improve import (
 )
 from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
-from .lifedata import collect_life, is_life
+from .lifedata import LIFE_COMMANDS, collect_life, is_life
 from .loader import load_artifact
 from .manifest import load_manifest
 from .inventory import inventory
@@ -365,6 +365,66 @@ def _str_list(value: Any) -> Optional[list]:
     return items or None
 
 
+# The interactive life verbs the dashboard dispatches to (RFC 0003 §4). Each is a
+# deterministic `cohort life <verb>` markdown writer / job-request writer owned by
+# WS-A (#158); the dashboard resolves an ENUMERATED, integer-addressed target
+# (never a raw client path) and calls the do_* function — it holds no mutation
+# logic of its own, exactly as with do_snapshot.
+_LIFE_ACTIONS = frozenset({"life-toggle-task", "life-set-top3", "life-add-task", "life-enqueue"})
+_LIFE_SCOPES = ("day-top3", "week-plan")  # enumerated checklist targets (no free path/name)
+
+
+def _int_index(value: Any) -> int:
+    try:
+        i = int(value)
+    except (TypeError, ValueError):
+        raise ActionError("index must be an integer")
+    if i < 0:
+        raise ActionError("index must be non-negative")
+    return i
+
+
+def _life_action(action: str, repo: Path, args: dict[str, Any]) -> dict[str, Any]:
+    """Dispatch one `cohort life` verb, resolving an enumerated target from the UI.
+
+    The dashboard adds NO mutation logic: it validates a bounded, integer-addressed
+    descriptor and calls a WS-A ``do_*`` function (which resolves the actual
+    ``days/``/``weeks/`` target by enumeration and performs the deterministic
+    write). Until WS-A (#158) lands the ``life`` module, these actions refuse
+    cleanly rather than 500.
+    """
+    try:
+        from . import life  # WS-A: cohort/life.py
+    except ImportError:
+        raise ActionError("cohort life verbs are not available yet (provided by WS-A #158)")
+    life_error = getattr(life, "LifeError", ())  # WS-A's declared refusal type, if any
+    try:
+        if action == "life-toggle-task":
+            scope = str(args.get("scope", ""))
+            if scope not in _LIFE_SCOPES:
+                raise ActionError(f"unknown toggle scope {scope!r}")
+            return life.do_toggle_task(repo, scope=scope, index=_int_index(args.get("index")),
+                                       dry_run=False)
+        if action == "life-set-top3":
+            return life.do_set_top3(repo, items=_str_list(args.get("items")) or [], dry_run=False)
+        if action == "life-add-task":
+            text = str(args.get("text", "")).strip()
+            if not text:
+                raise ActionError("task text is empty")
+            scope = str(args.get("scope", "week-plan"))
+            if scope not in _LIFE_SCOPES:
+                raise ActionError(f"unknown task scope {scope!r}")
+            return life.do_add_task(repo, scope=scope, text=text, dry_run=False)
+        if action == "life-enqueue":
+            command = str(args.get("command", ""))
+            if command not in LIFE_COMMANDS:
+                raise ActionError(f"{command!r} is not an enqueueable command")
+            return life.do_enqueue(repo, command=command, dry_run=False)
+    except life_error as exc:  # noqa: E722 - WS-A refusal (or () when undeclared)
+        raise ActionError(str(exc))
+    raise ActionError(f"unknown life action {action!r}")
+
+
 def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict[str, Any]:
     """Dispatch one human-initiated action to the same function the CLI uses.
 
@@ -473,6 +533,8 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
                 str(args.get("name", "")), body=args.get("body") or None,
                 description=args.get("description") or None, layer=_to_layer(args),
             )
+        elif action in _LIFE_ACTIONS:
+            report = _life_action(action, repo, args)
         else:
             raise ActionError(f"unknown action {action!r}")
     except _ACTION_ERRORS as exc:
