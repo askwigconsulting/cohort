@@ -644,10 +644,17 @@ def _project_wiring(repo: Path) -> str:
     return "present" if inner.strip() in valid else "diverged"
 
 
-def list_projects(home: Path) -> list[dict[str, Any]]:
+def list_projects(home: Path, include_private: bool = True) -> list[dict[str, Any]]:
     """Registered projects, each with a health summary. Prunes (and rewrites)
     entries whose ``.cohort`` manifest is gone — a deleted/deinited repo drops off
-    the list on the next read. Read-only aside from that self-heal."""
+    the list on the next read. Read-only aside from that self-heal.
+
+    ``include_private=True`` (the default) enumerates every live project — this is
+    the registry read that CLI commands (``cohort run``/``cohort life``) rely on to
+    resolve their own repo, and a life project is private by default, so filtering
+    here would hide it from its own commands. The dashboard's office-wide surfaces
+    (switcher, ``resolve_registered``, cross-project activity/scorecards) pass
+    ``include_private=False`` to withhold private projects per RFC 0003 §4."""
     gp = CohortPaths.for_global(home)
     original = _read_registry(home)
     kept: list[str] = []
@@ -658,12 +665,9 @@ def list_projects(home: Path) -> list[dict[str, Any]]:
         if pp.cohort_home == gp.cohort_home or not pp.manifest.exists():
             continue  # dead or $HOME → prune
         kept.append(p)  # a live project stays registered (self-heal only prunes dead ones)
-        # A private project (dashboard.private — fail-safe true for the life
-        # template, RFC 0003 §4) is withheld from every office-wide surface. This
-        # one list feeds the switcher, resolve_registered, cross_project_activity,
-        # and cross_project_scorecards, so excluding it here excludes it from all
-        # of them. It stays registered — just never advertised in a work dashboard.
-        if is_private(pp.cohort_home):
+        # A private project stays registered but is withheld from office-wide
+        # dashboard surfaces (RFC 0003 §4) — never from the CLI resolution path.
+        if not include_private and is_private(pp.cohort_home):
             continue
         spec_dir = pp.canonical / "agents"
         specialists = sorted(x.stem for x in spec_dir.glob("*.md")) if spec_dir.exists() else []
@@ -688,7 +692,9 @@ def resolve_registered(home: Path, index: Any) -> Optional[Path]:
         i = int(index)
     except (TypeError, ValueError):
         return None
-    for entry in list_projects(home):
+    # Filter private (same as the switcher) so indices align and a private life
+    # project is never focusable from another dashboard's switcher (RFC 0003 §4).
+    for entry in list_projects(home, include_private=False):
         if entry["index"] == i:
             return Path(entry["path"])
     return None

@@ -207,7 +207,7 @@ def cross_project_activity(home: Path, limit: int = _ACTIVITY_LIMIT) -> list[dic
     newest-first, capped at ``limit``. Distinct from ``state["project"]["sessions"]``
     below, which is the focused project's own feed."""
     merged: list[dict[str, Any]] = []
-    for proj in list_projects(home):
+    for proj in list_projects(home, include_private=False):
         paths = CohortPaths.for_project(Path(proj["path"]))
         for entry in load_session_entries(paths):
             merged.append({
@@ -228,7 +228,7 @@ def cross_project_scorecards(home: Path) -> list[dict[str, Any]]:
     (the dated half of the ``aggregate_signals`` shared extraction) and scores the
     merged entries with ``improve.agent_scorecards``."""
     entries: list[dict[str, Any]] = []
-    for proj in list_projects(home):
+    for proj in list_projects(home, include_private=False):
         paths = CohortPaths.for_project(Path(proj["path"]))
         entries.extend(load_feedback_entries(paths))
     return agent_scorecards(entries)
@@ -245,7 +245,7 @@ def collect_state(
     client path)."""
     focused = resolve_registered(home, project_index) if project_index is not None else None
     state = do_status(home, focused if focused is not None else cwd)
-    state["projects"] = list_projects(home)
+    state["projects"] = list_projects(home, include_private=False)
     state["focused_project"] = state.get("project", {}).get("repo")
     state["version"] = __version__
     # Cross-project views (#145): office-wide, independent of the focused project —

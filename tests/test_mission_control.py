@@ -321,13 +321,20 @@ def test_private_life_project_refused_by_resolve_registered(home, tmp_path, sour
 
     work = inited_repo(tmp_path, source, home, name="work-repo")
     life = make_life_project(tmp_path, source, home)
-    listed = {p["path"] for p in list_projects(home)}
-    assert str(work) in listed and str(life) not in listed
-    # every advertised index resolves to a non-life repo; the life index is unlisted
-    for entry in list_projects(home):
-        assert resolve_registered(home, entry["index"]) == Path(entry["path"])
+    # dashboard-facing surfaces (include_private=False) withhold the private life project
+    public = {p["path"] for p in list_projects(home, include_private=False)}
+    assert str(work) in public and str(life) not in public
+    # ...but the CLI resolution path (the default) still sees it, so a private life
+    # project remains resolvable by its own `cohort run`/`cohort life` commands
+    all_paths = {p["path"] for p in list_projects(home)}
+    assert str(work) in all_paths and str(life) in all_paths
+    # every advertised (public) index resolves to its own non-life repo; the life
+    # project is unlisted there, so the switcher can never focus it
+    for entry in list_projects(home, include_private=False):
+        resolved = resolve_registered(home, entry["index"])
+        assert resolved == Path(entry["path"]) and resolved != life
     # the life project stays in the registry (not pruned) — re-listing is stable
-    assert {p["path"] for p in list_projects(home)} == listed
+    assert {p["path"] for p in list_projects(home)} == all_paths
 
 
 # === interactive life dispatch (edit + enqueue) ==============================
@@ -426,10 +433,12 @@ def test_life_add_task_refuses_empty_text(home, tmp_path, source, fake_life):
     assert fake_life == []
 
 
-def test_life_action_without_ws_a_module_refuses_cleanly(home, tmp_path, source):
-    # No cohort.life module installed yet (WS-A) → a clean refusal, never a 500.
+def test_life_action_with_bad_input_refuses_cleanly(home, tmp_path, source):
+    # A malformed life action surfaces as a clean refusal (400 → ActionError),
+    # never an unhandled 500. (WS-A's life module is on master now, so the write
+    # path is real; bad args must still fail closed.)
     repo = make_life_project(tmp_path, source, home)
-    with pytest.raises(ActionError, match="not available yet"):
+    with pytest.raises(ActionError):
         run_action(home, repo, "life-toggle-task", {"scope": "day-top3", "index": 0})
 
 
