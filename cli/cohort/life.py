@@ -420,7 +420,7 @@ def _start_job(
         return
     running[command] = _RunningJob(command, job_file, proc, out, output)
     _update_job(job_file, status="running", started_at=now_iso(),
-                output=str(output.relative_to(root)))
+                output=output.relative_to(root).as_posix())  # POSIX slashes: portable job record
     summary["started"].append(job_file.name)
     say(f"cohort run: started {command} → {output.relative_to(root)}")
 
