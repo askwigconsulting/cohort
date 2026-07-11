@@ -85,6 +85,14 @@ from .specialists import (
     prompt_add_specialist_inputs,
 )
 from .dashboard import do_dashboard
+from .life import (
+    LifeError,
+    do_add_task,
+    do_enqueue,
+    do_run,
+    do_set_top3,
+    do_toggle_task,
+)
 from .status import do_status
 from .trial import TryError, do_try
 
@@ -933,6 +941,10 @@ def _emit(report: dict, json_output: bool, human) -> None:
 def init(
     ctx: typer.Context,
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
+    template: Optional[str] = typer.Option(
+        None, "--template",
+        help="Project template: 'life' (RFC 0003 personal agentic OS); omit for a code project.",
+    ),
     force: bool = typer.Option(False, "--force", help="Restore Cohort blocks the user removed/edited."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan; change nothing."),
     json_output: bool = typer.Option(False, "--json"),
@@ -954,14 +966,29 @@ def init(
             err=True,
         )
         raise typer.Exit(code=2)
-    report = do_init(repo, source_path, effective_dry_run, force, home=Path.home())
+    report = do_init(
+        repo, source_path, effective_dry_run, force, home=Path.home(), template=template
+    )
+    if "error" in report:
+        typer.echo(f"error: {report['error']}", err=True)
+        raise typer.Exit(code=1)
 
     def human(r: dict) -> None:
         for op in r["ops"]:
             typer.echo(f"{op['status']:>8}  {op['op']} {op['dest']}")
         s = r["summary"]
         typer.echo(f"init: applied {s['applied']} · skipped {s['skipped']}")
-        if not r.get("dry_run"):
+        for rel in r.get("life_data") or []:
+            typer.echo(f"{'planned' if r.get('dry_run') else 'seeded':>8}  data {rel}")
+        if not r.get("dry_run") and r.get("template") == "life":
+            typer.echo(
+                "life project ready (private by default; never push to a public remote). "
+                "Copy .mcp.json.example to .mcp.json to configure connectors; the "
+                "scaffolded .claude/settings*.json profiles keep every outbound tool "
+                "denied. Life data (inbox.md, goals/, weeks/, days/) is yours — deinit "
+                "never removes it."
+            )
+        elif not r.get("dry_run"):
             typer.echo(
                 "project office ready: .cohort/project_context.md is now loaded into this "
                 "repo's Claude memory; the global roster is unchanged. Next: /project-setup "
@@ -1046,6 +1073,8 @@ def deinit(
         )
 
     _emit(report, json_output, human)
+    if report.get("life_data_note"):
+        typer.echo(f"warning: {report['life_data_note']}", err=True)
     raise typer.Exit(code=0)
 
 
@@ -1063,6 +1092,117 @@ def projects(json_output: bool = typer.Option(False, "--json")) -> None:
         wiring = "" if it["wiring"] == "present" else f" · wiring {it['wiring']}"
         typer.echo(f"  {it['name']}  ({it['specialists']} specialist"
                    f"{'s' if it['specialists'] != 1 else ''}{wiring})  {it['path']}")
+    raise typer.Exit(code=0)
+
+
+# --- life project verbs + the foreground job runner (RFC 0003 §4) -----------
+
+life_app = typer.Typer(
+    add_completion=False,
+    help="Life-project verbs: deterministic markdown writes to enumerated targets "
+    "(today | week | inbox — names, never paths), plus bounded job requests.",
+    no_args_is_help=True,
+)
+app.add_typer(life_app, name="life")
+
+
+def _life_call(call, json_output: bool, human) -> None:
+    try:
+        report = call()
+    except LifeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+@life_app.command("add-task")
+def life_add_task(
+    target: str = typer.Argument(..., help="today | week | inbox (enumerated; never a path)."),
+    text: str = typer.Argument(..., help="The task text (one line)."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Append `- [ ] <text>` to today's Top 3, this week's Plan, or the inbox."""
+    _life_call(
+        lambda: do_add_task(find_repo_root(Path.cwd()), target, text),
+        json_output,
+        lambda r: typer.echo(f"life add-task: {r['file']} ← {r['text']}"),
+    )
+
+
+@life_app.command("toggle-task")
+def life_toggle_task(
+    target: str = typer.Argument(..., help="today | week | inbox (enumerated; never a path)."),
+    line: int = typer.Argument(..., help="1-based checklist item number (file order)."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Toggle the N-th checklist item in an enumerated target between open and done."""
+    _life_call(
+        lambda: do_toggle_task(find_repo_root(Path.cwd()), target, line),
+        json_output,
+        lambda r: typer.echo(
+            f"life toggle-task: {r['file']} #{r['line']} → "
+            f"{'done' if r['checked'] else 'open'}"
+        ),
+    )
+
+
+@life_app.command("set-top3")
+def life_set_top3(
+    items: list[str] = typer.Argument(..., help="1–3 task texts for today's Top 3."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Replace today's `## Top 3` with the given items (creates the day file)."""
+    _life_call(
+        lambda: do_set_top3(find_repo_root(Path.cwd()), list(items)),
+        json_output,
+        lambda r: typer.echo(f"life set-top3: {r['file']} ← {len(r['items'])} item(s)"),
+    )
+
+
+@life_app.command("enqueue")
+def life_enqueue(
+    command: str = typer.Argument(..., help="Allowlisted job command (briefing | triage)."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Write a bounded job request to .cohort/jobs/ (executed only by `cohort run`)."""
+    _life_call(
+        lambda: do_enqueue(find_repo_root(Path.cwd()), command),
+        json_output,
+        lambda r: typer.echo(
+            f"life enqueue: {r['job']} — start `cohort run` in this repo to execute it"
+        ),
+    )
+
+
+@app.command("run")
+def run_jobs(
+    once: bool = typer.Option(False, "--once", help="Drain the current queue, then exit."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Foreground life-job runner: watch .cohort/jobs/ and execute allowlisted commands.
+
+    The ONLY thing that spawns `claude` (the dashboard never does): constant argv
+    per command, runner-pinned egress-closed settings profile, minimal env, cwd
+    pinned from the project registry, per-job timeout, single-flight per command,
+    children terminated on exit. Runs until Ctrl-C (or the queue drains, with
+    --once); it dies with your terminal.
+    """
+    try:
+        report = do_run(
+            Path.home(), Path.cwd(), once=once,
+            echo=None if json_output else (lambda m: typer.echo(m)),
+        )
+    except LifeError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(_json.dumps(report, indent=2))
+    else:
+        typer.echo(
+            f"cohort run: started {len(report['started'])} · finished "
+            f"{len(report['finished'])} · rejected {len(report['rejected'])}"
+        )
     raise typer.Exit(code=0)
 
 
@@ -1582,7 +1722,27 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
             )
         if "project" in r:
             p = r["project"]
-            typer.echo(f"Project: {p['repo']}")
+            tmpl = f" (template: {p['template']})" if p.get("template") else ""
+            typer.echo(f"Project: {p['repo']}{tmpl}")
+            conn = p.get("connectors")
+            if conn is not None:
+                if not conn.get("mcp_json"):
+                    typer.echo(
+                        "  connectors: none configured — copy .mcp.json.example to "
+                        ".mcp.json and complete OAuth (read-only scopes)"
+                    )
+                elif conn.get("parse_error"):
+                    typer.echo("  ! .mcp.json is not valid JSON — connectors unreadable", err=True)
+                else:
+                    keys = ", ".join(conn.get("configured_keys") or []) or "(no servers)"
+                    typer.echo(f"  connectors: {keys}")
+                    for k in conn.get("missing_keys") or []:
+                        typer.echo(
+                            f"  ! the permission profile references server key {k!r} but "
+                            f".mcp.json does not define it — every mcp__{k}__* rule "
+                            "silently matches nothing",
+                            err=True,
+                        )
             specs = p.get("specialists", [])
             typer.echo(f"  specialists: {', '.join(specs) or '-'}")
             for s in p.get("shadowed", []):
@@ -1875,9 +2035,10 @@ def distill(
 
     def _confirm(diff: str) -> bool:
         # The diff is the review gate; print it (already control-char-escaped) to
-        # stderr so stdout stays clean for --json, then prompt.
+        # stderr so stdout stays clean for --json, then prompt. The diff header
+        # names the target (project_context.md, or the week file in a life project).
         typer.echo(diff, err=True)
-        return typer.confirm("Append this distilled section to project_context.md?")
+        return typer.confirm("Append this distilled section?")
 
     report = do_distill(
         find_repo_root(Path.cwd()), days, effective_dry_run,
@@ -1896,10 +2057,11 @@ def distill(
         raise typer.Exit(code=0)
 
     def human(r: dict) -> None:
+        target = r.get("target", "project_context.md")
         if r.get("applied"):
-            typer.echo(f"distill: appended '## {r['header']}' to project_context.md")
+            typer.echo(f"distill: appended '{r['header']}' to {target}")
         else:
-            typer.echo("distill: declined — project_context.md unchanged.")
+            typer.echo(f"distill: declined — {target} unchanged.")
 
     _emit(report, json_output, human)
     raise typer.Exit(code=0)
