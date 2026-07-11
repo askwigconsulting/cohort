@@ -209,6 +209,47 @@ computer awake** in Desktop settings or expect the brief to arrive as a wake-tim
   interactively. Verify anything material against the authoritative source before acting, and
   route anything binding to compliance leadership or counsel.
 
+### 4. Life-project morning briefing (`template = "life"` only)
+
+This recipe is different from the other three: it doesn't use the restricted profile from
+[Setting the permission profile](#setting-the-permission-profile) above, doesn't consult an office
+agent, and applies only inside a `cohort init --template life` project (RFC 0003 — see
+[docs/life-connectors.md](life-connectors.md) for full setup). It runs the canonical **`/briefing`**
+command instead — the one rhythm command whose entire text is written to be `claude -p`-clean, with
+no mid-run interactive prompt anywhere in it.
+
+- **Schedule:** Daily, e.g. 7:00 AM local.
+- **Command run:** `/briefing` (not `/today` — `/today` is interactive and must never be
+  scheduled).
+- **Permission profile:** the life template's own `.claude/settings.briefing.json` (project
+  `.claude/settings.json` recommended so the restriction travels with the project) — enumerated
+  Gmail/Calendar read tools only, `Bash`/`WebFetch`/`WebSearch` denied, writes confined to
+  `Write(.cohort/reports/briefings/**)`, `defaultMode: dontAsk`. This is a stricter, MCP-aware
+  profile than the generic research recipes above use; see
+  [docs/life-connectors.md](life-connectors.md#the-two-permission-profiles) for its full contents
+  and what relaxing any one rule costs.
+- **Instructions (task prompt):** `/briefing`
+- **Output location:** `.cohort/reports/briefings/<YYYY-MM-DD>.md`.
+- **Before scheduling:** complete OAuth interactively at least once (`/mcp` → Authenticate for
+  `gmail` and `calendar`) — the cached grant is what a headless run reuses; a scheduled task cannot
+  complete OAuth itself. The cached token is long-lived: revoke it at your Google Account →
+  Security → Third-party access if you ever need to cut access off, not by deleting local files
+  (pair this with the read-only scopes from the setup guide, so a replayed token still can't
+  write). If the token expires, the run will simply fail to read mail/calendar that day — it does
+  not fail loudly by default, so check the briefing file's `## Calendar`/`## Mail` sections
+  occasionally for a "not connected" note.
+- **What the human does with it:** Same discipline as every recipe on this page — read it, never
+  `@import` it, never paste it into `project_context.md` unreviewed. `.cohort/reports/briefings/`
+  is separately gitignored by the life template scaffold (not the `research/` rule below);
+  `docs/life-connectors.md`'s verify-before-trust checklist confirms this before you trust the
+  recipe unattended.
+
+**Nothing Cohort ships runs unattended, unchanged from the framing above:** the actor is your own
+scheduled Desktop session, running the same `/briefing` command text you could run by hand — a
+Claude Code Desktop scheduled task remains the only fit for the same reasons as the other three
+recipes (local install, per-task permission control); Cloud Routines and Codex/Cursor remain
+declared unfit.
+
 ## `.gitignore` guidance
 
 `.cohort/reports/` is not new — `cohort weekly-report` and `cohort monthly-report` already write

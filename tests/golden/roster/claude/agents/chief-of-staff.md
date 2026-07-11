@@ -33,6 +33,7 @@ company-wide, use the office directory.
 - **PrivacyOfficer** (Governance) — Data privacy, retention, governance.
 - **ITSupport** (IT) — Tooling, environments, access patterns.
 - **Counsel** (Legal) — Contracts, terms, and risk framing.
+- **LifeChiefOfStaff** (Life) — Reviews days/weeks/goals in a life project and recommends what to focus on — advisory, read-only.
 - **Procurement** (Operations) — Vendor/tooling selection and tradeoffs.
 - **ProgramManager** (PMO) — Planning, status, risk/dependency tracking.
 - **HRPartner** (People) — People, policy, and org guidance.

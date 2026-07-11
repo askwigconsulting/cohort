@@ -193,9 +193,9 @@ def test_real_codex_gap_file_loads():
 def test_multi_ide_install_three_offices(home):
     proc = run_cli("recompile", "--ide", "claude,codex,cursor", "--source", str(COHORT_SRC), home=home)
     assert proc.returncode == 0, proc.stderr
-    assert len(list((home / ".claude" / "agents").glob("*.md"))) == 17
-    assert len(list((home / ".codex" / "agents").glob("*.toml"))) == 17
-    assert len(list((home / ".cursor" / "agents").glob("*.md"))) == 17
+    assert len(list((home / ".claude" / "agents").glob("*.md"))) == 18
+    assert len(list((home / ".codex" / "agents").glob("*.toml"))) == 18
+    assert len(list((home / ".cursor" / "agents").glob("*.md"))) == 18
 
 
 def test_recompile_multi_ide_byte_stable(home):
