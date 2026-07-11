@@ -27,6 +27,7 @@ import os
 import secrets
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
@@ -49,6 +50,7 @@ from .improve import (
 )
 from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
+from .lifedata import collect_life, is_life
 from .loader import load_artifact
 from .manifest import load_manifest
 from .inventory import inventory
@@ -274,12 +276,20 @@ def collect_state(
     state["inventory"] = items
 
     if "project" in state:
-        ppaths = CohortPaths.for_project(Path(state["project"]["repo"]))
+        repo = Path(state["project"]["repo"])
+        ppaths = CohortPaths.for_project(repo)
         state["project"]["specialist_cards"] = _agent_cards(ppaths.canonical / "agents")
         state["project"]["signals"] = aggregate_signals(ppaths)
         state["project"]["proposals"] = _recent(ppaths.cohort_home / "proposals", _proposal_entry)
         state["project"]["feedback"] = _recent(ppaths.cohort_home / "feedback", _feedback_entry)
         state["project"]["sessions"] = _recent(ppaths.cohort_home / "sessions", _session_entry)
+        # Interactive mission control (RFC 0003 §4): when the focused project is a
+        # life template, attach the Today/Week/Goals views + the quarantine feed.
+        # "Today"/"this week" resolve from ONE timezone-aware datetime computed
+        # here (never mid-logic) so the server and an interactive session agree.
+        if is_life(ppaths.cohort_home):
+            now = datetime.now().astimezone()
+            state["life"] = collect_life(repo, ppaths.cohort_home, now)
     return state
 
 

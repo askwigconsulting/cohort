@@ -19,6 +19,7 @@ from typing import Any, Optional
 from .executor import apply, preflight, reverse_full
 from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths, Op, OpType
+from .lifedata import is_private
 from .loader import load_artifact
 from .manifest import Manifest, load_manifest, new_install_id, now_iso
 
@@ -656,16 +657,23 @@ def list_projects(home: Path) -> list[dict[str, Any]]:
         pp = CohortPaths.for_project(repo)
         if pp.cohort_home == gp.cohort_home or not pp.manifest.exists():
             continue  # dead or $HOME → prune
+        kept.append(p)  # a live project stays registered (self-heal only prunes dead ones)
+        # A private project (dashboard.private — fail-safe true for the life
+        # template, RFC 0003 §4) is withheld from every office-wide surface. This
+        # one list feeds the switcher, resolve_registered, cross_project_activity,
+        # and cross_project_scorecards, so excluding it here excludes it from all
+        # of them. It stays registered — just never advertised in a work dashboard.
+        if is_private(pp.cohort_home):
+            continue
         spec_dir = pp.canonical / "agents"
         specialists = sorted(x.stem for x in spec_dir.glob("*.md")) if spec_dir.exists() else []
         out.append({
-            "index": len(kept),
+            "index": len(out),
             "path": p,
             "name": repo.name,
             "specialists": len(specialists),
             "wiring": _project_wiring(repo),
         })
-        kept.append(p)
     if kept != original:
         _write_registry(home, kept)
     return out

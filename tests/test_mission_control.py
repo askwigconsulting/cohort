@@ -246,3 +246,84 @@ def test_code_project_is_not_private_and_not_life(tmp_path):
     (ch / "cohort.toml").write_text("staleness_hours = 24\n", encoding="utf-8")
     assert lifedata.is_life(ch) is False
     assert lifedata.is_private(ch) is False
+
+
+# === collect_state life extension + private exclusion ========================
+
+import shutil  # noqa: E402
+
+from cohort.dashboard import collect_state  # noqa: E402
+
+
+def make_life_project(tmp_path, source, home, name="my_life"):
+    """A registered life project: an inited repo with the §1a fixture data copied
+    in and cohort.toml marked template=life (dashboard.private defaults true)."""
+    repo = make_git_repo(tmp_path / name)
+    run_cli("init", "--source", str(source), home=home, cwd=repo)
+    for sub in ("days", "weeks", "goals"):
+        shutil.copytree(FIXTURE_LIFE / sub, repo / sub)
+    shutil.copytree(
+        FIXTURE_LIFE / ".cohort" / "reports", repo / ".cohort" / "reports"
+    )
+    # mark the project as a life template (init wrote a code cohort.toml)
+    (repo / ".cohort" / "cohort.toml").write_text(
+        (FIXTURE_LIFE / ".cohort" / "cohort.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    return repo
+
+
+def test_collect_state_attaches_life_block_for_life_template(home, tmp_path, source):
+    repo = make_life_project(tmp_path, source, home)
+    state = collect_state(home, repo)
+    assert "life" in state
+    life = state["life"]
+    assert life["today"]["date"] == life["date"]  # server's once-computed today
+    assert set(life) >= {"today", "week", "goals", "briefing", "quarantine", "jobs", "commands"}
+    # the untrusted briefing is surfaced verbatim (rendered textContent-only client-side)
+    assert life["briefing"]["untrusted"] is True
+    assert "<script>" in life["briefing"]["text"]  # not sanitized server-side; CSP + textContent are the control
+    assert "briefing" in life["commands"]
+
+
+def test_collect_state_no_life_block_for_code_project(home, tmp_path, source):
+    repo = inited_repo(tmp_path, source, home)
+    state = collect_state(home, repo)
+    assert "life" not in state
+
+
+def test_private_life_project_excluded_from_switcher_activity_scorecards(home, tmp_path, source):
+    # A public work project AND a private life project both registered; the life
+    # project must not appear in projects (switcher), activity, or scorecards.
+    work = inited_repo(tmp_path, source, home, name="work-repo")
+    run_cli("snapshot", home=home, cwd=work)
+    run_cli("feedback", "--rating", "up", "--agent", "counsel", home=home, cwd=work)
+    life = make_life_project(tmp_path, source, home)
+    run_cli("snapshot", home=home, cwd=life)
+    run_cli("feedback", "--rating", "down", "--agent", "counsel", home=home, cwd=life)
+
+    # focus a neutral third cwd so the office-wide surfaces stand alone
+    plain = make_git_repo(tmp_path / "plain")
+    state = collect_state(home, plain)
+    project_paths = {p["path"] for p in state["projects"]}
+    assert str(work) in project_paths
+    assert str(life) not in project_paths  # withheld from the switcher / overview
+    # activity: only the work project's session, never the life project's
+    assert all(entry["project"] != "my_life" for entry in state["activity"])
+    assert any(entry["project"] == "work-repo" for entry in state["activity"])
+    # scorecards: counsel counted once (the work up-vote), the life down-vote excluded
+    counsel = [c for c in state["scorecards"] if c["agent"] == "counsel"]
+    assert counsel and counsel[0]["up"] == 1 and counsel[0]["down"] == 0
+
+
+def test_private_life_project_refused_by_resolve_registered(home, tmp_path, source):
+    from cohort.project import list_projects, resolve_registered
+
+    work = inited_repo(tmp_path, source, home, name="work-repo")
+    life = make_life_project(tmp_path, source, home)
+    listed = {p["path"] for p in list_projects(home)}
+    assert str(work) in listed and str(life) not in listed
+    # every advertised index resolves to a non-life repo; the life index is unlisted
+    for entry in list_projects(home):
+        assert resolve_registered(home, entry["index"]) == Path(entry["path"])
+    # the life project stays in the registry (not pruned) — re-listing is stable
+    assert {p["path"] for p in list_projects(home)} == listed
