@@ -138,12 +138,40 @@ for the permission-scoped recipes, why the output lands in a gitignored, untrust
 `.cohort/reports/research/` folder, and why this is a user-configured IDE exception rather than
 a new Cohort write path.
 
+## Life projects (opt-in)
+
+Beyond code projects, Cohort can scaffold and operate a **life project** — a Cohort-managed
+project (canonically `my_life`) for day-to-day, week-to-week, and month-to-month organization,
+optionally connected to Gmail/Calendar/Drive via MCP. See
+[RFC 0003](docs/rfcs/0003-personal-agentic-os.md) for the full design; the load-bearing invariants
+carry over unchanged: stdlib-only, daemon-free, human-gated writes, external content untrusted,
+and **personal data never syncs into the office or my-office tiers** — `dashboard.private = true`
+is the fail-safe default, excluding a life project from the cross-project switcher, activity feed,
+and scorecards.
+
+Five canonical rhythm commands ship for a `template = "life"` project: `/today` (interactive —
+draft the day from calendar, inbox, and the latest briefing), `/briefing` (the only command safe to
+run unattended — reads calendar + mail summaries, writes to a gitignored quarantine, nothing else),
+`/triage` (proposes dispositions for `inbox.md` with source citations; never sends, drafts,
+archives, or labels), `/week` (reviews last week, distills it, drafts next week's plan), and
+`/month` (rolls weeks up against goals — reads no connectors at all). One advisory agent,
+**LifeChiefOfStaff**, is the routing brain for "what should I focus on?"
+
+Connecting real Gmail/Calendar/Drive data requires reading
+[docs/life-connectors.md](docs/life-connectors.md) first — it covers the two read-only permission
+profiles, what relaxing any single rule costs, the plain-language disclosure (what leaves your
+machine and where), and the verify-before-trust checklist to run before trusting either profile
+with real data. Scheduling an unattended morning briefing is documented as [recipe 4 of
+docs/scheduled-research.md](docs/scheduled-research.md#4-life-project-morning-briefing-template--life-only),
+and `cohort run` (a human-started, foreground job runner — never spawned by the dashboard itself)
+is documented in [docs/life-connectors.md](docs/life-connectors.md#cohort-run--the-job-runner).
+
 ## Scope model
 
 | | The office | My office | This project |
 |---|---|---|---|
 | Lives in | the source clone's `canonical/` (placed via `~/.cohort/` + `~/.claude` etc.) | `~/.cohort/my/canonical/` | `<repo>/.cohort/` + `<repo>/.claude` |
-| Holds | the 17-agent roster, hooks, memories, skills | personal agents/memories (`add-agent`, `add-memory`, and `adopt` land here by default) | `project_context.md`, `sessions/`, project specialists, `proposals/`, `feedback/` |
+| Holds | the 18-agent roster, hooks, memories, skills | personal agents/memories (`add-agent`, `add-memory`, and `adopt` land here by default) | `project_context.md`, `sessions/`, project specialists, `proposals/`, `feedback/` |
 | Git-tracked | the Cohort source repo | no — yours to `git init` if you want history | the consuming repo (except `state/`, `compiled/`) |
 | Touched by update | fast-forwarded | never | never |
 
@@ -192,7 +220,9 @@ without an explicit confirmation naming the target repo, and a `[tracker]` table
 The dev-workflow commands live here too: `/plan` · `/spec` · `/build` (the inner
 implement–test–verify loop) · `/test` · `/review` · `/ship`, and `/goal <issue>` — the issue-driven
 outer loop that builds on a branch, has an independent judge verify each acceptance criterion
-(max 3 rounds), and ends at a **draft** PR a human reviews.
+(max 3 rounds), and ends at a **draft** PR a human reviews. A `template = "life"` project (see
+[Life projects](#life-projects-opt-in)) adds five more: `/today` · `/briefing` · `/triage` ·
+`/week` · `/month`.
 
 ## Versioning
 
