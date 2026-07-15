@@ -58,3 +58,9 @@ def test_orchestrate_routes_all_four_tiers():
 def test_orchestrate_keeps_coordination_on_the_top_level_session():
     body = _compiled_orchestrate_body()
     assert "never delegates the plan or the signoff to a subagent" in body
+
+
+def test_orchestrate_falls_back_to_opus_when_fable_unavailable():
+    body = _compiled_orchestrate_body()
+    assert "the\nprotocol defaults to Opus" in body or "the protocol defaults to Opus" in body
+    assert "every fable-tier\ntask routes to opus" in body or "every fable-tier task routes to opus" in body

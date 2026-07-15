@@ -25,6 +25,10 @@ Coordination belongs on **Fable** — research, decomposition, routing, and sign
 the highest-judgment steps, so the top-level session should be the most capable model.
 If the current session is not running on Fable, say so and recommend `/model fable`
 before large work; then proceed regardless — never silently downgrade the protocol.
+**If Fable is unavailable — credits exhausted, model errors, or not offered — the
+protocol defaults to Opus**: Opus takes the coordinator role and every fable-tier
+task routes to opus instead. Tell the user the fallback is in effect; everything
+else in the protocol (the cap, the signoff, the isolation rule) is unchanged.
 The coordinator never delegates the plan or the signoff to a subagent.
 
 ## 1. Research — coordinator only
@@ -70,7 +74,9 @@ Launch independent tasks concurrently, dependent tasks in dependency order.
 **Never more than 10 agents in flight at once, across all tiers** — queue the rest.
 Parallel writers require disjoint file footprints or worktree isolation; when in
 doubt, serialize. If a worker stalls or dies, its task returns to the queue — the
-cap is on live agents, not total tasks.
+cap is on live agents, not total tasks. If a fable-tier launch fails mid-run for
+credit or availability reasons, reroute that task to opus and note it in the
+completion report.
 
 ## 5. Signoff — the coordinator verifies, never rubber-stamps
 
