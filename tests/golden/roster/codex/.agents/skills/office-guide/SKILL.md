@@ -21,6 +21,10 @@ agents (legal, finance, security, cloud, HR, and more) plus a ChiefOfStaff triag
   builds on a branch, then runs an independent judge that verifies each criterion and emits a
   verdict block; on FAIL the failing verdicts feed the next round (max 3). It ends at a **draft**
   PR — the human gate is PR review. `/goal` is human-invoked, never a synced doer.
+  `/orchestrate` is the **fan-out** loop for substantive work: the coordinating session
+  (run it on Fable) researches and plans, routes tasks to model tiers
+  (fable/opus/sonnet/haiku, max 10 agents in flight), and verifies every task's
+  acceptance criteria itself before signoff.
 - **Compounding memory.** `cohort distill [--days N]` rolls recent `sessions/` + `feedback/`
   into a dated, append-only `## Distilled` section of `project_context.md` — durable memory,
   distinct from `weekly-report` (a human report) and `propose-improvement` (a harness proposal).
