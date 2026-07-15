@@ -1,9 +1,12 @@
-# Cohort office memories
-
-<!-- Compiled from canonical memories; edit canonical and recompile. -->
-
-## Model orchestration
-
+---
+name: model-orchestration
+kind: memory
+scope: global
+description: The standard development pattern — Fable coordinates, tiered agents implement, Fable signs off.
+targets: [claude]
+priority: high
+display_name: Model orchestration
+---
 The standard pattern for substantive development work (multi-file changes, features,
 refactors) is the `/orchestrate` protocol: the coordinating session — which should run
 on **Fable** — does the research, planning, and coordination itself, then decomposes the
@@ -17,13 +20,3 @@ disjoint file footprints or worktree isolation. The coordinator verifies every t
 re-running tests, reading diffs — before marking it complete, and runs the full suite as
 an integration check at the end. Trivial single-file edits stay inline; invoke
 `/orchestrate` for anything larger.
-
-## Office routing
-
-A Cohort office of advisory specialist agents is installed in this environment. For questions that
-span business functions (legal, finance, HR, compliance, security posture, cloud architecture,
-procurement, communications), invoke the **ChiefOfStaff** agent first: it names the right
-specialist(s) to consult. Invoke those specialists yourself and hand their input back to
-ChiefOfStaff for one reconciled recommendation. Specialists are read-only and advisory — they
-recommend; the user decides. A repository may add its own project-scoped specialists under its
-`.claude/agents/`; invoke those directly by name.
