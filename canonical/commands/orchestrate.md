@@ -26,7 +26,8 @@ the highest-judgment steps, so the top-level session should be the most capable 
 If the current session is not running on Fable, say so and recommend `/model fable`
 before large work; then proceed regardless — never silently downgrade the protocol.
 **If Fable is unavailable — credits exhausted, model errors, or not offered — the
-protocol defaults to Opus**: Opus takes the coordinator role and every fable-tier
+protocol defaults to Opus**: Opus takes the coordinator role, operating in **Fable
+mode** (the five-gate discipline in the `fable-mode` memory), and every fable-tier
 task routes to opus instead. Tell the user the fallback is in effect; everything
 else in the protocol (the cap, the signoff, the isolation rule) is unchanged.
 The coordinator never delegates the plan or the signoff to a subagent.
@@ -66,7 +67,11 @@ Assign the cheapest tier that can do the task well; escalate on doubt:
 
 Each worker prompt must carry: the task, its acceptance criteria, its file footprint
 (and an instruction not to write outside it), the relevant context gathered in
-research, and `/build`'s discipline (test-first, run the suite, no dead code).
+research, `/build`'s discipline (test-first, run the suite, no dead code), and — for
+every non-fable worker — the **Fable-mode five gates** (scope before work, evidence
+before reasoning, reason adversarially, verify before declaring done, calibrate and
+report), stated in the prompt verbatim: a subagent does not inherit the `fable-mode`
+memory automatically.
 
 ## 4. Fan out — never more than 10 agents in flight
 
