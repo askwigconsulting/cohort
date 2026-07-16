@@ -62,6 +62,8 @@ HOOK_EVENT_MAP = {
     "post_write": "PostToolUse",
     "pre_command": "PreToolUse",
     "post_command": "PostToolUse",
+    "pre_compact": "PreCompact",
+    "post_compact": "PostCompact",
     "on_stale": "SessionStart",
 }
 

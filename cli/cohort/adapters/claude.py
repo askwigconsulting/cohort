@@ -64,6 +64,11 @@ HOOK_EVENT_MAP = {
     "post_write": ("PostToolUse", "Write|Edit|MultiEdit"),
     "pre_command": ("PreToolUse", "Bash"),
     "post_command": ("PostToolUse", "Bash"),
+    # Claude Code has no post-compaction event per se; SessionStart fires with
+    # source=compact right after compaction, and hook stdout enters the model's
+    # context — the doc-verified channel for post-compaction injection.
+    "pre_compact": ("PreCompact", ""),
+    "post_compact": ("SessionStart", "compact"),
     "on_stale": ("SessionStart", ""),
 }
 

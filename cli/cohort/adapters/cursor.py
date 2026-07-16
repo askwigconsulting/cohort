@@ -50,6 +50,10 @@ HOOK_EVENT_MAP = {
     "post_write": "postToolUse",
     "pre_command": "beforeShellExecution",
     "post_command": "afterShellExecution",
+    # Cursor has no post-compaction event: post_compact approximates to
+    # sessionStart, the same nearest-lifecycle-point rule as on_stale.
+    "pre_compact": "preCompact",
+    "post_compact": "sessionStart",
     "on_stale": "sessionStart",
 }
 
