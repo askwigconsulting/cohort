@@ -27,7 +27,6 @@ import os
 import secrets
 import threading
 import time
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from pathlib import Path
@@ -50,7 +49,6 @@ from .improve import (
 )
 from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
-from .lifedata import ENQUEUE_COMMANDS, collect_life, is_life
 from .loader import load_artifact
 from .manifest import load_manifest
 from .inventory import inventory
@@ -283,13 +281,6 @@ def collect_state(
         state["project"]["proposals"] = _recent(ppaths.cohort_home / "proposals", _proposal_entry)
         state["project"]["feedback"] = _recent(ppaths.cohort_home / "feedback", _feedback_entry)
         state["project"]["sessions"] = _recent(ppaths.cohort_home / "sessions", _session_entry)
-        # Interactive mission control (RFC 0003 §4): when the focused project is a
-        # life template, attach the Today/Week/Goals views + the quarantine feed.
-        # "Today"/"this week" resolve from ONE timezone-aware datetime computed
-        # here (never mid-logic) so the server and an interactive session agree.
-        if is_life(ppaths.cohort_home):
-            now = datetime.now().astimezone()
-            state["life"] = collect_life(repo, ppaths.cohort_home, now)
     return state
 
 
@@ -363,74 +354,6 @@ def _str_list(value: Any) -> Optional[list]:
     else:
         return None
     return items or None
-
-
-# The interactive life verbs the dashboard dispatches to (RFC 0003 §4), wired to
-# WS-A's FINAL `cohort life` signatures (cli/cohort/life.py, PR #160):
-#   do_add_task(repo, target, text)     do_toggle_task(repo, target, line)
-#   do_set_top3(repo, items)            do_enqueue(repo, command)
-# Each is a deterministic markdown / job-request writer owned by WS-A; the
-# dashboard resolves an ENUMERATED target from a fixed set (never a raw client
-# path) and calls the do_* function — it holds no mutation logic of its own,
-# exactly as with do_snapshot.
-_LIFE_ACTIONS = frozenset({"life-toggle-task", "life-set-top3", "life-add-task", "life-enqueue"})
-_LIFE_TARGETS = ("today", "week", "inbox")  # WS-A's enumerated write targets (no free path/name)
-
-
-def _life_target(args: dict[str, Any], default: Optional[str] = None) -> str:
-    target = str(args.get("target", default or ""))
-    if target not in _LIFE_TARGETS:
-        raise ActionError(f"unknown target {target!r} (expected one of {_LIFE_TARGETS})")
-    return target
-
-
-def _life_line(value: Any) -> int:
-    """A 1-based checklist line index (WS-A ``do_toggle_task`` file order)."""
-    try:
-        n = int(value)
-    except (TypeError, ValueError):
-        raise ActionError("line must be an integer")
-    if n < 1:
-        raise ActionError("line is 1-based")
-    return n
-
-
-def _life_action(action: str, repo: Path, args: dict[str, Any]) -> dict[str, Any]:
-    """Dispatch one `cohort life` verb, resolving an enumerated target from the UI.
-
-    The dashboard adds NO mutation logic: it validates a bounded, enumerated
-    descriptor and calls a WS-A ``do_*`` function (which resolves the actual
-    ``days/``/``weeks/``/``inbox`` target by enumeration and performs the
-    deterministic write). Until WS-A's ``life`` module is installed, these
-    actions refuse cleanly rather than 500. ``LifeError`` refusals (bad input,
-    Top-3-full, single-flight rejection) surface as a 400.
-    """
-    try:
-        from . import life  # WS-A: cohort/life.py
-    except ImportError:
-        raise ActionError("cohort life verbs are not available yet (provided by WS-A #158)")
-    life_error = getattr(life, "LifeError", ())  # WS-A's declared refusal type, if any
-    try:
-        if action == "life-toggle-task":
-            return life.do_toggle_task(repo, _life_target(args), _life_line(args.get("line")))
-        if action == "life-set-top3":
-            return life.do_set_top3(repo, _str_list(args.get("items")) or [])
-        if action == "life-add-task":
-            text = str(args.get("text", "")).strip()
-            if not text:
-                raise ActionError("task text is empty")
-            return life.do_add_task(repo, _life_target(args, default="week"), text)
-        if action == "life-enqueue":
-            command = str(args.get("command", ""))
-            if command not in ENQUEUE_COMMANDS:
-                raise ActionError(
-                    f"{command!r} is not an enqueueable command "
-                    f"(only {ENQUEUE_COMMANDS} run as jobs)"
-                )
-            return life.do_enqueue(repo, command)
-    except life_error as exc:  # noqa: E722 - WS-A refusal (or () when undeclared)
-        raise ActionError(str(exc))
-    raise ActionError(f"unknown life action {action!r}")
 
 
 def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -541,8 +464,6 @@ def run_action(home: Path, cwd: Path, action: str, args: dict[str, Any]) -> dict
                 str(args.get("name", "")), body=args.get("body") or None,
                 description=args.get("description") or None, layer=_to_layer(args),
             )
-        elif action in _LIFE_ACTIONS:
-            report = _life_action(action, repo, args)
         else:
             raise ActionError(f"unknown action {action!r}")
     except _ACTION_ERRORS as exc:

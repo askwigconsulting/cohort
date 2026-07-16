@@ -1,8 +1,0 @@
-# Cohort life project config (git-tracked). template + dashboard.private are read
-# fail-safe: absent template = code project; absent dashboard.private = private
-# (the life template is private by default).
-template = "life"
-staleness_hours = 168
-
-[dashboard]
-private = true

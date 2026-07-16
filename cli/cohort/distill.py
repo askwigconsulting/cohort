@@ -36,7 +36,6 @@ from typing import Any, Callable, Optional
 
 from .install_model import CohortPaths
 from .loader import load_artifact
-from .project import is_life_project
 from .reports import _utc_now, _to_utc, collect_sessions
 
 DEFAULT_DAYS = 30
@@ -169,46 +168,6 @@ def _diff(current: str, proposed: str, target: str = "project_context.md") -> st
     return _sanitize("\n".join(diff))
 
 
-# --- life-scoped target (RFC 0003 §5) ----------------------------------------
-#
-# In a `template = "life"` project the distill target is the current week file's
-# `## Review` section, and `project_context.md` is REFUSED as a target: the
-# project context is `@import`ed into every future session, so distilling
-# connector-adjacent session text into it would open a permanent injection
-# channel and a privacy leak. Input stays `sessions/` + `feedback/` only — never
-# the briefing quarantine.
-
-
-def _demote_headings(section: str) -> str:
-    """Shift the rendered section's headings one level down (## → ###, ### →
-    ####) so it nests *inside* the week file's ``## Review`` section."""
-    out = []
-    for ln in section.splitlines():
-        if ln.startswith("## ") or ln.startswith("### "):
-            out.append("#" + ln)
-        else:
-            out.append(ln)
-    return "\n".join(out) + "\n"
-
-
-def _insert_under_review(current: str, label: str, section: str) -> str:
-    """Append the section at the end of the week file's ``## Review`` section
-    (creating the §1a skeleton, or the heading, when missing)."""
-    from .life import WEEK_SKELETON  # life imports project, not distill — no cycle
-
-    if current.strip() == "":
-        current = WEEK_SKELETON.format(label=label)
-    lines = current.splitlines()
-    start = next((i for i, ln in enumerate(lines) if ln.strip() == "## Review"), None)
-    if start is None:
-        return current.rstrip("\n") + "\n\n## Review\n\n" + section
-    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("## ")),
-               len(lines))
-    head = "\n".join(lines[:end]).rstrip("\n")
-    tail = "\n".join(lines[end:]).rstrip("\n")
-    return head + "\n\n" + section + (("\n" + tail + "\n") if tail else "")
-
-
 def do_distill(
     repo: Path,
     days: int = DEFAULT_DAYS,
@@ -227,7 +186,6 @@ def do_distill(
     project_context = paths.cohort_home / "project_context.md"
     if not project_context.exists():
         return {"action": "distill", "error": "not a Cohort project (run cohort init)"}
-    life = is_life_project(paths)
     until = _utc_now()
     since = until - timedelta(days=days)
     sessions = collect_sessions(paths, since, until)
@@ -236,22 +194,10 @@ def do_distill(
         return {"action": "distill", "empty": True, "days": days}
     today = until.strftime("%Y-%m-%d")
     section = render_distilled_section(today, days, sessions, feedback)
-    if life:
-        # Life project: `project_context.md` is REFUSED as the distill target
-        # (see the section comment above) — the write goes to the current week
-        # file's `## Review`, resolved once in the user's local timezone.
-        from .life import local_today, week_label
-
-        label = week_label(local_today())
-        target_rel = f"weeks/{label}.md"
-        target_path = repo / target_rel
-        current = target_path.read_text(encoding="utf-8") if target_path.exists() else ""
-        proposed = _insert_under_review(current, label, _demote_headings(section))
-    else:
-        target_rel = "project_context.md"
-        target_path = project_context
-        current = project_context.read_text(encoding="utf-8")
-        proposed = _append_section(current, section)
+    target_rel = "project_context.md"
+    target_path = project_context
+    current = project_context.read_text(encoding="utf-8")
+    proposed = _append_section(current, section)
     diff = _diff(current, proposed, target_rel)
     if dry_run:
         return {"action": "distill", "dry_run": True, "empty": False, "target": target_rel,

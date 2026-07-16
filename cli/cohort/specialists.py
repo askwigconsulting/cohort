@@ -407,16 +407,6 @@ def do_promote(
     if to not in ("my", "office"):
         raise PromoteError(f"--to must be my|office, got {to!r}")
     paths = CohortPaths.for_project(repo)
-    # Personal data never crosses a sync boundary (RFC 0003): both promote
-    # destinations are synced tiers, so a life project has no promotion path at
-    # all — refuse on the cohort.toml marker, mirroring the doer guard below.
-    from .project import is_life_project
-
-    if is_life_project(paths):
-        raise PromoteError(
-            'this is a life project (template = "life"): its artifacts never promote '
-            "to a synced tier (my office / the shared office)"
-        )
     spec = paths.canonical / "agents" / f"{name}.md"
     if not spec.exists():
         raise PromoteError(

@@ -28,23 +28,6 @@ class AdoptError(Exception):
     """A refused adopt request (wrong location, collision, invalid result)."""
 
 
-def _refuse_life_source(path: Path) -> None:
-    """Personal data never crosses a sync boundary (RFC 0003): an artifact that
-    lives inside a ``template = "life"`` project must not lift into a synced tier
-    (my office / the shared office). The marker lives in the source project's
-    cohort.toml, not the artifact, so it is read here — mirroring the
-    doer-promotion guard."""
-    from .project import find_repo_root, is_life_project
-
-    repo = find_repo_root(path if path.is_dir() else path.parent)
-    if is_life_project(CohortPaths.for_project(repo)):
-        raise AdoptError(
-            f'{path} is inside a life project (template = "life" in {repo}/.cohort/'
-            "cohort.toml) — refusing to adopt it into a synced tier. Life-project "
-            "agents stay in the life project."
-        )
-
-
 _KIND_BY_DIR = {"agents": "agent", "commands": "command"}
 
 # Concrete model names found in the wild (#143) → nearest abstract tier. Substring
@@ -154,7 +137,6 @@ def do_adopt(
     path = path.resolve()
     if not path.is_file():
         raise AdoptError(f"{path} not found")
-    _refuse_life_source(path)  # adoption targets a SYNCED tier (my office)
     if path.stat().st_nlink > 1:
         # a pre-planted hardlink would copy some other file's content into the
         # (typically git-tracked) canonical tree — refuse the ambiguity
