@@ -60,7 +60,18 @@ def test_orchestrate_keeps_coordination_on_the_top_level_session():
     assert "never delegates the plan or the signoff to a subagent" in body
 
 
-def test_orchestrate_falls_back_to_opus_when_fable_unavailable():
+def test_orchestrate_opus_is_a_first_class_coordinator():
+    # A native Opus session orchestrates in its own right (not just a Fable
+    # fallback), operating in Fable mode with fable-tier work routed to opus.
     body = _compiled_orchestrate_body()
-    assert "the\nprotocol defaults to Opus" in body or "the protocol defaults to Opus" in body
-    assert "every fable-tier\ntask routes to opus" in body or "every fable-tier task routes to opus" in body
+    assert "coordinator-tier" in body
+    assert "not a degraded fallback" in body
+    assert "every fable-tier task routes to opus" in body
+
+
+def test_orchestrate_never_coordinates_below_opus():
+    # The pattern must never repeat on Sonnet/Haiku: recommend switching up.
+    body = _compiled_orchestrate_body()
+    flat = " ".join(_compiled_orchestrate_body().split())
+    assert "do not orchestrate" in body
+    assert "the pattern never repeats below Opus" in flat
