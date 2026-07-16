@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-16 · Remove the life feature
+
 ### Removed
 - Life-project feature (RFC 0003) — the `life` template, the `/today` `/briefing`
   `/triage` `/week` `/month` rhythm commands, the LifeChiefOfStaff agent, the
@@ -288,7 +290,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/askwigconsulting/cohort/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/askwigconsulting/cohort/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/askwigconsulting/cohort/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/askwigconsulting/cohort/compare/v0.3.0...v0.4.0
