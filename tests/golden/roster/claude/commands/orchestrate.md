@@ -12,16 +12,24 @@ review) are unchanged.
 
 ## 0. Coordinator model
 
-Coordination belongs on **Fable** — research, decomposition, routing, and signoff are
-the highest-judgment steps, so the top-level session should be the most capable model.
-If the current session is not running on Fable, say so and recommend `/model fable`
-before large work; then proceed regardless — never silently downgrade the protocol.
-**If Fable is unavailable — credits exhausted, model errors, or not offered — the
-protocol defaults to Opus**: Opus takes the coordinator role, operating in **Fable
-mode** (the five-gate discipline in the `fable-mode` memory), and every fable-tier
-task routes to opus instead. Tell the user the fallback is in effect; everything
-else in the protocol (the cap, the signoff, the isolation rule) is unchanged.
-The coordinator never delegates the plan or the signoff to a subagent.
+Research, decomposition, routing, and signoff are the highest-judgment steps, so
+orchestration runs only on a **coordinator-tier** model — **Fable (preferred) or Opus**.
+Both are first-class orchestrators; pick by which model is running the session:
+
+- **On Fable** — the ideal coordinator. Proceed.
+- **On Opus** — a full coordinator in its own right, not a degraded fallback. Orchestrate
+  directly, operating in **Fable mode** (the five-gate discipline in the `fable-mode`
+  memory). You may note that Fable suits the largest or most ambiguous work, but do not
+  stall to switch. When Opus coordinates, **every fable-tier task routes to opus** — Opus
+  is already the top model in the room — and everything else (the cap, the signoff, the
+  isolation rule) is unchanged.
+- **On Sonnet or Haiku — do not orchestrate.** Decomposition, routing, and adversarial
+  signoff are exactly the judgments a lower tier gets wrong, so **the pattern never
+  repeats below Opus.** Say so and recommend `/model opus` (or `fable`) before running
+  the protocol; if the user prefers to stay put, do the work inline rather than
+  coordinating a fan-out from a sub-Opus session.
+
+Whichever model coordinates never delegates the plan or the signoff to a subagent.
 
 ## 1. Research — coordinator only
 

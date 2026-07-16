@@ -2,21 +2,22 @@
 name: model-orchestration
 kind: memory
 scope: global
-description: The standard development pattern — Fable coordinates, tiered agents implement, Fable signs off.
+description: The standard development pattern — a Fable or Opus coordinator routes tiered agents and signs off; never orchestrate below Opus.
 targets: [claude]
 priority: high
 display_name: Model orchestration
 ---
 The standard pattern for substantive development work (multi-file changes, features,
-refactors) is the `/orchestrate` protocol: the coordinating session — which should run
-on **Fable** — does the research, planning, and coordination itself, then decomposes the
-work and routes each task to the cheapest capable model tier (**fable** for
-architecture-critical or ambiguous work, **opus** for complex implementation, **sonnet**
-for well-scoped implementation, **haiku** for mechanical work), with **never more than
-10 agents in flight at once**. If Fable is unavailable (credits exhausted, model
-errors, or not offered), the protocol defaults to **Opus** — Opus coordinates and
-fable-tier tasks route to opus; everything else is unchanged. Parallel workers need
-disjoint file footprints or worktree isolation. The coordinator verifies every task's acceptance criteria itself —
+refactors) is the `/orchestrate` protocol: a **coordinator-tier session — Fable
+(preferred) or Opus** — does the research, planning, and coordination itself, then
+decomposes the work and routes each task to the cheapest capable model tier (**fable**
+for architecture-critical or ambiguous work, **opus** for complex implementation,
+**sonnet** for well-scoped implementation, **haiku** for mechanical work), with **never
+more than 10 agents in flight at once**. A native **Opus** session orchestrates in its
+own right — not a degraded fallback — operating in Fable mode and routing fable-tier work
+to opus. **Never orchestrate below Opus**: on Sonnet or Haiku, recommend switching up
+before running the protocol rather than coordinating a fan-out from a lower tier. Parallel
+workers need disjoint file footprints or worktree isolation. The coordinator verifies every task's acceptance criteria itself —
 re-running tests, reading diffs — before marking it complete, and runs the full suite as
 an integration check at the end. On the hardest (fable-tier) work, bring in a second
 model: `/consult-gpt` gets an independent ChatGPT opinion (Codex CLI, read-only,
