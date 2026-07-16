@@ -38,6 +38,11 @@ Run the consult with the sandbox pinned read-only — never `workspace-write`, n
 codex exec --sandbox read-only "<prompt>"
 ```
 
+**Model choice:** consults use the CLI's default flagship model — never downgrade to a
+cheaper GPT for cost. The consult exists to put the strongest available skeptic against
+the hardest work, and it upgrades automatically as the Codex CLI's default advances;
+pin a model (`-m`) only when the user asks for one.
+
 Build the prompt to invite a real second opinion, not an echo:
 
 - the problem and its constraints, stated plainly;

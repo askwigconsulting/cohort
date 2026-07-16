@@ -58,6 +58,14 @@ def test_consult_gpt_requires_egress_consent_and_bans_secrets():
     assert "Never include secrets" in body
 
 
+def test_consult_gpt_never_downgrades_the_model_for_cost():
+    body = _consult_body()
+    assert "never downgrade to a\ncheaper GPT for cost" in body or (
+        "never downgrade to a cheaper GPT for cost" in body
+    )
+    assert "strongest available skeptic" in body
+
+
 def test_consult_gpt_degrades_gracefully_without_the_cli():
     body = _consult_body()
     assert "do not fail hard" in body
