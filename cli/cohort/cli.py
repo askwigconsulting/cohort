@@ -2150,6 +2150,25 @@ def session_capture_cmd() -> None:
     raise typer.Exit(code=0)
 
 
+COMPACT_RECALL_TEXT = """\
+Context was just compacted. Before resuming the task, commit the critical parts of
+the pre-compaction session to durable memory now: (1) decisions made and why;
+(2) in-flight work state — branches, PRs, pending approvals, unfinished steps;
+(3) unresolved questions and the user's directives stated this session. Write to
+your persistent memory directory, and offer `cohort snapshot` for repo-shared
+context. Skip anything already recorded; keep it to the facts a fresh session
+would need."""
+
+
+@app.command("compact-recall", hidden=True)
+def compact_recall_cmd() -> None:
+    """Internal: the post_compact hook target. Prints the memory-commit instruction
+    to stdout, which the IDE injects into the model's context right after
+    compaction. Print-only — writes nothing. Always exits 0."""
+    typer.echo(COMPACT_RECALL_TEXT)
+    raise typer.Exit(code=0)
+
+
 @app.command("update-check", hidden=True)
 def update_check_cmd() -> None:
     """Internal: the session_start update-advisory hook target. Always exits 0."""

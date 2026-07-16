@@ -1,17 +1,15 @@
 {
   "hooks": {
-    "SessionEnd": [
+    "SessionStart": [
       {
-        "matcher": "",
+        "matcher": "compact",
         "hooks": [
           {
             "type": "command",
-            "command": "cohort session-capture"
+            "command": "cohort compact-recall"
           }
         ]
-      }
-    ],
-    "SessionStart": [
+      },
       {
         "matcher": "",
         "hooks": [
@@ -27,6 +25,28 @@
           {
             "type": "command",
             "command": "cohort update-check"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cohort session-capture"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cohort session-capture"
           }
         ]
       }
