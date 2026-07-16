@@ -15,6 +15,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 - **`cohort lint` — documentation-parity check.** Guards the drift the golden
   locks don't: counts stated in human docs (an "N-agent roster" line) must match
   the real number of canonical artifacts, derived from the filesystem. Runs in CI.
+- **`operational-hard-limits` memory — blast-radius rules in every session.**
+  Non-negotiable limits (no destructive data ops, prod read-only, PR-only changes,
+  no force-push, secrets never move) compiled into the memory corpus. Complements
+  the `advisory` invariant (which governs tools) by governing actions; a coordinator
+  restates them per fanned-out worker.
 
 ## [0.7.0] — 2026-07-16 · Remove the life feature
 
