@@ -11,6 +11,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`cohort lint` — documentation-parity check.** Guards the drift the golden
+  locks don't: counts stated in human docs (an "N-agent roster" line) must match
+  the real number of canonical artifacts, derived from the filesystem. Runs in CI.
+
 ## [0.7.0] — 2026-07-16 · Remove the life feature
 
 ### Removed

@@ -176,7 +176,7 @@ roster for now (project-awareness routing is tracked in #24).
 
 ## Commands
 
-`validate` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` /
+`validate` · `lint` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` /
 `rollback` · `init` / `deinit` · `add-agent` / `add-memory` / `add-skill` / `add-command` / `add-hook` /
 `adopt` / `personalize` / `edit` / `try` (global) · `add-specialist` /
 `remove-specialist` (project) · `promote` · `snapshot` · `distill` · `context refresh` · `status` · `dashboard` ·
