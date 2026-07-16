@@ -200,7 +200,7 @@ def test_status_reports_the_my_layer(source, home):
     run_cli("recompile", "--ide", "claude", "--source", str(source), home=home)
     report = _json.loads(run_cli("status", "--json", home=home).stdout)
     assert report["global"]["roster"]["my"] == ["trading-compliance"]
-    assert report["global"]["roster"]["count"] == 19  # 18 office + 1 my
+    assert report["global"]["roster"]["count"] == 18  # 17 office + 1 my
 
 
 # === increment 3: sharing affordances ========================================
@@ -306,7 +306,7 @@ def test_status_flags_stale_and_dangling_overrides(source, home, monkeypatch):
     run_cli("personalize", "agent", "counsel", "--source", str(source), home=home)
     report = do_status(home, home)
     assert report["global"]["overrides"] == []  # fresh override: healthy
-    assert report["global"]["roster"]["count"] == 18  # override never double-counts
+    assert report["global"]["roster"]["count"] == 17  # override never double-counts
     office = source / "canonical" / "agents" / "counsel.md"
     office.write_text(office.read_text(encoding="utf-8") + "\nupstream improved this\n",
                       encoding="utf-8")

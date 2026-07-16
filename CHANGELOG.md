@@ -11,6 +11,12 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Removed
+- Life-project feature (RFC 0003) — the `life` template, the `/today` `/briefing`
+  `/triage` `/week` `/month` rhythm commands, the LifeChiefOfStaff agent, the
+  `cohort life`/`cohort run` CLI, dashboard Mission Control, and connector docs.
+  Superseded by a dedicated standalone app. RFC 0003 marked Withdrawn.
+
 ## [0.6.0] — 2026-07-16 · Orchestration & life rhythms
 
 ### Added

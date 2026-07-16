@@ -44,7 +44,6 @@ from .project import (
     _read_staleness_hours,
     _utc_now,
     find_repo_root,
-    project_template,
 )
 
 RESTORE_HINT = "cohort init --force"
@@ -224,15 +223,6 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
         if legacy:
             # Pre-unification layout: these no longer compile or count as specialists.
             result["project"]["legacy_agents"] = legacy
-        template = project_template(ppaths)
-        if template is not None:
-            result["project"]["template"] = template
-        if template == "life":
-            # Connector PRESENCE only (RFC 0003 §2): entry keys and profile rule
-            # prefixes — never tokens, server contents, or a live call.
-            from .life import connector_status
-
-            result["project"]["connectors"] = connector_status(repo)
         # A project's settings travel with its consuming repo — surface that source.
         result["sources"]["project"] = _remote_url(repo) or str(repo)
     return result

@@ -1,7 +1,6 @@
 # RFC 0003 — Personal agentic OS: the life project
 
-- Status: **Draft** (office-reviewed 2026-07-10; revised per reconciled review; §4 reworked to
-  interactive mission control after a second Security + Steward review — enqueue-and-run model)
+- Status: **Withdrawn** — superseded by a dedicated standalone app (life feature removed from Cohort 2026-07).
 - Author: Cohort maintainers
 - Created: 2026-07-10
 - Depends on: epic #139 (loop operating model — delivered), RFC 0001 (multi-install), docs/scheduled-research.md (#147)
