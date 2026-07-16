@@ -354,28 +354,14 @@
     </div>
   </section>
 
-  <!-- Three levels of the office: company · you · project.
-       Every kind (agent / skill / command / hook / memory) shows here, tagged. -->
+  <!-- Three scopes, top to bottom: the company office (with its cross-project
+       rollups) · your office · this project. Every kind (agent / skill / command /
+       hook / memory) shows here, tagged. -->
   <section>
     <h2>Company office <span class="rule"></span>
       <span class="sub">agents, skills, commands &amp; hooks shared across your whole company</span>
       <span class="lvl-count" id="cnt-office"></span></h2>
     <div class="card"><div class="level" id="level-office"></div></div>
-  </section>
-
-  <section>
-    <h2>Your office <span class="rule"></span>
-      <span class="sub">yours, on every machine · <span style="font-family:var(--mono)">~/.cohort/my</span></span>
-      <span class="lvl-count" id="cnt-my"></span></h2>
-    <div class="card"><div class="level" id="level-my"></div></div>
-  </section>
-
-  <!-- All Cohort projects — pick one to manage; its artifacts show in "Managing" below. -->
-  <section>
-    <h2>Projects <span class="rule"></span>
-      <span class="sub">every repo where you've run <span style="font-family:var(--mono)">cohort init</span> — pick one to manage</span>
-      <span class="lvl-count" id="cnt-projects"></span></h2>
-    <div class="card"><div class="proj-grid" id="projects-list"></div></div>
   </section>
 
   <!-- Cross-project activity: recent session records aggregated across every
@@ -394,6 +380,21 @@
     <h2>Agent scorecards <span class="rule"></span>
       <span class="sub">up/down feedback across every initialized project · last 30 days</span></h2>
     <div class="card"><div class="score-grid" id="scorecards"></div></div>
+  </section>
+
+  <section>
+    <h2>Your office <span class="rule"></span>
+      <span class="sub">yours, on every machine · <span style="font-family:var(--mono)">~/.cohort/my</span></span>
+      <span class="lvl-count" id="cnt-my"></span></h2>
+    <div class="card"><div class="level" id="level-my"></div></div>
+  </section>
+
+  <!-- All Cohort projects — pick one to manage; its artifacts show in "Managing" below. -->
+  <section>
+    <h2>Projects <span class="rule"></span>
+      <span class="sub">every repo where you've run <span style="font-family:var(--mono)">cohort init</span> — pick one to manage</span>
+      <span class="lvl-count" id="cnt-projects"></span></h2>
+    <div class="card"><div class="proj-grid" id="projects-list"></div></div>
   </section>
 
   <section id="project-section" hidden>
