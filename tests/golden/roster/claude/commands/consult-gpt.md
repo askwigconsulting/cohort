@@ -21,6 +21,13 @@ unavailable, print the exact recovery steps
 (`npm install -g --prefix ~/.local @openai/codex`, then `codex login`), answer from
 your own analysis, and clearly label the answer as single-model.
 
+**Setup missing and model unavailable are different failures.** If the CLI is set up
+but the **flagship model itself is unavailable** — usage limits reached, model errors
+that survive one retry — do not silently proceed and do not downgrade to a cheaper GPT.
+**Ask the user how to proceed**: wait and retry when the model is available again, or
+have Fable handle it single-model (labeled as such). The user picks; on "wait", agree a
+concrete retry point rather than blocking indefinitely.
+
 ## 2. Egress consent — once per repo
 
 A consult sends the question and any packaged context to OpenAI — **external egress**.

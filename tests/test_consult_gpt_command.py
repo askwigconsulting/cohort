@@ -73,6 +73,15 @@ def test_consult_gpt_degrades_gracefully_without_the_cli():
     assert "single-model" in body
 
 
+def test_consult_gpt_asks_the_user_when_the_flagship_model_is_unavailable():
+    # Setup missing degrades silently; model unavailable is the user's call:
+    # wait for availability, or Fable handles it single-model.
+    body = _consult_body()
+    assert "Ask the user how to proceed" in body
+    assert "wait and retry when the model is available again" in body
+    assert "have Fable handle it single-model" in body
+
+
 def test_orchestrate_consults_gpt_on_fable_tier_work():
     body = _staged()["commands/orchestrate.md"]
     # Plan cross-examination before fan-out, and an independent opinion at signoff.

@@ -45,7 +45,9 @@ Break the work into tasks the way `/plan` does, with two extra fields per task:
 Order tasks by dependency. **If the plan contains any fable-tier task**, cross-examine
 the plan with `/consult-gpt` before presenting it — ChatGPT's job is to find the flaw,
 not to bless the plan; fold anything that survives your own verification back in. If
-the consult is unavailable, proceed and note the skip. Present the plan (tasks, tiers,
+the consult is unavailable, follow `/consult-gpt`'s unavailability rules: setup
+missing → proceed single-model and note the skip; flagship model unavailable (limits,
+errors) → ask the user whether to wait or have Fable proceed single-model. Present the plan (tasks, tiers,
 parallelism, and the consult's outcome) to the user before fanning out.
 
 ## 3. Route — assign each task a model tier
@@ -90,7 +92,9 @@ Worker output is a **claim, not a completion**. For every task the coordinator:
    at fable tier, stop and report to the user.
 4. For **fable-tier** tasks, additionally gets an independent ChatGPT opinion on the
    diff via `/consult-gpt` (advisory — its findings are claims to verify, never a
-   veto or an approval); skip with a note if the consult is unavailable.
+   veto or an approval); if the consult is unavailable, apply `/consult-gpt`'s
+   unavailability rules (setup missing → skip with a note; model unavailable → ask
+   the user: wait, or Fable proceeds single-model).
 5. Marks the task complete only after criteria pass.
 
 After all tasks land, the coordinator runs the **full test suite and build** as an
