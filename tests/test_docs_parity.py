@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cohort.lint import canonical_counts, run_lint
+from cohort.adapters.claude import _MODEL_MAP
+from cohort.lint import _model_tier_findings, _parse_tier_table, canonical_counts, run_lint
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -39,11 +40,38 @@ def test_lint_flags_a_wrong_count(tmp_path):
         (tmp_path / "canonical" / sub).mkdir(parents=True)
     (tmp_path / "README.md").write_text("The 2-agent roster ships here.\n", encoding="utf-8")
 
-    findings = run_lint(tmp_path)
-    assert len(findings) == 1
-    assert findings[0].file == "README.md"
-    assert findings[0].line == 1
-    assert "2-agent" in findings[0].message and "1 agent" in findings[0].message
+    counts = [f for f in run_lint(tmp_path) if "canonical has" in f.message]
+    assert len(counts) == 1
+    assert counts[0].file == "README.md"
+    assert counts[0].line == 1
+    assert "2-agent" in counts[0].message and "1 agent" in counts[0].message
+
+
+def test_model_tiers_doc_matches_the_renderer_code():
+    # The documented agent-tier table is the single source of truth and must
+    # equal the renderer's actual mapping — this is the guard against the doc
+    # silently lying about what a tier compiles to.
+    doc = (REPO / "docs" / "model-tiers.md").read_text(encoding="utf-8")
+    documented = _parse_tier_table(doc, "Agent model tier")
+    assert documented == _MODEL_MAP
+    # And the repo is clean on the model-tier checks specifically.
+    assert _model_tier_findings(REPO) == []
+
+
+def test_lint_flags_model_tier_doc_drift_from_code(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "canonical" / "commands").mkdir(parents=True)
+    (tmp_path / "canonical" / "commands" / "orchestrate.md").write_text(
+        "fable opus sonnet haiku", encoding="utf-8"
+    )
+    # A doc whose agent-tier table disagrees with the real _MODEL_MAP.
+    (tmp_path / "docs" / "model-tiers.md").write_text(
+        "## Agent model tier\n\n| tier | model |\n|---|---|\n| fast | opus |\n\n"
+        "## Orchestration routing tier\n\n| tier | model |\n|---|---|\n| fable | Fable |\n",
+        encoding="utf-8",
+    )
+    findings = _model_tier_findings(tmp_path)
+    assert any("disagrees with renderer" in f.message for f in findings)
 
 
 def test_lint_ignores_spaced_non_count_phrases(tmp_path):
@@ -56,4 +84,5 @@ def test_lint_ignores_spaced_non_count_phrases(tmp_path):
         "Fan out with max 10 agents in flight; the 1-agent roster is tiny.\n",
         encoding="utf-8",
     )
-    assert run_lint(tmp_path) == []
+    # No count finding — "10 agents in flight" is a cap, and "1-agent" is correct.
+    assert [f for f in run_lint(tmp_path) if "canonical has" in f.message] == []

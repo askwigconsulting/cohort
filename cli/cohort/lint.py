@@ -68,6 +68,78 @@ def _iter_docs(repo_root: Path):
                 yield p
 
 
+# The single documented tier→model mapping, and the orchestration canon it governs.
+_MODEL_TIERS_DOC = "docs/model-tiers.md"
+_ORCH_CANON = (
+    "canonical/commands/orchestrate.md",
+    "canonical/memories/model-orchestration.md",
+    "canonical/memories/fable-mode.md",
+)
+# A "| tier | model |" table row (first two cells), lower-cased.
+_TABLE_ROW = re.compile(r"^\|\s*([a-z0-9]+)\s*\|\s*([a-z0-9]+)\s*\|", re.IGNORECASE)
+
+
+def _parse_tier_table(doc_text: str, heading: str) -> dict[str, str]:
+    """Parse the two-column ``| tier | model |`` rows under a ``## heading``
+    section of the model-tiers doc. Skips the header/separator rows."""
+    out: dict[str, str] = {}
+    in_section = False
+    for line in doc_text.splitlines():
+        if line.startswith("## "):
+            in_section = heading in line
+            continue
+        if not in_section:
+            continue
+        m = _TABLE_ROW.match(line)
+        if not m:
+            continue
+        tier, model = m.group(1).lower(), m.group(2).lower()
+        if tier in ("tier", "---") or set(model) <= {"-"}:
+            continue
+        out[tier] = model
+    return out
+
+
+def _model_tier_findings(repo_root: Path) -> list[LintFinding]:
+    """The `docs/model-tiers.md` registry must not drift: its agent-tier table
+    must equal the renderer's `_MODEL_MAP`, and every orchestration tier it
+    lists must still appear in the orchestration canon."""
+    from .adapters.claude import _MODEL_MAP  # code source of truth for agent tiers
+
+    doc = repo_root / _MODEL_TIERS_DOC
+    if not doc.is_file():
+        return [LintFinding(_MODEL_TIERS_DOC, 0, "the model-tiers mapping doc is missing")]
+    text = doc.read_text(encoding="utf-8")
+    findings: list[LintFinding] = []
+
+    documented = _parse_tier_table(text, "Agent model tier")
+    if documented != _MODEL_MAP:
+        findings.append(
+            LintFinding(
+                _MODEL_TIERS_DOC,
+                0,
+                f"agent-tier table {documented} disagrees with renderer _MODEL_MAP {_MODEL_MAP}",
+            )
+        )
+
+    orch = _parse_tier_table(text, "Orchestration routing tier")
+    canon_text = "\n".join(
+        (repo_root / p).read_text(encoding="utf-8")
+        for p in _ORCH_CANON
+        if (repo_root / p).is_file()
+    )
+    for tier in orch:
+        if not re.search(rf"\b{re.escape(tier)}\b", canon_text, re.IGNORECASE):
+            findings.append(
+                LintFinding(
+                    _MODEL_TIERS_DOC,
+                    0,
+                    f'orchestration tier "{tier}" is documented but appears in no canon file',
+                )
+            )
+    return findings
+
+
 def run_lint(repo_root: Path) -> list[LintFinding]:
     """Return every doc-parity finding under ``repo_root`` (empty = clean)."""
     counts = canonical_counts(repo_root)
@@ -90,4 +162,5 @@ def run_lint(repo_root: Path) -> list[LintFinding]:
                             ),
                         )
                     )
+    findings.extend(_model_tier_findings(repo_root))
     return findings

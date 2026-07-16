@@ -12,6 +12,13 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **`docs/model-tiers.md` — the single tier→model mapping,** lint-guarded. One
+  documented home for both the agent `model:` tiers and `/orchestrate`'s routing
+  tiers; `cohort lint` fails if it drifts from the renderer's `_MODEL_MAP` or lists
+  an orchestration tier the canon no longer uses, so a model-generation sweep is
+  enumerable and can't miss a file.
+
+### Added
 - **`cohort lint` — documentation-parity check.** Guards the drift the golden
   locks don't: counts stated in human docs (an "N-agent roster" line) must match
   the real number of canonical artifacts, derived from the filesystem. Runs in CI.
