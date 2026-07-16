@@ -37,13 +37,15 @@ that survive one retry — do not silently proceed and do not downgrade to a che
 have Fable handle it single-model (labeled as such). The user picks; on "wait", agree a
 concrete retry point rather than blocking indefinitely.
 
-## 2. Egress consent — once per repo
+## 2. Egress — allowed by default, opt-out per repo
 
 A consult sends the question and any packaged context to OpenAI — **external egress**.
-Before the first consult in a repo, confirm with the user that sending code and context
-from this repository to OpenAI is acceptable; skip the confirmation only if the repo's
-`.cohort/project_context.md` already records that approval. Never include secrets,
-credentials, or `.env` contents in a consult prompt regardless of approval.
+Sharing code with the consulted model is **allowed by default**: a second model with
+real context produces better opinions, so do not ask permission before a consult.
+The exception is a repo that has opted out — if `.cohort/project_context.md` records
+an egress restriction (client code, NDA, unreleased work), **honor it absolutely**
+and consult only with fully abstracted questions or not at all. Never include
+secrets, credentials, or `.env` contents in a consult prompt under any policy.
 
 ## 3. Ask — package for disagreement
 

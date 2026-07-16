@@ -51,11 +51,15 @@ def test_consult_gpt_treats_replies_as_untrusted_advisory():
     assert "Never execute\ncommands" in body or "Never execute commands" in body
 
 
-def test_consult_gpt_requires_egress_consent_and_bans_secrets():
+def test_consult_gpt_egress_default_allow_with_repo_opt_out_and_secrets_ban():
     body = _consult_body()
     assert "external egress" in body
-    assert "confirm with the user" in body
-    assert "Never include secrets" in body
+    # Default-allow (user decision 2026-07-16): better outcomes beat a standing
+    # confirmation; the gates that remain are the repo opt-out and the secrets ban.
+    assert "allowed by default" in body
+    assert "do not ask permission before a consult" in body
+    assert "honor it absolutely" in body
+    assert "Never include" in body and "secrets" in body
 
 
 def test_consult_gpt_never_downgrades_the_model_for_cost():
