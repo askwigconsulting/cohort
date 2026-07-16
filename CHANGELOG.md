@@ -12,6 +12,39 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Multi-model orchestration: `/orchestrate`, Fable mode, and ChatGPT collaboration.**
+  A new standard for substantive development work. `/orchestrate` is the fan-out loop:
+  a **coordinator-tier** session — **Fable (preferred) or Opus**, both first-class; the
+  pattern **never repeats below Opus** — researches and plans, decomposes the work,
+  routes each task to the cheapest capable model tier (**fable** for
+  architecture-critical, **opus** for complex, **sonnet** for well-scoped, **haiku** for
+  mechanical), fans out with **at most 10 agents in flight** (parallel writers need
+  disjoint file footprints or worktree isolation), and **verifies every task itself** —
+  re-running tests, reading diffs — before signoff. A native Opus coordinator handles
+  fable-tier work itself but **raises a genuinely Fable-suited task to the user** (task
+  it to Fable / save as future work / skip) rather than silently absorbing it. The
+  high-priority **`model-orchestration`** and **`fable-mode`** canonical memories make
+  the pattern ambient (every non-Fable coordinator applies Fable's five operational
+  gates: scope, evidence, adversarial reasoning, verify-before-done, calibrate). New
+  **`/consult-gpt`** brings ChatGPT into the office as an advisory, read-only second
+  opinion via the OpenAI Codex CLI (`codex exec --sandbox read-only`) — packaged with
+  Claude's working hypothesis to invite disagreement, treated as an untrusted claim to
+  verify (never instructions to execute), pinned to the flagship GPT model (ask the user
+  on unavailability, never downgrade for cost), degrading gracefully when the CLI is
+  absent. `/orchestrate` consults it on fable-tier plans and diffs. Code sharing with
+  consulted models is allowed by default (per-repo opt-out; secrets never sent).
+  Extending this to non-Claude models as *orchestrated doers* is scoped in RFC 0004
+  (issue #171). All wording-locked by tests.
+- **Compaction memory circuit (`pre-compact-capture`, `post-compact-memory`).** Two
+  canonical hooks preserve a session across context compaction. Before the squeeze, a
+  `PreCompact` hook writes the mechanical session record to `.cohort/sessions/` (same
+  opt-in `auto_capture` as session end). Immediately after — via a `SessionStart` hook
+  with the `compact` matcher, the doc-verified post-compaction injection channel — the
+  hidden `cohort compact-recall` prints an instruction into the fresh context to commit
+  the session's critical parts (decisions and rationale, in-flight work state,
+  unresolved questions, user directives) to durable memory before resuming. New
+  canonical hook events `pre_compact`/`post_compact` are mapped across all three IDE
+  adapters (Codex has a native `PostCompact`; Cursor approximates to `sessionStart`).
 - **Life-project rhythm commands, agent, and connector docs (RFC 0003, WS-C).**
   Five canonical `claude`-only commands for a `template = "life"` project:
   `/today` (interactive day draft), `/briefing` (the one headless-safe command,

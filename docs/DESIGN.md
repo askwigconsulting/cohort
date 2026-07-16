@@ -1,7 +1,7 @@
 # Cohort — Design history & rationale
 
 The "why" the code can't carry: the architectural spine, the cross-phase decisions
-(referenced as `[J]`–`[O]` and a few inline ones), the verified environment facts,
+(referenced as `[J]`–`[R]` and a few inline ones), the verified environment facts,
 and the one through-line that makes the safety story real. Read this before
 proposing changes — several of these were arrived at by catching a guarantee that
 was *asserted* rather than *proven*, and the fix each time was to make the property
@@ -102,6 +102,23 @@ structural and testable.
   anything unrecognized; it never emits a value outside the schema's enum, so
   adoption can't produce a schema-invalid artifact. Purely a hint — no behavioral
   semantics, fail-closed like every other enum (`_check_enum`, E020).
+- **[R] Multi-model orchestration is instruction-level, coordinator-verified, and
+  vendor-extensible.** `/orchestrate` (with the `model-orchestration` + `fable-mode`
+  memories) is prose in canonical artifacts, not a CLI code path — Cohort adds no
+  scheduler; the coordinating Claude session *is* the scheduler. Two invariants keep it
+  safe. **A coordinator tier floor:** orchestration runs only on Fable (preferred) or
+  Opus, never below, because decomposition/routing/adversarial-signoff are exactly the
+  judgments a lower tier gets wrong; an Opus coordinator escalates a genuinely
+  Fable-suited task to the human rather than absorbing it. **Coordinator verification is
+  the gate:** every worker's output — Claude subagent or external model — is an untrusted
+  claim the coordinator re-verifies (re-run tests, read the diff) before signoff, and the
+  human's commit/PR review is unchanged. Cross-vendor collaboration enters here on the
+  office's terms: `/consult-gpt` runs ChatGPT read-only and advisory (Codex CLI), an
+  opinion to verify, never instructions to execute. Extending non-Claude models from
+  advisors to *orchestrated doers* (producing worktree-isolated, coordinator-verified
+  diffs) is deliberately gated behind **RFC 0004 (#171)** because it crosses the
+  "advisory by default" invariant — an engine registry, not hardcoded vendors, is the
+  intended shape.
 
 ## Other load-bearing rules
 
