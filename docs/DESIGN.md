@@ -1,7 +1,7 @@
 # Cohort — Design history & rationale
 
 The "why" the code can't carry: the architectural spine, the cross-phase decisions
-(referenced as `[J]`–`[O]` and a few inline ones), the verified environment facts,
+(referenced as `[J]`–`[R]` and a few inline ones), the verified environment facts,
 and the one through-line that makes the safety story real. Read this before
 proposing changes — several of these were arrived at by catching a guarantee that
 was *asserted* rather than *proven*, and the fix each time was to make the property
