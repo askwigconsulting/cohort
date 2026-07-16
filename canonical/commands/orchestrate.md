@@ -51,8 +51,11 @@ Break the work into tasks the way `/plan` does, with two extra fields per task:
   footprints must be sequenced or given worktree isolation; only tasks with
   **disjoint footprints run in parallel**.
 
-Order tasks by dependency. Present the plan (tasks, tiers, parallelism) to the user
-before fanning out.
+Order tasks by dependency. **If the plan contains any fable-tier task**, cross-examine
+the plan with `/consult-gpt` before presenting it — ChatGPT's job is to find the flaw,
+not to bless the plan; fold anything that survives your own verification back in. If
+the consult is unavailable, proceed and note the skip. Present the plan (tasks, tiers,
+parallelism, and the consult's outcome) to the user before fanning out.
 
 ## 3. Route — assign each task a model tier
 
@@ -94,7 +97,10 @@ Worker output is a **claim, not a completion**. For every task the coordinator:
 3. On failure: return the task **once** to the same worker with the concrete
    failing criteria; if it fails again, escalate one tier and retry; if it fails
    at fable tier, stop and report to the user.
-4. Marks the task complete only after criteria pass.
+4. For **fable-tier** tasks, additionally gets an independent ChatGPT opinion on the
+   diff via `/consult-gpt` (advisory — its findings are claims to verify, never a
+   veto or an approval); skip with a note if the consult is unavailable.
+5. Marks the task complete only after criteria pass.
 
 After all tasks land, the coordinator runs the **full test suite and build** as an
 integration check — per-task green does not compose automatically. Report completion
