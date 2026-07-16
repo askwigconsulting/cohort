@@ -51,11 +51,23 @@ def test_consult_gpt_treats_replies_as_untrusted_advisory():
     assert "Never execute\ncommands" in body or "Never execute commands" in body
 
 
-def test_consult_gpt_requires_egress_consent_and_bans_secrets():
+def test_consult_gpt_egress_default_allow_with_repo_opt_out_and_secrets_ban():
     body = _consult_body()
     assert "external egress" in body
-    assert "confirm with the user" in body
-    assert "Never include secrets" in body
+    # Default-allow (user decision 2026-07-16): better outcomes beat a standing
+    # confirmation; the gates that remain are the repo opt-out and the secrets ban.
+    assert "allowed by default" in body
+    assert "do not ask permission before a consult" in body
+    assert "honor it absolutely" in body
+    assert "Never include" in body and "secrets" in body
+
+
+def test_consult_gpt_never_downgrades_the_model_for_cost():
+    body = _consult_body()
+    assert "never downgrade to a\ncheaper GPT for cost" in body or (
+        "never downgrade to a cheaper GPT for cost" in body
+    )
+    assert "strongest available skeptic" in body
 
 
 def test_consult_gpt_degrades_gracefully_without_the_cli():
@@ -63,6 +75,15 @@ def test_consult_gpt_degrades_gracefully_without_the_cli():
     assert "do not fail hard" in body
     assert "codex login" in body
     assert "single-model" in body
+
+
+def test_consult_gpt_asks_the_user_when_the_flagship_model_is_unavailable():
+    # Setup missing degrades silently; model unavailable is the user's call:
+    # wait for availability, or Fable handles it single-model.
+    body = _consult_body()
+    assert "Ask the user how to proceed" in body
+    assert "wait and retry when the model is available again" in body
+    assert "have Fable handle it single-model" in body
 
 
 def test_orchestrate_consults_gpt_on_fable_tier_work():
