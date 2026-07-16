@@ -62,11 +62,23 @@ def test_orchestrate_keeps_coordination_on_the_top_level_session():
 
 def test_orchestrate_opus_is_a_first_class_coordinator():
     # A native Opus session orchestrates in its own right (not just a Fable
-    # fallback), operating in Fable mode with fable-tier work routed to opus.
+    # fallback), operating in Fable mode and handling fable-tier work itself.
     body = _compiled_orchestrate_body()
+    flat = " ".join(body.split())
     assert "coordinator-tier" in body
     assert "not a degraded fallback" in body
-    assert "every fable-tier task routes to opus" in body
+    assert "Handle fable-tier work yourself, routed to opus" in flat
+
+
+def test_orchestrate_opus_escalates_a_fable_suited_task_to_the_user():
+    # Opus must not silently absorb a task genuinely better suited to Fable:
+    # it raises the three-way decision (task it to Fable / save it / skip).
+    flat = " ".join(_compiled_orchestrate_body().split())
+    assert "genuinely better\n  suited to Fable".replace("\n  ", " ") in flat
+    assert "Raise it to the user" in flat
+    assert "task that piece to Fable now" in flat
+    assert "document and save it as future work" in flat
+    assert "skip it" in flat
 
 
 def test_orchestrate_never_coordinates_below_opus():

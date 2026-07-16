@@ -19,10 +19,12 @@ Both are first-class orchestrators; pick by which model is running the session:
 - **On Fable** — the ideal coordinator. Proceed.
 - **On Opus** — a full coordinator in its own right, not a degraded fallback. Orchestrate
   directly, operating in **Fable mode** (the five-gate discipline in the `fable-mode`
-  memory). You may note that Fable suits the largest or most ambiguous work, but do not
-  stall to switch. When Opus coordinates, **every fable-tier task routes to opus** — Opus
-  is already the top model in the room — and everything else (the cap, the signoff, the
-  isolation rule) is unchanged.
+  memory), delegating across **opus / sonnet / haiku**. Handle fable-tier work yourself,
+  routed to opus — but do **not** silently absorb a task you judge **genuinely better
+  suited to Fable** (a real quality gap Opus can't close, not merely nominal fable-tier
+  work). **Raise it to the user** with three choices: (a) task that piece to Fable now,
+  (b) document and save it as future work, or (c) skip it. The user decides; the cap, the
+  signoff, and the isolation rule are unchanged.
 - **On Sonnet or Haiku — do not orchestrate.** Decomposition, routing, and adversarial
   signoff are exactly the judgments a lower tier gets wrong, so **the pattern never
   repeats below Opus.** Say so and recommend `/model opus` (or `fable`) before running
