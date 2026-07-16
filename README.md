@@ -220,9 +220,14 @@ without an explicit confirmation naming the target repo, and a `[tracker]` table
 The dev-workflow commands live here too: `/plan` · `/spec` · `/build` (the inner
 implement–test–verify loop) · `/test` · `/review` · `/ship`, and `/goal <issue>` — the issue-driven
 outer loop that builds on a branch, has an independent judge verify each acceptance criterion
-(max 3 rounds), and ends at a **draft** PR a human reviews. A `template = "life"` project (see
-[Life projects](#life-projects-opt-in)) adds five more: `/today` · `/briefing` · `/triage` ·
-`/week` · `/month`.
+(max 3 rounds), and ends at a **draft** PR a human reviews. `/orchestrate` is the fan-out loop for
+larger work: a coordinator-tier session (Fable preferred, Opus a full coordinator too — never
+below Opus) researches and plans, routes each task to the cheapest capable model tier
+(fable/opus/sonnet/haiku, max 10 agents in flight), and verifies every task itself before signoff.
+`/consult-gpt` brings a second vendor's model into the room — an advisory, read-only ChatGPT
+opinion via the OpenAI Codex CLI, cross-examined against Claude's own analysis, never executed
+blindly. A `template = "life"` project (see [Life projects](#life-projects-opt-in)) adds five more:
+`/today` · `/briefing` · `/triage` · `/week` · `/month`.
 
 ## Versioning
 

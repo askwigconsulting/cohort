@@ -21,10 +21,18 @@ agents (legal, finance, security, cloud, HR, and more) plus a ChiefOfStaff triag
   builds on a branch, then runs an independent judge that verifies each criterion and emits a
   verdict block; on FAIL the failing verdicts feed the next round (max 3). It ends at a **draft**
   PR — the human gate is PR review. `/goal` is human-invoked, never a synced doer.
-  `/orchestrate` is the **fan-out** loop for substantive work: the coordinating session
-  (run it on Fable) researches and plans, routes tasks to model tiers
-  (fable/opus/sonnet/haiku, max 10 agents in flight), and verifies every task's
-  acceptance criteria itself before signoff.
+  `/orchestrate` is the **fan-out** loop for substantive work: a coordinator-tier session
+  (Fable preferred, Opus a full coordinator too — never below Opus) researches and plans,
+  routes tasks to model tiers (fable/opus/sonnet/haiku, max 10 agents in flight), and
+  verifies every task's acceptance criteria itself before signoff; an Opus coordinator
+  raises a genuinely Fable-suited task to the user rather than absorbing it.
+- **Second opinions across vendors.** `/consult-gpt` brings ChatGPT into the office as an
+  advisory, read-only opinion (OpenAI Codex CLI) — cross-examined against Claude's own
+  analysis, an untrusted claim to verify, never executed; `/orchestrate` consults it on
+  the hardest (fable-tier) work.
+- **Memory across compaction.** When a session's context is compacted, the
+  `post-compact-memory` hook prompts Claude to commit the session's critical parts
+  (decisions, in-flight work, open questions) to durable memory before resuming.
 - **Compounding memory.** `cohort distill [--days N]` rolls recent `sessions/` + `feedback/`
   into a dated, append-only `## Distilled` section of `project_context.md` — durable memory,
   distinct from `weekly-report` (a human report) and `propose-improvement` (a harness proposal).
