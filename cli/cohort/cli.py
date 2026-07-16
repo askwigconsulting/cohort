@@ -36,6 +36,7 @@ from .improve import (
     validate_enrichment_body,
 )
 from .install_model import CohortPaths, resolve_mode
+from .lint import run_lint
 from .office_setup import (
     SetupError,
     do_setup,
@@ -199,6 +200,35 @@ def validate(
     else:
         _print_validate_human(tree)
     raise typer.Exit(code=0 if tree.valid else 1)
+
+
+@app.command()
+def lint(
+    json_output: bool = typer.Option(
+        False, "--json", help="Emit machine-readable JSON instead of human output."
+    ),
+) -> None:
+    """Check human-facing docs against the canonical filesystem (exit 0/1).
+
+    Guards the drift the golden locks don't: counts stated in prose (e.g. an
+    "N-agent roster" line) must match the real number of canonical artifacts.
+    """
+    repo_root = Path.cwd()
+    findings = run_lint(repo_root)
+    if json_output:
+        typer.echo(
+            _json.dumps(
+                [{"file": f.file, "line": f.line, "message": f.message} for f in findings],
+                indent=2,
+            )
+        )
+    elif findings:
+        for f in findings:
+            typer.echo(f"{f.file}:{f.line}: {_escape_untrusted(f.message)}", err=True)
+        typer.echo(f"lint: {len(findings)} doc-parity issue(s)", err=True)
+    else:
+        typer.echo("lint: docs match canonical (0 issues)")
+    raise typer.Exit(code=1 if findings else 0)
 
 
 # --- install / uninstall (Phase 1) -----------------------------------------
