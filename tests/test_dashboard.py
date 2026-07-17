@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from cohort.dashboard import DashboardServer, collect_state
+from cohort.dashboard import DashboardServer, collect_state, read_artifact
+from cohort.project import list_projects
 
 COHORT_SRC = Path(__file__).resolve().parents[1]
 
@@ -115,6 +116,30 @@ def request(srv, method, path, token=None, body=None, host=None):
 
 
 # === state aggregation =======================================================
+
+
+def test_read_artifact_finds_a_specialist_in_the_focused_project(home, tmp_path, source):
+    """A project agent lives in the *switched-to* repo, not the dashboard's launch
+    directory. Regression: the detail pane rendered the card from the focused
+    project's inventory but then reported "no agent '<name>' in project", because
+    the artifact lookup resolved against cwd instead of the focused project."""
+    launch_repo = inited_repo(tmp_path, source, home, name="launch")
+    other_repo = inited_repo(tmp_path, source, home, name="other")
+    add_specialist(other_repo, home, name="atlas-agent-schema")
+
+    index = next(
+        e["index"] for e in list_projects(home, include_private=False)
+        if Path(e["path"]) == other_repo
+    )
+
+    # Focused on the other project → the specialist resolves, body included.
+    art = read_artifact(home, launch_repo, "project", "agent", "atlas-agent-schema", index)
+    assert art["name"] == "atlas-agent-schema"
+    assert art["layer"] == "project"
+
+    # Without the focus it is (correctly) not in the launch repo — the old bug.
+    with pytest.raises(Exception, match="no agent"):
+        read_artifact(home, launch_repo, "project", "agent", "atlas-agent-schema")
 
 
 def test_collect_state_merges_global_and_project(home, tmp_path, source):

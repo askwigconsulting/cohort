@@ -218,7 +218,11 @@ async function openDetail(it) {
   editBtn.onclick = it.layer === "my" ? () => { $("dlg-detail").close(); openEdit(it.kind, it.name); } : null;
   $("dlg-detail").showModal();
   try {
-    const art = await api("/api/artifact?" + new URLSearchParams({ layer: it.layer, kind: it.kind, name: it.name }));
+    // Carry the focused project: a project-scoped artifact lives in the switched-to
+    // repo, not the dashboard's launch directory (same rule as /api/state).
+    const q = { layer: it.layer, kind: it.kind, name: it.name };
+    if (FOCUS != null) q.project = FOCUS;
+    const art = await api("/api/artifact?" + new URLSearchParams(q));
     $("dt-body").textContent = art.body || "(no body)";
   } catch (e) { $("dt-body").textContent = "Could not load: " + e.message; }
 }

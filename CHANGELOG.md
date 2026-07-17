@@ -11,6 +11,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- **Dashboard: a project-scoped artifact in a *focused* project now loads.** The
+  detail pane rendered an agent's card from the focused project's inventory but then
+  reported `no agent '<name>' in project`, because `/api/artifact` dropped the
+  `project` param and resolved against the dashboard's launch directory instead of
+  the switched-to repo. It now carries the focused project through, resolved via the
+  registry index like `/api/state` and `run_action` already did (never a client path).
+
 ### Added
 - **`docs/model-tiers.md` — the single tier→model mapping,** lint-guarded. One
   documented home for both the agent `model:` tiers and `/orchestrate`'s routing
