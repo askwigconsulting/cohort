@@ -8,6 +8,11 @@ default timeout — they can't drift apart over time.
 
 from __future__ import annotations
 
+import os
+import subprocess
+from pathlib import Path
+from typing import Any
+
 
 def _git_config_env(pairs: dict[str, str]) -> dict[str, str]:
     """Encode git config as ``GIT_CONFIG_COUNT`` / ``GIT_CONFIG_KEY_n`` /
@@ -50,3 +55,39 @@ GIT_ENV = {
 }
 
 GIT_TIMEOUT = 10  # seconds; a hung git/gh must never stall the caller indefinitely
+
+
+def git_state(repo: Path, path: Path) -> dict[str, Any]:
+    """Best-effort git facts about one file inside ``repo``. Never raises.
+
+    Used to *surface*, never to gate. A project-scoped artifact travels with the
+    repo, so "is it tracked?" is the signal that matters: tracked means the change
+    is reviewable — it has history and a PR can gate it; untracked (or no git at
+    all) means there is no audit trail. Which of those is acceptable is the user's
+    call, so Cohort reports the state and blocks neither (#182).
+
+    Returns ``{git, tracked, dirty}``: whether ``repo`` is a work tree, whether
+    ``path`` is tracked, and whether a tracked path has uncommitted changes.
+    """
+    unknown = {"git": False, "tracked": False, "dirty": False}
+
+    def _git(*args: str):
+        try:
+            return subprocess.run(
+                ["git", "-C", str(repo), *args],
+                capture_output=True, text=True,
+                env={**os.environ, **GIT_ENV}, timeout=GIT_TIMEOUT,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    inside = _git("rev-parse", "--is-inside-work-tree")
+    if inside is None or inside.returncode != 0:
+        return unknown
+    tracked_run = _git("ls-files", "--error-unmatch", "--", str(path))
+    tracked = tracked_run is not None and tracked_run.returncode == 0
+    dirty = False
+    if tracked:
+        status = _git("status", "--porcelain", "--", str(path))
+        dirty = bool(status is not None and status.stdout.strip())
+    return {"git": True, "tracked": tracked, "dirty": dirty}

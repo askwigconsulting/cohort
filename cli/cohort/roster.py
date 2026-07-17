@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from .compile import compile_ide, planned_dests, write_staging
 from .frontmatter import dump_frontmatter
+from .gitutil import git_state
 from .install import do_install
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact, load_artifact_text
@@ -219,13 +220,18 @@ class AddMemoryError(Exception):
 
 
 def _memory_scaffold(
-    name: str, display_name: str, description: str, priority: str, body: Optional[str]
+    name: str,
+    display_name: str,
+    description: str,
+    priority: str,
+    body: Optional[str],
+    scope: str = "global",
 ) -> str:
     fm = dump_frontmatter(
         [
             ("name", name),
             ("kind", "memory"),
-            ("scope", "global"),
+            ("scope", scope),
             ("description", description),
             ("targets", ["claude"]),
             ("priority", priority),
@@ -246,18 +252,29 @@ def do_add_memory(
     body: Optional[str] = None,
     dry_run: bool = False,
     to: str = "my",
+    repo: Optional[Path] = None,
 ) -> dict[str, Any]:
-    """Scaffold + (unless dry-run) validate and recompile a new office memory.
+    """Scaffold + (unless dry-run) validate and recompile a new memory.
 
-    Memories are global-scope by construction (the project tier has no CLAUDE.md
-    merge) and land in the compiled corpus every session reads. ``to`` picks the
-    layer (#84): ``my`` (default) or ``office`` (the shared clone)."""
+    A memory lands in the compiled corpus every session reads. ``to`` picks the
+    layer: ``my`` (default) or ``office`` (the shared clone) — both global — or
+    ``project``, which writes ``scope: project`` into ``<repo>/.cohort/canonical``
+    and recompiles that repo's tier (``do_install_project`` wires the corpus
+    ``@import`` into ``<repo>/.claude/CLAUDE.md``, and unwires it when the last
+    project memory goes).
+
+    A project memory is louder than a project agent: it loads into *every* session
+    in that repo **and travels with the repo**, so committing it hands standing
+    instructions to everyone who clones. That's the user's call — Cohort surfaces
+    the git state rather than blocking either choice (#182)."""
     if not re.fullmatch(NAME_PATTERN, name):
         raise AddMemoryError(f"name {name!r} must match the slug pattern {NAME_PATTERN}")
     if priority not in ("low", "normal", "high"):
         raise AddMemoryError(f"priority must be low|normal|high, got {priority!r}")
-    if to not in ("my", "office"):
-        raise AddMemoryError(f"--to must be my|office, got {to!r}")
+    if to not in ("my", "office", "project"):
+        raise AddMemoryError(f"--to must be my|office|project, got {to!r}")
+    if to == "project" and repo is None:
+        raise AddMemoryError("--to project requires being inside a Cohort project (run `cohort init`)")
     display_name = display_name or name
     try:
         reject_control_chars(display_name=display_name, description=description)
@@ -265,16 +282,25 @@ def do_add_memory(
         raise AddMemoryError(str(exc))
     if body is not None and not body.strip():
         raise AddMemoryError("--body-file is empty")
-    dirs = _layer_dirs(source, home, "memories")
-    dest = dirs[to] / f"{name}.md"
-    _check_cross_layer(dirs, name, "memory", AddMemoryError)
+    scope = "project" if to == "project" else "global"
+    if to == "project":
+        # A separate tier with its own CLAUDE.md: a same-named global memory is
+        # not a collision (project-over-user precedence), so no cross-layer check.
+        dest = CohortPaths.for_project(repo).canonical / "memories" / f"{name}.md"
+        if dest.exists():
+            raise AddMemoryError(f"memory {name!r} already exists in this project")
+    else:
+        dirs = _layer_dirs(source, home, "memories")
+        dest = dirs[to] / f"{name}.md"
+        _check_cross_layer(dirs, name, "memory", AddMemoryError)
 
-    content = _memory_scaffold(name, display_name, description, priority, body)
+    content = _memory_scaffold(name, display_name, description, priority, body, scope)
     if dry_run:
+        plan = ["scaffold " + str(dest), "validate"]
+        plan.append("project-recompile" if to == "project" else "recompile --ide claude")
         return {
             "action": "add-memory", "dry_run": True, "name": name, "path": str(dest),
-            "layer": to,
-            "plan": ["scaffold " + str(dest), "validate", "recompile --ide claude"],
+            "layer": to, "scope": scope, "plan": plan,
         }
 
     first_my = to == "my" and _first_my_write(home)
@@ -284,6 +310,19 @@ def do_add_memory(
     if errors:
         dest.unlink()
         raise AddMemoryError(f"scaffold failed validation: {errors[0].code} {errors[0].message}")
+
+    if to == "project":
+        # The single project install path — it compiles the project tier and wires
+        # the corpus @import into <repo>/.claude/CLAUDE.md (install.py's has_memory).
+        from .install import do_install_project  # lazy: avoid import cycle
+
+        report = do_install_project(repo)
+        return {
+            "action": "add-memory", "dry_run": False, "name": name, "path": str(dest),
+            "layer": to, "scope": scope, "first_my_write": False,
+            "installed": report.get("applied"),
+            "git": git_state(repo, dest),
+        }
 
     paths = CohortPaths.for_global(home)
     # Honor a tailored roster: compile with the persisted subset so the recompile
@@ -299,7 +338,7 @@ def do_add_memory(
     )
     return {
         "action": "add-memory", "dry_run": False, "name": name, "path": str(dest),
-        "layer": to, "first_my_write": first_my,
+        "layer": to, "scope": scope, "first_my_write": first_my,
         "installed": report.summary,
     }
 
