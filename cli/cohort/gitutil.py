@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,60 @@ GIT_ENV = {
 
 GIT_TIMEOUT = 10  # seconds; a hung git/gh must never stall the caller indefinitely
 
+_UNKNOWN = {"git": False, "tracked": False, "dirty": False}
+
+
+def _git(repo: Path, *args: str):
+    """One hardened, non-interactive git call in ``repo``. ``None`` if it could
+    not run at all — callers degrade to "unknown", never raise."""
+    try:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True, text=True,
+            env={**os.environ, **GIT_ENV}, timeout=GIT_TIMEOUT,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def git_states(repo: Path, paths: Sequence[Path]) -> dict[str, dict[str, Any]]:
+    """Batched :func:`git_state`: a constant three git calls, not 2·N.
+
+    The dashboard polls, so fanning out a subprocess per file would be a real
+    cost (it is why the update check is cached). Keyed by ``str(path)`` as given,
+    so a caller can look results up by the inventory's own ``path`` field.
+    """
+    out: dict[str, dict[str, Any]] = {str(p): dict(_UNKNOWN) for p in paths}
+    if not paths:
+        return out
+    inside = _git(repo, "rev-parse", "--is-inside-work-tree")
+    if inside is None or inside.returncode != 0:
+        return out  # not a work tree → unknown, never an error
+
+    rels: dict[str, str] = {}
+    for p in paths:
+        try:
+            rels[str(p)] = Path(p).resolve().relative_to(Path(repo).resolve()).as_posix()
+        except (ValueError, OSError):
+            continue  # outside the repo → leave unknown
+    if not rels:
+        return out
+
+    listed = _git(repo, "ls-files", "-z", "--", *rels.values())
+    tracked = {
+        e for e in (listed.stdout.split("\0") if listed and listed.returncode == 0 else []) if e
+    }
+    status = _git(repo, "status", "--porcelain", "-z", "--", *rels.values())
+    # porcelain -z entries are "XY <path>"; the two status columns then a space.
+    dirty = {
+        e[3:] for e in (status.stdout.split("\0") if status and status.returncode == 0 else [])
+        if len(e) > 3
+    }
+    for key, rel in rels.items():
+        is_tracked = rel in tracked
+        out[key] = {"git": True, "tracked": is_tracked, "dirty": is_tracked and rel in dirty}
+    return out
+
 
 def git_state(repo: Path, path: Path) -> dict[str, Any]:
     """Best-effort git facts about one file inside ``repo``. Never raises.
@@ -69,25 +124,13 @@ def git_state(repo: Path, path: Path) -> dict[str, Any]:
     Returns ``{git, tracked, dirty}``: whether ``repo`` is a work tree, whether
     ``path`` is tracked, and whether a tracked path has uncommitted changes.
     """
-    unknown = {"git": False, "tracked": False, "dirty": False}
-
-    def _git(*args: str):
-        try:
-            return subprocess.run(
-                ["git", "-C", str(repo), *args],
-                capture_output=True, text=True,
-                env={**os.environ, **GIT_ENV}, timeout=GIT_TIMEOUT,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-
-    inside = _git("rev-parse", "--is-inside-work-tree")
+    inside = _git(repo, "rev-parse", "--is-inside-work-tree")
     if inside is None or inside.returncode != 0:
-        return unknown
-    tracked_run = _git("ls-files", "--error-unmatch", "--", str(path))
+        return dict(_UNKNOWN)
+    tracked_run = _git(repo, "ls-files", "--error-unmatch", "--", str(path))
     tracked = tracked_run is not None and tracked_run.returncode == 0
     dirty = False
     if tracked:
-        status = _git("status", "--porcelain", "--", str(path))
+        status = _git(repo, "status", "--porcelain", "--", str(path))
         dirty = bool(status is not None and status.stdout.strip())
     return {"git": True, "tracked": tracked, "dirty": dirty}

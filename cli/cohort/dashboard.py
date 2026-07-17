@@ -51,6 +51,7 @@ from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
 from .manifest import load_manifest
+from .gitutil import git_states
 from .inventory import inventory
 from .office_setup import SetupError, effective_roster
 from .parity import check_parity
@@ -271,6 +272,19 @@ def collect_state(
             if (it["layer"] == "office" and it["kind"] == "agent")
             else True
         )
+    # A project memory travels with the repo — committing it hands standing
+    # instructions to everyone who clones. Carry its git state so the card can
+    # show whether the change is reviewable (tracked) or has no audit trail
+    # (untracked). Surfaced, never gated: the choice is the user's (#182).
+    # Batched, because this endpoint is polled.
+    if repo is not None:
+        project_memories = [
+            it for it in items if it["layer"] == "project" and it["kind"] == "memory"
+        ]
+        if project_memories:
+            states = git_states(repo, [Path(it["path"]) for it in project_memories])
+            for it in project_memories:
+                it["git"] = states.get(it["path"], {"git": False, "tracked": False, "dirty": False})
     state["inventory"] = items
 
     if "project" in state:

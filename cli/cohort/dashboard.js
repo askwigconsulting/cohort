@@ -89,6 +89,28 @@ function metaBits(it) {
   for (const t of (it.targets || [])) if (t !== "all") bits.push(t);
   return bits;
 }
+/* A project memory travels with the repo: committing it hands standing
+   instructions to everyone who clones. Show whether that change is reviewable
+   (tracked — history and PRs gate it) or has no audit trail (untracked / no
+   git). This informs; it never gates — the choice is the user's. */
+function gitChip(it) {
+  if (it.kind !== "memory" || it.layer !== "project" || !it.git) return null;
+  const c = document.createElement("span");
+  if (!it.git.git) {
+    c.className = "meta warn"; c.textContent = "no git";
+    c.title = "Not a git repo — no audit trail for changes to this memory.";
+  } else if (!it.git.tracked) {
+    c.className = "meta warn"; c.textContent = "untracked";
+    c.title = "Untracked: not shared yet, and changes aren't reviewable. `git add` it to put changes under review.";
+  } else if (it.git.dirty) {
+    c.className = "meta"; c.textContent = "uncommitted";
+    c.title = "Tracked, with uncommitted changes — the committed version is what teammates get.";
+  } else {
+    c.className = "meta ok"; c.textContent = "tracked";
+    c.title = "Tracked: travels with the repo, and changes are reviewable in history/PRs.";
+  }
+  return c;
+}
 function thumb(label, title, onClick) {
   const b = document.createElement("button");
   b.className = "thumb"; b.textContent = label; b.title = title;
@@ -121,6 +143,8 @@ function artifactCard(it) {
   if (it.overrides) {
     const c = document.createElement("span"); c.className = "meta"; c.textContent = "override"; foot.appendChild(c);
   }
+  const g = gitChip(it);
+  if (g) foot.appendChild(g);
   el.appendChild(foot);
 
   // Per-card actions (revealed on hover) — click never bubbles to the detail view.
