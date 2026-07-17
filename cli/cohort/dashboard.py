@@ -288,11 +288,24 @@ class ActionError(Exception):
     """A refused dashboard action (bad input or a command-level refusal)."""
 
 
-def read_artifact(home: Path, cwd: Path, layer: str, kind: str, name: str) -> dict[str, Any]:
+def read_artifact(
+    home: Path,
+    cwd: Path,
+    layer: str,
+    kind: str,
+    name: str,
+    project_index: Any = None,
+) -> dict[str, Any]:
     """The current description + body of one inventory-listed artifact, so the edit
     form can pre-fill. Resolved by matching the inventory (never a client path),
-    so nothing outside the enumerated layers is readable."""
-    repo = find_repo_root(cwd)
+    so nothing outside the enumerated layers is readable.
+
+    ``project_index`` is the switcher's focused project — resolved the same way
+    ``run_action`` does (index → registry, never a client path). Without it a
+    project-scoped artifact in a *focused* project would be looked up against the
+    dashboard's own launch directory and reported missing."""
+    focused = resolve_registered(home, project_index) if project_index is not None else None
+    repo = focused if focused is not None else find_repo_root(cwd)
     for it in inventory(home, repo):
         if it["layer"] == layer and it["kind"] == kind and it["name"] == name:
             parsed = load_artifact(Path(it["path"]))
@@ -570,6 +583,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.server.home, self.server.cwd,
                     (q.get("layer") or [""])[0], (q.get("kind") or [""])[0],
                     (q.get("name") or [""])[0],
+                    (q.get("project") or [None])[0],
                 )
             except ActionError as exc:
                 self._send_json(404, {"error": str(exc)})
