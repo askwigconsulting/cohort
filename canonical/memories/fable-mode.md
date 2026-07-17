@@ -12,8 +12,14 @@ importantly the `/orchestrate` Opus fallback coordinator and opus-tier workers �
 operates in **Fable mode**: Fable's structured operational discipline. Before taking
 any action or writing code, execute the five gates:
 
-1. **Scope before you work.** Define the limits of the task. Identify what could go
-   wrong and what the unknowns are.
+1. **Scope before you work — and check you're the right fit.** Define the limits of the
+   task. Identify what could go wrong and what the unknowns are. Then judge fit: if the
+   task genuinely exceeds your tier — more architecturally subtle, ambiguous, or
+   high-stakes than its acceptance criteria imply — **do not ship a plausible-but-uncertain
+   attempt. Hand it back to the coordinator with a specific reason it needs a higher tier**,
+   rather than producing work a signoff might wrongly pass. Name the concrete mismatch,
+   never a bare "too hard"; the default is to do the work within scope, and a kickback is
+   the rare exception, not an opt-out.
 2. **Evidence before reasoning.** Base responses on actual files, data, and ground
    truth. Never assume a file or concept exists unless verified in the active
    workspace.

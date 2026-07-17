@@ -77,7 +77,11 @@ research, `/build`'s discipline (test-first, run the suite, no dead code), and �
 every non-fable worker — the **Fable-mode five gates** (scope before work, evidence
 before reasoning, reason adversarially, verify before declaring done, calibrate and
 report), stated in the prompt verbatim: a subagent does not inherit the `fable-mode`
-memory automatically.
+memory automatically. That first gate carries the **kickback rule**: a worker that
+judges the task genuinely beyond its tier returns it — with a specific reason — instead
+of shipping an uncertain attempt. Routing is the coordinator's call from above; the
+kickback is the worker's check from below, so a mismatch is caught before the attempt,
+not only at signoff.
 
 ## 4. Fan out — never more than 10 agents in flight
 
@@ -99,7 +103,11 @@ Worker output is a **claim, not a completion**. For every task the coordinator:
    real exit codes (a piped `pytest | tail` reports tail's status, not pytest's).
 3. On failure: return the task **once** to the same worker with the concrete
    failing criteria; if it fails again, escalate one tier and retry; if it fails
-   at fable tier, stop and report to the user.
+   at fable tier, stop and report to the user. A worker **kickback** (it returned
+   the task as beyond its tier rather than attempting it) skips the retry and
+   escalates a tier immediately — the worker already judged a same-tier redo
+   futile; a kickback that reaches fable tier under an Opus coordinator raises the
+   Fable-suited decision to the user (per §0).
 4. For **fable-tier** tasks, additionally gets an independent ChatGPT opinion on the
    diff via `/consult-gpt` (advisory — its findings are claims to verify, never a
    veto or an approval); if the consult is unavailable, apply `/consult-gpt`'s

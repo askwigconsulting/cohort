@@ -49,6 +49,15 @@ def test_orchestrate_locks_parallel_writer_isolation():
     assert "disjoint file footprints or worktree isolation" in body
 
 
+def test_orchestrate_locks_the_worker_kickback():
+    # Escalation runs both ways: coordinator from above (routing/signoff), worker
+    # from below (kickback). A kickback skips the same-tier retry and escalates.
+    flat = " ".join(_compiled_orchestrate_body().split())
+    assert "kickback rule" in flat
+    assert "the worker's check from below" in flat
+    assert "skips the retry and escalates a tier immediately" in flat
+
+
 def test_orchestrate_routes_all_four_tiers():
     body = _compiled_orchestrate_body()
     for tier in ("fable", "opus", "sonnet", "haiku"):

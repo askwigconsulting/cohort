@@ -52,3 +52,12 @@ def test_fable_mode_requires_gates_embedded_in_worker_prompts():
 def test_orchestrate_opus_fallback_coordinator_adopts_fable_mode():
     body = _staged()["commands/orchestrate.md"]
     assert "operating in **Fable\nmode**" in body or "operating in **Fable mode**" in body
+
+
+def test_fable_mode_scope_gate_carries_the_kickback_rule():
+    # Gate 1 is where a worker self-assesses fit: hand the task back with a
+    # specific reason rather than ship a plausible-but-uncertain attempt.
+    flat = " ".join(_staged()["cohort/CLAUDE.cohort.md"].split())
+    assert "check you're the right fit" in flat
+    assert "Hand it back to the coordinator with a specific reason" in flat
+    assert "never a bare \"too hard\"" in flat  # the abuse guard

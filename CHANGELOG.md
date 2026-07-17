@@ -12,6 +12,13 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Orchestration gains a worker kickback (escalation from below).** A non-Fable
+  worker that judges a task genuinely beyond its tier returns it — with a specific
+  reason — instead of shipping a plausible-but-uncertain attempt; the coordinator
+  escalates a tier immediately (skipping the same-tier retry), or raises a
+  Fable-suited one to the user. Complements the coordinator's top-down routing and
+  signoff so a tier mismatch is caught before the attempt, not only after. Lives in
+  fable-mode's scope gate, with an abuse guard (name the mismatch, never "too hard").
 - **Dashboard: project memories show their git state.** A `tracked` / `untracked` /
   `uncommitted` / `no git` chip on project-memory cards, so "this instruction ships to
   everyone who clones" vs "local-only, no audit trail" reads at a glance. Batched git
