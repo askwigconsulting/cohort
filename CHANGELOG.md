@@ -12,6 +12,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Dashboard: project memories show their git state.** A `tracked` / `untracked` /
+  `uncommitted` / `no git` chip on project-memory cards, so "this instruction ships to
+  everyone who clones" vs "local-only, no audit trail" reads at a glance. Batched git
+  lookup (constant calls, not per-file) since the endpoint is polled. Informs, never
+  gates (#182).
 - **Project-scoped memories are authorable: `cohort add-memory --to project`.**
   Writes a `scope: project` memory into `<repo>/.cohort/canonical/memories/`; the project
   tier compiles it and wires `@import cohort/CLAUDE.cohort.md` into the repo's `CLAUDE.md`

@@ -154,6 +154,50 @@ def test_git_state_on_a_non_git_directory_is_unknown_not_an_error(tmp_path):
     assert git_state(plain, plain / "f.md") == {"git": False, "tracked": False, "dirty": False}
 
 
+def test_git_states_batches_and_matches_git_state(repo, home, source):
+    add_project_memory(repo, home, source, name="a")
+    add_project_memory(repo, home, source, name="b")
+    paths = [_canonical(repo, "a"), _canonical(repo, "b")]
+    from cohort.gitutil import git_states
+
+    batched = git_states(repo, paths)
+    assert set(batched) == {str(p) for p in paths}
+    # The batched result must agree with the per-file function it replaces.
+    for p in paths:
+        assert batched[str(p)] == git_state(repo, p)
+
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "add"], cwd=repo, check=True)
+    after = git_states(repo, paths)
+    assert all(s == {"git": True, "tracked": True, "dirty": False} for s in after.values())
+
+
+def test_git_states_empty_and_non_git_are_safe(tmp_path):
+    from cohort.gitutil import git_states
+
+    assert git_states(tmp_path, []) == {}
+    f = tmp_path / "x.md"
+    f.write_text("x", encoding="utf-8")
+    assert git_states(tmp_path, [f]) == {str(f): {"git": False, "tracked": False, "dirty": False}}
+
+
+def test_dashboard_state_carries_git_for_project_memories_only(repo, home, source):
+    """The card needs the signal, so collect_state attaches it — to project
+    memories only (office/my memories don't travel with a repo)."""
+    from cohort.dashboard import collect_state
+
+    add_project_memory(repo, home, source)
+    state = collect_state(home, repo)
+    proj_mem = [
+        it for it in state["inventory"] if it["layer"] == "project" and it["kind"] == "memory"
+    ]
+    assert len(proj_mem) == 1
+    assert proj_mem[0]["git"] == {"git": True, "tracked": False, "dirty": False}
+    # Not attached where it would be meaningless.
+    others = [it for it in state["inventory"] if it["layer"] == "office"]
+    assert others and all("git" not in it for it in others)
+
+
 def test_authoring_a_project_memory_surfaces_the_travels_with_repo_note(repo, home, source):
     res = add_project_memory(repo, home, source)
     assert "travels with it" in res.stderr
