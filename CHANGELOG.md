@@ -11,6 +11,16 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Project-scoped memories are authorable: `cohort add-memory --to project`.**
+  Writes a `scope: project` memory into `<repo>/.cohort/canonical/memories/`; the project
+  tier compiles it and wires `@import cohort/CLAUDE.cohort.md` into the repo's `CLAUDE.md`
+  (and unwires it when the last one goes) — the compile half already existed, only the
+  authoring path was missing. A project memory loads in every session in the repo **and
+  travels with it**, so Cohort surfaces the new `git_state` signal (tracked / untracked /
+  uncommitted) at authoring time — tracked means changes are reviewable, untracked means no
+  audit trail. It reports and never blocks: the choice is the user's (#182).
+
 ### Fixed
 - **Dashboard: a project-scoped artifact in a *focused* project now loads.** The
   detail pane rendered an agent's card from the focused project's inventory but then

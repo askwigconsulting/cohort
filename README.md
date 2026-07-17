@@ -143,9 +143,17 @@ a new Cohort write path.
 | | The office | My office | This project |
 |---|---|---|---|
 | Lives in | the source clone's `canonical/` (placed via `~/.cohort/` + `~/.claude` etc.) | `~/.cohort/my/canonical/` | `<repo>/.cohort/` + `<repo>/.claude` |
-| Holds | the 17-agent roster, hooks, memories, skills | personal agents/memories (`add-agent`, `add-memory`, and `adopt` land here by default) | `project_context.md`, `sessions/`, project specialists, `proposals/`, `feedback/` |
+| Holds | the 17-agent roster, hooks, memories, skills | personal agents/memories (`add-agent`, `add-memory`, and `adopt` land here by default) | `project_context.md`, `sessions/`, project specialists, project memories, `proposals/`, `feedback/` |
 | Git-tracked | the Cohort source repo | no — yours to `git init` if you want history | the consuming repo (except `state/`, `compiled/`) |
 | Touched by update | fast-forwarded | never | never |
+
+**A project memory travels with the repo.** `cohort add-memory --to project` authors a
+`scope: project` memory into `<repo>/.cohort/canonical/memories/`; it compiles to the repo's own
+corpus and is `@import`ed into `<repo>/.claude/CLAUDE.md`, so it loads in **every session in that
+repo** — and, once committed, in every clone. That makes it louder than a project specialist, so
+Cohort **surfaces its git state** rather than gating it: *tracked* means changes are reviewable
+(history, PRs); *untracked* (or no git at all) means there's no audit trail. Which is acceptable is
+your call — Cohort's job is to make it visible.
 
 A my-office artifact whose `(kind, name)` collides with an office artifact is refused at compile —
 unless it is a deliberate override created with `cohort personalize <kind> <name>`, which copies the

@@ -1371,13 +1371,18 @@ def add_memory(
     ),
     to: str = typer.Option(
         "my", "--to",
-        help="my (default: the personal layer, ~/.cohort/my) | office (the shared clone).",
+        help="my (default: the personal layer, ~/.cohort/my) | office (the shared clone) | "
+             "project (this repo — travels with it).",
     ),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
-    """Author a new global office memory (compiled into every session's corpus), then recompile."""
+    """Author a new memory (compiled into a session's corpus), then recompile.
+
+    `--to project` writes it into this repo, where it loads in every session here
+    and travels with the repo — commit it and everyone who clones gets it.
+    """
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -1399,6 +1404,7 @@ def add_memory(
             source_path, Path.home(), name, description,
             priority=priority, display_name=display_name, body=body,
             dry_run=effective_dry_run, to=to,
+            repo=find_repo_root(Path.cwd()) if to == "project" else None,
         )
     except AddMemoryError as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -1406,7 +1412,38 @@ def add_memory(
     _emit(report, json_output, lambda r: typer.echo(
         f"add-memory: {'(dry-run) ' if r['dry_run'] else ''}{r['name']} → {r['path']}"))
     _echo_layer_note(report)
+    _echo_project_memory_note(report)
     raise typer.Exit(code=0)
+
+
+def _echo_project_memory_note(report: dict) -> None:
+    """Disclose what a project memory implies, and its git state.
+
+    A project memory loads into every session in the repo **and travels with the
+    repo**. Whether that is acceptable is the user's call, so this reports the
+    state and never blocks: tracked means changes are reviewable (history, PRs);
+    untracked or no-git means there is no audit trail (#182).
+    """
+    if report.get("layer") != "project" or report.get("dry_run"):
+        return
+    git = report.get("git") or {}
+    typer.echo(
+        "note: a project memory loads in every session in this repo and travels with it — "
+        "commit it and everyone who clones gets these standing instructions.",
+        err=True,
+    )
+    if not git.get("git"):
+        typer.echo("      git: not a git repo — no audit trail for changes to it.", err=True)
+    elif not git.get("tracked"):
+        typer.echo(
+            "      git: untracked — not shared yet, and changes aren't reviewable; "
+            "`git add` it to put changes under review.",
+            err=True,
+        )
+    elif git.get("dirty"):
+        typer.echo("      git: tracked, with uncommitted changes.", err=True)
+    else:
+        typer.echo("      git: tracked — changes are reviewable in history/PRs.", err=True)
 
 
 def _read_body_file(body_file: Optional[str]) -> Optional[str]:
