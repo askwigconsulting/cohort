@@ -292,6 +292,62 @@ def test_broad_footprint_does_not_override_sensitivity() -> None:
     assert violations == ["src/auth.py: sensitive:auth-crypto-secret"]
 
 
+def test_override_requires_the_same_sensitive_class_as_the_path() -> None:
+    # An entry sensitive in one class must not authorize a path sensitive in another.
+    # Listing an auth path consents to auth writes, not to writes under its `.git`.
+    assert check_changed_paths(
+        ["src/auth/.git/config"], allowed_footprint=["src/auth/**"]
+    ) == ["src/auth/.git/config: sensitive:git-internal"]
+    # The same-class override still works.
+    assert check_changed_paths(["src/auth/x.py"], allowed_footprint=["src/auth/**"]) == []
+
+
+@pytest.mark.parametrize(
+    "footprint_dir, path, expected_class",
+    [
+        ("authors", "authors/.git/config", "git-internal"),
+        ("secretariat", "secretariat/.env", "dotenv"),
+        ("cryptography", "cryptography/package-lock.json", "lockfile"),
+    ],
+)
+def test_innocuous_directory_name_does_not_launder_a_sensitive_path(
+    footprint_dir: str, path: str, expected_class: str
+) -> None:
+    # A directory whose name merely *starts with* an auth/crypto/secret keyword used to
+    # classify as sensitive, which made it a blanket override for every sensitive class
+    # beneath it -- so `--footprint authors/**` silently granted `.git` writes.
+    violations = check_changed_paths([path], allowed_footprint=[f"{footprint_dir}/**"])
+    assert violations == [f"{path}: sensitive:{expected_class}"]
+
+
+@pytest.mark.parametrize(
+    "path", ["authors/list.md", "secretariat/notes.md", "authorship.py"]
+)
+def test_innocuous_names_are_not_classified_sensitive(path: str) -> None:
+    # The converse of the laundering fix: these must not be over-blocked either.
+    assert check_changed_paths([path], allowed_footprint=["**"]) == []
+
+
+@pytest.mark.parametrize(
+    "path", ["auth.py", "src/auth_helpers.py", "crypto/keys.py", "app/secrets.py"]
+)
+def test_genuine_auth_names_are_still_classified_sensitive(path: str) -> None:
+    assert check_changed_paths([path], allowed_footprint=["**"]) == [
+        f"{path}: sensitive:auth-crypto-secret"
+    ]
+
+
+@pytest.mark.parametrize(
+    "path", ["C:\\Windows\\System32\\drivers\\etc\\hosts", "C:/Windows/x", "d:\\x"]
+)
+def test_windows_drive_absolute_path_escapes_repo_root(path: str) -> None:
+    # `_normalize_path` folds "\" to "/", leaving "C:/Windows/x" -- which has no leading
+    # "/" and so read as an ordinary relative path. Testable on every platform because
+    # the fold is unconditional.
+    violations = check_changed_paths([path], allowed_footprint=["**"])
+    assert violations == [f"{path}: escapes-repo-root"]
+
+
 def test_assert_paths_allowed_raises_listing_violations() -> None:
     with pytest.raises(PathViolationError) as excinfo:
         assert_paths_allowed(

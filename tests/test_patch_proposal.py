@@ -219,6 +219,106 @@ def test_path_outside_footprint_is_rejected_and_worktree_cleaned_up(
     assert not (tmp_path / "other/evil.py").exists()
 
 
+def test_sensitive_override_cannot_launder_a_git_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The `allowed_footprint=["."]` case below proves only the easy version: "." is not
+    # sensitive, so it was never an override candidate. This is the real one -- a
+    # footprint entry that DOES classify sensitive, in a different class to the path.
+    _init_git_repo(tmp_path, {"src/auth/session.py": "value = 1\n"})
+    reply = _patch_json(
+        summary="tamper with git",
+        new_files=[{"path": "src/auth/.git/config", "content": "[core]\n"}],
+    )
+    monkeypatch.setattr(patch_proposal.xai, "consult", _RecordingConsult(reply))
+
+    with pytest.raises(gates.PathViolationError):
+        patch_proposal.propose_patch(
+            "grok",
+            "task",
+            repo_root=tmp_path,
+            allowed_footprint=["src/auth/**"],
+            project_context_text="",
+        )
+    assert _worktree_count(tmp_path) == 1
+
+
+def test_no_worktree_is_created_when_the_engine_call_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The worktree is created only once the reply is parsed and gated, so an engine
+    # failure -- the longest window, and the one a Ctrl-C is most likely to land in --
+    # cannot leak one at all.
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+
+    def _boom(*_args: object, **_kwargs: object) -> str:
+        raise patch_proposal.xai.EngineUnavailableError("upstream is down")
+
+    monkeypatch.setattr(patch_proposal.xai, "consult", _boom)
+
+    with pytest.raises(patch_proposal.xai.EngineUnavailableError):
+        patch_proposal.propose_patch(
+            "grok",
+            "task",
+            repo_root=tmp_path,
+            allowed_footprint=["src"],
+            project_context_text="",
+        )
+    assert _worktree_count(tmp_path) == 1
+
+
+def test_worktree_is_cleaned_up_when_the_engine_call_is_interrupted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # KeyboardInterrupt is not an EngineError, so a narrow `except` would let it escape
+    # with the worktree still registered -- polluting the user's repo until they run
+    # `git worktree prune`.
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+
+    def _interrupt(*_args: object, **_kwargs: object) -> str:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(patch_proposal.xai, "consult", _interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        patch_proposal.propose_patch(
+            "grok",
+            "task",
+            repo_root=tmp_path,
+            allowed_footprint=["src"],
+            project_context_text="",
+        )
+    assert _worktree_count(tmp_path) == 1
+
+
+def test_worktree_is_cleaned_up_on_an_unexpected_apply_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An error type nobody anticipated must still clean up: the handler around
+    # `apply_patch` is deliberately `except BaseException`, not `except PatchApplyError`.
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    reply = _patch_json(
+        summary="edit the file",
+        edits=[{"path": "src/app.py", "search": "value = 1", "replace": "value = 2"}],
+    )
+    monkeypatch.setattr(patch_proposal.xai, "consult", _RecordingConsult(reply))
+
+    def _unexpected(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("something nobody predicted")
+
+    monkeypatch.setattr(patch_proposal.patch, "apply_patch", _unexpected)
+
+    with pytest.raises(RuntimeError):
+        patch_proposal.propose_patch(
+            "grok",
+            "task",
+            repo_root=tmp_path,
+            allowed_footprint=["src"],
+            project_context_text="",
+        )
+    assert _worktree_count(tmp_path) == 1
+
+
 def test_git_internal_path_is_rejected_even_within_footprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

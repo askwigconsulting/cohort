@@ -300,6 +300,92 @@ def test_apply_rejects_path_traversal(tmp_path: Path, bad_path: str) -> None:
     assert not (tmp_path.parent / "escape.txt").exists()
 
 
+@requires_symlinks
+def test_apply_rejects_new_file_through_symlink_redirect_inside_worktree(
+    tmp_path: Path,
+) -> None:
+    # Containment-in-worktree is not enough. The scope gate classifies the *lexical*
+    # path, so a committed symlink lets an in-footprint docs path redirect a write to a
+    # sensitive location that is still inside the worktree -- and the manifest would
+    # name the lexical path, showing the reviewer a file that is not the one on disk.
+    root = tmp_path / "worktree"
+    (root / ".github" / "workflows").mkdir(parents=True)
+    (root / "docs").mkdir()
+    (root / "docs" / "ci").symlink_to(
+        root / ".github" / "workflows", target_is_directory=True
+    )
+
+    proposal = PatchProposal(
+        summary="add docs note",
+        new_files=(NewFile("docs/ci/release.yml", "malicious: workflow"),),
+    )
+
+    with pytest.raises(PatchApplyError, match="symlink"):
+        apply_patch(proposal, root)
+    assert not (root / ".github" / "workflows" / "release.yml").exists()
+
+
+@requires_symlinks
+def test_apply_rejects_edit_through_symlink_redirect_inside_worktree(
+    tmp_path: Path,
+) -> None:
+    # The edit variant needs no exotic layout: `docs/README.md -> ../README.md` is a
+    # common repo pattern and would let an in-footprint edit rewrite a file outside it.
+    root = tmp_path / "worktree"
+    (root / "docs").mkdir(parents=True)
+    (root / "README.md").write_text("original", encoding="utf-8")
+    (root / "docs" / "README.md").symlink_to(root / "README.md")
+
+    proposal = PatchProposal(
+        summary="s", edits=(Edit("docs/README.md", "original", "rewritten"),)
+    )
+
+    with pytest.raises(PatchApplyError, match="symlink"):
+        apply_patch(proposal, root)
+    assert (root / "README.md").read_text(encoding="utf-8") == "original"
+
+
+def test_apply_writes_lf_line_endings_regardless_of_platform(tmp_path: Path) -> None:
+    # Asserted at the BYTE level on purpose: `read_text` translates CRLF back to "\n",
+    # so a text-level assertion cannot detect the newline translation `write_text`
+    # performs by default -- which on Windows rewrites every touched file in CRLF and
+    # breaks this repo's `eol=lf` byte-stability invariant.
+    (tmp_path / "existing.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    proposal = PatchProposal(
+        summary="s",
+        edits=(Edit("existing.py", "a = 1", "a = 99"),),
+        new_files=(NewFile("created.py", "x = 1\ny = 2\n"),),
+    )
+
+    apply_patch(proposal, tmp_path)
+
+    assert b"\r" not in (tmp_path / "existing.py").read_bytes()
+    assert b"\r" not in (tmp_path / "created.py").read_bytes()
+
+
+def test_edit_target_with_invalid_utf8_fails_as_patch_apply_error(
+    tmp_path: Path,
+) -> None:
+    # A binary edit target raises UnicodeDecodeError -- a ValueError, not a PatchError.
+    # Uncaught it escapes the caller's handler and leaks the proposal's worktree.
+    (tmp_path / "image.png").write_bytes(b"\x89PNG\r\n\x1a\n\xff\xfe binary")
+    proposal = PatchProposal(summary="s", edits=(Edit("image.png", "PNG", "GIF"),))
+
+    with pytest.raises(PatchApplyError, match="UTF-8"):
+        apply_patch(proposal, tmp_path)
+
+
+@pytest.mark.parametrize("bad_path", ["a\\b.py", "C:\\Windows\\x", "sub\\..\\..\\x"])
+def test_apply_rejects_backslash_paths(tmp_path: Path, bad_path: str) -> None:
+    # `gates` folds "\" to "/" before classifying but `Path` on posix does not, so
+    # `a\b.py` gated as `a/b.py` and was written as one oddly-named file at the root.
+    proposal = PatchProposal(summary="s", new_files=(NewFile(bad_path, "x"),))
+
+    with pytest.raises(PatchApplyError):
+        apply_patch(proposal, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_apply_rejects_absolute_path(tmp_path: Path) -> None:
     proposal = PatchProposal(
         summary="s", new_files=(NewFile("/etc/passwd_cohort", "x"),)

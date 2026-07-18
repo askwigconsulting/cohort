@@ -239,6 +239,20 @@ def assert_no_secrets(text: str) -> None:
 # --------------------------------------------------------------------------- #
 
 
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+
+# Segment-level match for auth/crypto/secret names. A keyword must be followed by a
+# non-alphanumeric character or end the segment, so `auth.py`, `auth_helpers.py` and
+# `secrets/` classify but `authors/` and `secretariat/` do not. Bare prefix matching
+# would let an innocuous directory name classify as sensitive — which, combined with
+# the same-class override rule in `check_changed_paths`, previously let a footprint
+# like `authors/**` launder a `.git` write beneath it.
+_AUTH_SEGMENT_RE = re.compile(
+    r"(auth|authn|authz|authentication|authorization"
+    r"|crypto|cryptography|secret|secrets)([^a-z0-9]|$)"
+)
+
+
 def _normalize_path(path: str) -> str:
     """Normalize a repo-relative path to posix form, collapsing ``.``/``..``.
 
@@ -256,10 +270,18 @@ def _normalize_path(path: str) -> str:
 
 
 def _escapes_repo(normalized: str) -> bool:
-    """True if a normalized path is absolute, escapes the repo root, or is degenerate."""
+    """True if a normalized path is absolute, escapes the repo root, or is degenerate.
+
+    "Absolute" covers both posix (`/etc/passwd`) and Windows drive-qualified
+    (`C:/Windows/...`) forms. The drive check matters on every platform, not just
+    Windows: :func:`_normalize_path` folds `C:\\Windows` to `C:/Windows`, which has no
+    leading `/` and would otherwise read as an ordinary relative path.
+    """
     if normalized in ("", "."):
         return True
     if normalized.startswith("/"):
+        return True
+    if _WINDOWS_DRIVE_RE.match(normalized) is not None:
         return True
     return normalized == ".." or normalized.startswith("../")
 
@@ -357,9 +379,7 @@ def _classify_sensitive(path: str) -> str | None:
         return "build-manifest"
     if base.startswith("install") or (base.endswith(".sh") and len(segments) == 1):
         return "install-script"
-    if any(
-        seg.lower().startswith(("auth", "crypto", "secret")) for seg in segments
-    ):
+    if any(_AUTH_SEGMENT_RE.match(seg.lower()) is not None for seg in segments):
         return "auth-crypto-secret"
     return None
 
@@ -377,9 +397,10 @@ def check_changed_paths(
     elevated approval *regardless of footprint*.
 
     A sensitive path can be allowed only by an **explicit, reviewed override**: a
-    footprint entry that both matches the path and is itself sensitive-classified
-    (e.g. listing ``src/auth.py`` or ``.env`` by name). A broad footprint such as
-    ``**`` never overrides sensitivity — that is the whole point of the gate.
+    footprint entry that matches the path and is classified into the *same* sensitive
+    class (e.g. listing ``src/auth.py`` or ``.env`` by name). A broad footprint such as
+    ``**`` never overrides sensitivity — that is the whole point of the gate — and an
+    entry sensitive in one class never authorizes a path sensitive in another.
 
     Args:
         paths: The repo-relative paths the patch would change.
@@ -399,9 +420,13 @@ def check_changed_paths(
 
         sensitive_class = _classify_sensitive(normalized)
         if sensitive_class is not None:
+            # An override must match the path's *own* sensitive class. Accepting any
+            # sensitive entry would let one class launder another — e.g. a footprint
+            # of `src/auth/**` (auth-crypto-secret) authorizing a `src/auth/.git/config`
+            # write (git-internal), which is not what listing an auth path consents to.
             overridden = any(
                 _within_footprint(normalized, entry)
-                and _classify_sensitive(_normalize_path(entry)) is not None
+                and _classify_sensitive(_normalize_path(entry)) == sensitive_class
                 for entry in allowed_footprint
             )
             if not overridden:

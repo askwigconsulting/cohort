@@ -293,42 +293,37 @@ def propose_patch(
         max_bytes=max_prompt_bytes,
     )
 
+    # The network call, the parse, and the path/secret gates all run BEFORE the worktree
+    # exists. Creating it earlier would hold a registered worktree open across the whole
+    # engine round-trip — up to two 60s attempts plus a 30s Retry-After sleep — where a
+    # Ctrl-C leaks it onto disk and into `.git/worktrees/`. Nothing below needs a
+    # worktree until `apply_patch`, so the leak window shrinks to the apply itself.
+    text = xai.consult(
+        prompt,
+        model=model,
+        max_tokens=max_tokens,
+        max_prompt_bytes=max_prompt_bytes,
+    )
+    proposal = patch.parse_patch(text)
+
+    proposed_paths = [e.path for e in proposal.edits] + [
+        f.path for f in proposal.new_files
+    ]
+    gates.assert_paths_allowed(proposed_paths, allowed_footprint=allowed_footprint)
+    gates.assert_no_secrets(
+        "\n".join(
+            [e.replace for e in proposal.edits]
+            + [f.content for f in proposal.new_files]
+        )
+    )
+
     worktree = _create_worktree(repo_root)
     try:
-        text = xai.consult(
-            prompt,
-            model=model,
-            max_tokens=max_tokens,
-            max_prompt_bytes=max_prompt_bytes,
-        )
-    except xai.EngineError:
-        cleanup_worktree(repo_root, worktree)
-        raise
-
-    try:
-        proposal = patch.parse_patch(text)
-    except patch.PatchParseError:
-        cleanup_worktree(repo_root, worktree)
-        raise
-
-    try:
-        proposed_paths = [e.path for e in proposal.edits] + [
-            f.path for f in proposal.new_files
-        ]
-        gates.assert_paths_allowed(proposed_paths, allowed_footprint=allowed_footprint)
-        gates.assert_no_secrets(
-            "\n".join(
-                [e.replace for e in proposal.edits]
-                + [f.content for f in proposal.new_files]
-            )
-        )
-    except gates.GateError:
-        cleanup_worktree(repo_root, worktree)
-        raise
-
-    try:
         manifest = patch.apply_patch(proposal, worktree)
-    except patch.PatchApplyError:
+    except BaseException:
+        # Deliberately BaseException, not PatchApplyError: a KeyboardInterrupt or any
+        # unanticipated stdlib error must still clean up. A leaked worktree pollutes the
+        # user's real repo until they run `git worktree prune`.
         cleanup_worktree(repo_root, worktree)
         raise
 

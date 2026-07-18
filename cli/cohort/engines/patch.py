@@ -34,9 +34,14 @@ partly invalid leaves the filesystem untouched.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# `Path("C:/x").is_absolute()` is False on posix, so a drive-qualified path would read
+# as relative here. Mirrors the same check in `cohort.engines.gates`.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 
 
 class PatchError(Exception):
@@ -241,21 +246,45 @@ def parse_patch(text: str) -> PatchProposal:
 def _resolve_within(root: Path, root_resolved: Path, rel_path: str) -> Path:
     """Return the absolute target for ``rel_path`` inside ``root``, or reject it.
 
-    The path must be non-empty, relative, and free of ``..`` components; after joining
-    onto ``root`` and *resolving symlinks*, it must land strictly inside
-    ``root_resolved``. This is the write-containment security boundary.
+    The path must be non-empty, relative, free of ``..`` components and backslashes,
+    and must not traverse a symlink at any depth; after joining onto ``root`` it must
+    land strictly inside ``root_resolved``. This is the write-containment security
+    boundary.
+
+    Symlink traversal is refused outright rather than merely contained. Containment
+    alone is not enough: the scope gate in :mod:`cohort.engines.gates` classifies the
+    *lexical* path, so a committed symlink (``docs/ci -> ../.github/workflows``) would
+    let an in-footprint path redirect a write to a sensitive location that is still
+    inside the worktree — and the reported manifest would name the lexical path,
+    showing the human reviewer a file that is not the one on disk. A machine-generated
+    patch into a throwaway worktree has no legitimate need to write through a symlink.
 
     Raises:
-        PatchApplyError: for an empty, absolute, ``..``-bearing, or escaping path.
+        PatchApplyError: for an empty, absolute, ``..``-bearing, backslash-bearing,
+            symlink-traversing, or escaping path.
     """
     if not rel_path:
         raise PatchApplyError("patch path is empty")
 
+    # `gates` folds backslashes to `/` before classifying; `Path` on posix does not,
+    # so `a\b.py` would gate as `a/b.py` and be written as a single oddly-named file
+    # at the worktree root. Refusing the character keeps both modules on one grammar.
+    if "\\" in rel_path:
+        raise PatchApplyError(f"patch path must not contain a backslash: {rel_path!r}")
+
     candidate = Path(rel_path)
-    if candidate.is_absolute():
+    if candidate.is_absolute() or _WINDOWS_DRIVE_RE.match(rel_path) is not None:
         raise PatchApplyError(f"patch path must be relative: {rel_path!r}")
     if ".." in candidate.parts:
         raise PatchApplyError(f"patch path must not contain '..': {rel_path!r}")
+
+    walked = root_resolved
+    for part in candidate.parts:
+        walked = walked / part
+        if walked.is_symlink():
+            raise PatchApplyError(
+                f"patch path traverses a symlink: {rel_path!r} (at {part!r})"
+            )
 
     resolved = (root / candidate).resolve()
     if resolved == root_resolved or not resolved.is_relative_to(root_resolved):
@@ -269,6 +298,11 @@ def apply_patch(proposal: PatchProposal, root: Path) -> PatchResult:
     Every check — path safety, edit-target existence, exactly-once ``search`` matches,
     and ``new_files`` non-collision — runs *before* any write. If any check fails the
     function raises and the filesystem is left unchanged.
+
+    Note the guarantee is "all checks precede all writes", not filesystem atomicity: an
+    ``OSError`` partway through the write phase (ENOSPC, a read-only mount) leaves the
+    earlier writes in place. That is acceptable only because ``root`` is a throwaway
+    worktree the caller discards on failure — do not rely on this for in-place edits.
 
     Edits to the same file are applied in order against a running in-memory copy, so a
     later edit's exactly-once requirement is measured against the text left by earlier
@@ -296,7 +330,16 @@ def apply_patch(proposal: PatchProposal, root: Path) -> PatchResult:
         if target not in edit_targets:
             if not target.is_file():
                 raise PatchApplyError(f"edit target does not exist: {edit.path!r}")
-            edit_targets[target] = target.read_text(encoding="utf-8")
+            try:
+                edit_targets[target] = target.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError) as exc:
+                # A binary or non-UTF-8 edit target raises UnicodeDecodeError, which is
+                # a ValueError — not a PatchError. Uncaught, it escapes both the caller's
+                # handler and the worktree cleanup in `patch_proposal`, leaking a
+                # registered worktree and surfacing a raw traceback.
+                raise PatchApplyError(
+                    f"edit target is not readable as UTF-8 text: {edit.path!r}"
+                ) from exc
             changed.append(Path(edit.path).as_posix())
 
         working = edit_targets[target]
@@ -324,10 +367,17 @@ def apply_patch(proposal: PatchProposal, root: Path) -> PatchResult:
         created.append(Path(new_file.path).as_posix())
 
     # --- Phase 2: all checks passed — commit the writes. ---
-    for target, content in edit_targets.items():
-        target.write_text(content, encoding="utf-8")
-    for target, content in new_targets.items():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+    # `newline=""` disables newline translation. Without it `write_text` rewrites every
+    # "\n" as os.linesep, so on Windows every touched file lands entirely in CRLF —
+    # violating this repo's `.gitattributes` `eol=lf` invariant and producing
+    # whole-file diffs that break the byte-stable golden/parity tests.
+    try:
+        for target, content in edit_targets.items():
+            target.write_text(content, encoding="utf-8", newline="")
+        for target, content in new_targets.items():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8", newline="")
+    except OSError as exc:
+        raise PatchApplyError(f"could not write the patch: {exc}") from exc
 
     return PatchResult(changed=changed, created=created)

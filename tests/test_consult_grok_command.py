@@ -66,7 +66,13 @@ def test_consult_grok_is_api_direct_and_never_executes_locally():
     assert "it has no write access to this\nrepo and executes no local tools of its own" in body
 
 
-def test_consult_grok_egress_default_allow_with_repo_opt_out_and_secrets_ban():
+def test_consult_grok_wording_documents_egress_default_allow_and_secrets_ban():
+    # WORDING LOCK ONLY -- this asserts what the compiled command *says*, not what the
+    # code *does*. The egress opt-out and the secret ban are enforced in
+    # `cohort.engines.gates` and covered by
+    # `test_engine_consult_blocks_when_the_repo_opted_out_of_egress` and
+    # `test_engine_consult_blocks_a_prompt_containing_a_secret`. Do not read a pass here
+    # as evidence the control works: this test would pass with `gates.py` deleted.
     body = _consult_body()
     assert "external egress" in body
     assert "allowed by default" in body
@@ -128,6 +134,77 @@ def test_engine_consult_reads_prompt_from_file_and_caps_max_tokens_by_default(tm
     assert captured["model"] is None
     assert captured["max_tokens"] == 4096  # bounded by default even though the
     # client itself leaves max_tokens unset
+
+
+def test_engine_consult_blocks_when_the_repo_opted_out_of_egress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The opt-out must be enforced in CODE on the consult path, not only asserted as
+    # prose in the compiled command. Previously `engine consult` ran no gates at all,
+    # so an opted-out repo still egressed.
+    (tmp_path / ".cohort").mkdir()
+    (tmp_path / ".cohort" / "project_context.md").write_text(
+        "## Egress\n\ncohort:egress=deny\n", encoding="utf-8"
+    )
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("review this private code", encoding="utf-8")
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+
+    consult_mock = MagicMock(return_value="should never be reached")
+    with patch("cohort.cli.engine_xai.consult", consult_mock):
+        result = runner.invoke(
+            app, ["engine", "consult", "grok", "--prompt-file", str(prompt_file)]
+        )
+
+    assert result.exit_code == 1
+    # The decisive assertion: nothing was sent.
+    consult_mock.assert_not_called()
+
+
+def test_engine_consult_blocks_a_prompt_containing_a_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text(
+        "here is my config\nAWS_SECRET_ACCESS_KEY = wJalrXUtnFEMIK7MDENGbPxRfiCY\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+
+    consult_mock = MagicMock(return_value="should never be reached")
+    with patch("cohort.cli.engine_xai.consult", consult_mock):
+        result = runner.invoke(
+            app, ["engine", "consult", "grok", "--prompt-file", str(prompt_file)]
+        )
+
+    assert result.exit_code == 1
+    consult_mock.assert_not_called()
+    # The label names the shape, never the matched value.
+    assert "wJalrXUtnFEMIK" not in result.output
+
+
+def test_engine_consult_escapes_terminal_control_sequences_in_the_reply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The reply is untrusted. Raw echo would let it rewrite prior terminal output and
+    # spoof the very result a human is about to act on.
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("hello", encoding="utf-8")
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    hostile = "safe line\n\x1b[2J\x1b[1;1Hall checks passed"
+
+    with patch("cohort.cli.engine_xai.consult", return_value=hostile):
+        result = runner.invoke(
+            app, ["engine", "consult", "grok", "--prompt-file", str(prompt_file)]
+        )
+
+    assert result.exit_code == 0
+    # Assert on the VISIBLE escape, not on the absence of a raw one: click.echo strips
+    # ANSI when the stream is not a tty, so `"\x1b" not in output` would pass even with
+    # a raw echo and prove nothing.
+    assert "\\x1b[2J" in result.output
+    assert "\x1b" not in result.output
+    assert "safe line" in result.output
 
 
 def test_engine_consult_honors_a_custom_max_tokens_override(tmp_path: Path):
