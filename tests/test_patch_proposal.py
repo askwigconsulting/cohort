@@ -294,6 +294,32 @@ def test_unknown_engine_raises_proposal_error(tmp_path: Path) -> None:
         )
 
 
+def test_empty_footprint_raises_before_any_engine_call_or_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # propose_patch enforces the non-empty-footprint invariant itself (not only the
+    # CLI): a caller with no declared write scope is refused before the engine is
+    # called and before any worktree is created.
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+
+    def _fail_if_called(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("engine must not be called with an empty footprint")
+
+    monkeypatch.setattr(patch_proposal.xai, "consult", _fail_if_called)
+
+    for footprint in ([], ["", "   "]):
+        with pytest.raises(patch_proposal.ProposalError):
+            patch_proposal.propose_patch(
+                "grok",
+                "task",
+                repo_root=tmp_path,
+                allowed_footprint=footprint,
+                project_context_text="",
+            )
+    # Only the main worktree exists — nothing was staged.
+    assert _worktree_count(tmp_path) == 1
+
+
 # --------------------------------------------------------------------------- #
 # CLI usage errors
 # --------------------------------------------------------------------------- #

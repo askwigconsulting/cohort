@@ -45,7 +45,9 @@ def test_egress_marker_is_case_insensitive_and_whitespace_tolerant() -> None:
     assert egress_opted_out(text) is True
 
 
-def test_egress_opted_out_via_egress_section_deny_word() -> None:
+def test_egress_section_denies_by_default_without_allow_marker() -> None:
+    # Merely having an '## Egress' section is a deliberate policy statement; absent an
+    # explicit allow marker it denies (deny-by-default), whatever the prose says.
     text = (
         "# Project Context\n\n"
         "## Egress\n\n"
@@ -55,13 +57,32 @@ def test_egress_opted_out_via_egress_section_deny_word() -> None:
     assert egress_opted_out(text) is True
 
 
-def test_egress_section_without_deny_word_is_not_opted_out() -> None:
+def test_egress_section_with_explicit_allow_marker_is_not_opted_out() -> None:
     text = (
         "## Egress\n\n"
-        "External engines are allowed for advisory consults.\n\n"
-        "## Next\ndeny appears only here, outside the egress section\n"
+        "External engines are permitted for advisory consults.\n"
+        "cohort:egress=allow\n"
     )
     assert egress_opted_out(text) is False
+
+
+def test_egress_section_prose_allow_does_not_fail_open() -> None:
+    # The negation trap: a section that says engines are "disabled"/"NOT allowed" must
+    # never be misread as permission. Without the structured allow marker it denies.
+    for body in (
+        "External engines are disabled.\n",
+        "External engines are forbidden.\n",
+        "External engines are NOT allowed.\n",
+        "Egress is turned off.\n",
+    ):
+        text = f"## Egress\n\n{body}"
+        assert egress_opted_out(text) is True, body
+
+
+def test_egress_deny_marker_beats_allow_marker() -> None:
+    # deny always wins over allow (fail closed) regardless of order.
+    assert egress_opted_out("cohort:egress=allow\ncohort:egress=deny\n") is True
+    assert egress_opted_out("cohort:egress=deny\ncohort:egress=allow\n") is True
 
 
 def test_absent_file_or_section_is_not_opted_out() -> None:

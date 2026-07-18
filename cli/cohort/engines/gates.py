@@ -59,34 +59,41 @@ class PayloadTooLargeError(GateError):
 # 1. Egress opt-out
 # --------------------------------------------------------------------------- #
 
-# Literal marker token a repo can drop anywhere in its project context to deny
-# external-engine egress. Matched case-insensitively, with optional whitespace
-# around the separators so a hand-typed variant still trips it (fail closed).
-_EGRESS_MARKER_RE = re.compile(r"cohort\s*:\s*egress\s*=\s*deny", re.IGNORECASE)
+# Structured marker tokens a repo can drop anywhere in its project context to deny
+# or (explicitly) allow external-engine egress. Matched case-insensitively, with
+# optional whitespace around the separators so a hand-typed variant still trips it.
+# These are the *reliable* signals — deny wins over allow (fail closed).
+_EGRESS_DENY_MARKER_RE = re.compile(r"cohort\s*:\s*egress\s*=\s*deny", re.IGNORECASE)
+_EGRESS_ALLOW_MARKER_RE = re.compile(r"cohort\s*:\s*egress\s*=\s*allow", re.IGNORECASE)
 
-# Heading that opens an "## Egress" policy section, and the deny-signalling words
-# whose presence in that section's body means opt-out.
+# Heading that opens an "## Egress" policy section. Merely *having* such a section is
+# a deliberate policy statement, so it flips the repo to deny-by-default; only the
+# structured allow marker re-permits. Prose is never trusted to signal intent — that
+# is what makes this negation-proof ("engines are NOT allowed" cannot read as allow).
 _EGRESS_HEADING_RE = re.compile(r"^\s{0,3}##\s+egress\b.*$", re.IGNORECASE)
-_HEADING_L1_L2_RE = re.compile(r"^\s{0,3}#{1,2}\s+\S")
-_EGRESS_DENY_WORDS_RE = re.compile(
-    r"deny|restricted|no-egress|opt-out", re.IGNORECASE
-)
 
 
 def egress_opted_out(project_context_text: str) -> bool:
     """Return True if the repo has opted out of external-engine egress.
 
-    Opt-out is signalled in ``.cohort/project_context.md`` by EITHER:
+    The signal in ``.cohort/project_context.md`` is deliberately **structured**, not
+    prose, so it cannot fail open on an ambiguous or negated sentence. The repo is
+    opted out (returns True) when EITHER:
 
-    * the literal marker token ``cohort:egress=deny`` (case-insensitive) appearing
-      anywhere in the file, OR
-    * a Markdown heading ``## Egress`` whose section body (the lines up to the next
-      level-1 or level-2 heading) contains any of ``deny``, ``restricted``,
-      ``no-egress``, or ``opt-out`` (case-insensitive).
+    * the literal marker ``cohort:egress=deny`` (case-insensitive) appears anywhere in
+      the file, OR
+    * a Markdown heading ``## Egress`` appears anywhere AND the file does *not* also
+      carry the explicit ``cohort:egress=allow`` marker.
 
-    An absent file, an absent ``## Egress`` section, or a section with none of the
-    deny words means *not opted out* (returns False). The caller decides how to feed
-    the file in; passing ``""`` (e.g. a missing file) safely yields False.
+    In other words, writing an ``## Egress`` section at all switches the repo to
+    deny-by-default; to permit egress despite that section, add the explicit
+    ``cohort:egress=allow`` marker. Free-text words in the section (``allowed``,
+    ``disabled``, ``forbidden`` …) are intentionally **not** trusted — a sentence like
+    "external engines are NOT allowed" must never be misread as permission.
+
+    An absent file or a file with no ``## Egress`` section and no deny marker means
+    *not opted out* (returns False); the default is allow, per Cohort's
+    code-sharing-default-allow posture. ``deny`` always beats ``allow`` (fail closed).
 
     Args:
         project_context_text: The full text of the repo's project-context file.
@@ -94,23 +101,15 @@ def egress_opted_out(project_context_text: str) -> bool:
     Returns:
         True if egress is opted out, else False.
     """
-    if _EGRESS_MARKER_RE.search(project_context_text):
+    if _EGRESS_DENY_MARKER_RE.search(project_context_text):
         return True
 
-    lines = project_context_text.splitlines()
-    in_section = False
-    for line in lines:
-        if in_section:
-            if _HEADING_L1_L2_RE.match(line):
-                # A new level-1/level-2 heading closes the Egress section.
-                in_section = False
-                # Fall through so this same line can *open* a new Egress section.
-            else:
-                if _EGRESS_DENY_WORDS_RE.search(line):
-                    return True
-                continue
-        if _EGRESS_HEADING_RE.match(line):
-            in_section = True
+    has_egress_section = any(
+        _EGRESS_HEADING_RE.match(line)
+        for line in project_context_text.splitlines()
+    )
+    if has_egress_section and not _EGRESS_ALLOW_MARKER_RE.search(project_context_text):
+        return True
     return False
 
 
@@ -126,7 +125,9 @@ def require_egress_allowed(project_context_text: str) -> None:
     if egress_opted_out(project_context_text):
         raise EgressBlockedError(
             "external-engine egress is opted out for this repo "
-            "(cohort:egress=deny marker or an '## Egress' deny section)"
+            "(a 'cohort:egress=deny' marker, or an '## Egress' section without an "
+            "explicit 'cohort:egress=allow' marker). Add 'cohort:egress=allow' to "
+            "permit egress."
         )
 
 

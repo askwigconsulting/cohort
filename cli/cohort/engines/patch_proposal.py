@@ -249,7 +249,8 @@ def propose_patch(
         task: The change to request, in natural language.
         repo_root: The repository to branch the worktree from (must be a git repo).
         allowed_footprint: Repo-relative path prefixes/globs the patch may touch; an
-            empty footprint is rejected upstream (no unbounded write scope).
+            empty footprint is rejected here with :class:`ProposalError` (a write
+            scope must be declared — no unbounded or no-op proposals).
         project_context_text: The repo's project-context file text (egress policy +
             conventions surfaced to the engine).
         model: Optional model id override; defaults to the engine's flagship.
@@ -260,12 +261,23 @@ def propose_patch(
         A :class:`ProposalOutcome` whose ``worktree`` holds the applied change.
 
     Raises:
-        ProposalError: unknown/unauthorised engine, or a git worktree failure.
+        ProposalError: unknown/unauthorised engine, an empty footprint, or a git
+            worktree failure.
         GateError: any pre-egress or post-parse gate blocked (fail closed).
         EngineError: the engine call failed.
         PatchError: the reply could not be parsed or applied.
     """
     spec = _require_patch_proposal_engine(engine_name)
+
+    # Enforce the non-empty-footprint invariant here, not only in the CLI: any caller
+    # (a future orchestrator included) must declare a write scope. An empty footprint
+    # would otherwise silently reduce to "block every path" — safe, but a no-op patch
+    # would then report success against an empty worktree, which is misleading.
+    if not any(entry.strip() for entry in allowed_footprint):
+        raise ProposalError(
+            "allowed_footprint is empty; refusing to propose with no declared write "
+            "scope (pass at least one repo-relative path or glob)"
+        )
 
     prompt = _assemble_prompt(
         task,
