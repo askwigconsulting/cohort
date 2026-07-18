@@ -325,6 +325,21 @@ def test_empty_footprint_raises_before_any_engine_call_or_worktree(
 # --------------------------------------------------------------------------- #
 
 
+def test_display_safe_escapes_terminal_control_sequences() -> None:
+    from cohort.cli import _display_safe
+
+    # An engine could embed an ANSI clear-screen / cursor sequence in its summary or a
+    # proposed path; it must be neutralised (shown as a visible escape), never emitted
+    # raw where it could rewrite the reviewer's terminal.
+    assert "\x1b" not in _display_safe("done\x1b[2Jwiped")
+    assert _display_safe("done\x1b[2Jwiped") == "done\\x1b[2Jwiped"
+    # Ordinary text — including spaces and unicode — is left intact.
+    assert _display_safe("Add rate limit to /api") == "Add rate limit to /api"
+    assert _display_safe("café — updated") == "café — updated"
+    # Other control characters are escaped too.
+    assert "\r" not in _display_safe("a\rb")
+
+
 def test_cli_propose_rejects_unknown_engine_with_exit_2() -> None:
     result = runner.invoke(app, ["engine", "propose", "not-a-real-engine"])
     assert result.exit_code == 2

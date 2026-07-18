@@ -239,6 +239,8 @@ def test_absolute_and_escaping_paths_are_blocked() -> None:
     "path, expected_class",
     [
         (".git/config", "git-internal"),
+        ("submodule/.git/config", "git-internal"),
+        ("path/to/.git/HEAD", "git-internal"),
         ("hooks/pre-push", "git-hook"),
         (".github/workflows/ci.yml", "ci-config"),
         (".gitlab-ci.yml", "ci-config"),

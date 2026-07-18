@@ -884,6 +884,18 @@ def engine_consult(
     raise typer.Exit(code=0)
 
 
+def _display_safe(text: str) -> str:
+    """Render engine-controlled ``text`` safe to echo to a terminal.
+
+    An external engine's reply (a patch summary, a proposed path) is untrusted; echoing
+    it raw would let embedded ANSI/control sequences rewrite the reviewer's terminal.
+    Replace every non-printable character with a visible escape (e.g. ``\\x1b``) while
+    leaving ordinary printable text — including spaces — untouched. Callers that render
+    multi-line output split into lines first, then sanitize each line.
+    """
+    return "".join(ch if ch.isprintable() or ch == " " else repr(ch)[1:-1] for ch in text)
+
+
 @engine_app.command("propose")
 def engine_propose(
     engine: str = typer.Argument(..., help="Registered engine name trusted for patches (e.g. 'grok')."),
@@ -1000,17 +1012,20 @@ def engine_propose(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
 
-    typer.echo(f"summary: {outcome.summary}")
+    # The summary, proposed paths, and commit subject all originate in the engine's
+    # (untrusted) reply; escape control characters before echoing so an embedded ANSI
+    # sequence cannot manipulate the reviewer's terminal.
+    typer.echo(f"summary: {_display_safe(outcome.summary)}")
     for path in outcome.manifest.changed:
-        typer.echo(f"  changed: {path}")
+        typer.echo(f"  changed: {_display_safe(path)}")
     for path in outcome.manifest.created:
-        typer.echo(f"  created: {path}")
+        typer.echo(f"  created: {_display_safe(path)}")
     if outcome.risk_labels:
         typer.echo(f"risk: {', '.join(outcome.risk_labels)}")
     typer.echo(f"worktree: {outcome.worktree}")
     typer.echo("suggested commit message:")
     for line in outcome.suggested_commit_message.splitlines():
-        typer.echo(f"  {line}")
+        typer.echo(f"  {_display_safe(line)}")
     typer.echo(
         "review the change in the worktree, run the tests, then merge — "
         "nothing was committed and this repo's working tree is unchanged.",

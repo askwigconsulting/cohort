@@ -326,7 +326,10 @@ def _classify_sensitive(path: str) -> str | None:
 
     if any(seg.lower().startswith(".env") for seg in segments):
         return "dotenv"
-    if lower == ".git" or lower.startswith(".git/"):
+    if any(seg.lower() == ".git" for seg in segments):
+        # Any `.git` directory, not just the repo-root one — a nested `.git`
+        # (a submodule's git dir, or one under any subdirectory) is just as
+        # sensitive as the top-level one and must not be written blindly.
         return "git-internal"
     if "hooks" in (seg.lower() for seg in segments):
         return "git-hook"
