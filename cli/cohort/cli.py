@@ -88,6 +88,8 @@ from .specialists import (
 from .dashboard import do_dashboard
 from .status import do_status
 from .trial import TryError, do_try
+from .engines import ENGINES, UnknownEngineError, get_engine
+from .engines import xai as engine_xai
 
 app = typer.Typer(
     add_completion=False,
@@ -807,6 +809,79 @@ app.add_typer(context_app, name="context")
 
 my_office_app = typer.Typer(add_completion=False, help="Personal-layer (my office) commands.")
 app.add_typer(my_office_app, name="my-office")
+
+engine_app = typer.Typer(add_completion=False, help="External-engine (RFC 0004) commands.")
+app.add_typer(engine_app, name="engine")
+
+
+@engine_app.command("consult")
+def engine_consult(
+    engine: str = typer.Argument(..., help="Registered engine name (e.g. 'grok')."),
+    prompt_file: Optional[Path] = typer.Option(
+        None,
+        "--prompt-file",
+        help="Path to a file holding the prompt. Omit to read the prompt from stdin.",
+    ),
+    max_tokens: int = typer.Option(
+        4096,
+        "--max-tokens",
+        help="Cap on the engine's response length (bounds cost).",
+    ),
+) -> None:
+    """Consult an external engine (advisory only) and print its reply to stdout.
+
+    The prompt is read from ``--prompt-file`` or piped stdin — NEVER accepted as a
+    positional shell argument — so it can't leak via shell history, quoting, or the
+    process list. The response is capped by ``--max-tokens`` to bound cost.
+    """
+    try:
+        get_engine(engine)
+    except UnknownEngineError:
+        typer.echo(
+            f"error: unknown engine {engine!r}; registered engines: "
+            f"{', '.join(sorted(ENGINES))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if prompt_file is not None:
+        try:
+            prompt = prompt_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read --prompt-file {prompt_file}: {exc}", err=True)
+            raise typer.Exit(code=2)
+    elif not sys.stdin.isatty():
+        prompt = sys.stdin.read()
+    else:
+        typer.echo(
+            "error: no prompt given — pass --prompt-file PATH or pipe the prompt to "
+            "stdin (the prompt is never accepted as a shell argument)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if not prompt.strip():
+        typer.echo("error: prompt is empty", err=True)
+        raise typer.Exit(code=2)
+
+    try:
+        text = engine_xai.consult(prompt, model=None, max_tokens=max_tokens)
+    except engine_xai.EngineAuthError:
+        typer.echo(
+            "error: GROK_API_KEY is unset or was rejected by xAI; export a developer "
+            "key from https://console.x.ai and retry",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except engine_xai.EnginePayloadError as exc:
+        typer.echo(f"error: {exc} — trim the prompt/context and retry", err=True)
+        raise typer.Exit(code=1)
+    except engine_xai.EngineUnavailableError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(text)
+    raise typer.Exit(code=0)
 
 
 @my_office_app.command("sync")
