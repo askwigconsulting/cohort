@@ -13,4 +13,6 @@ procurement, communications), invoke the **ChiefOfStaff** agent first: it names 
 specialist(s) to consult. Invoke those specialists yourself and hand their input back to
 ChiefOfStaff for one reconciled recommendation. Specialists are read-only and advisory — they
 recommend; the user decides. A repository may add its own project-scoped specialists under its
-`.claude/agents/`; invoke those directly by name.
+`.claude/agents/`; these are first-class and override a same-named global specialist. Project
+specialists can be invoked directly by name, or named by ChiefOfStaff when routing cross-function
+requests.

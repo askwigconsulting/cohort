@@ -161,8 +161,10 @@ office artifact into my office with an override marker (and `status` flags the o
 office version later changes or disappears). A tailored roster subset filters the office layer only
 — your own agents always install.
 
-Project specialists are invoked directly by name; the global Chief-of-Staff routes only the global
-roster for now (project-awareness routing is tracked in #24).
+Project specialists are first-class. When invoked inside a repository, ChiefOfStaff
+names project specialists alongside global ones, and they override a same-named
+global specialist for that repo. Project specialists can also be invoked directly
+by name at any time.
 
 ## Vocabulary
 
@@ -188,7 +190,8 @@ roster for now (project-awareness routing is tracked in #24).
 `rollback` · `init` / `deinit` · `add-agent` / `add-memory` / `add-skill` / `add-command` / `add-hook` /
 `adopt` / `personalize` / `edit` / `try` (global) · `add-specialist` /
 `remove-specialist` (project) · `promote` · `snapshot` · `distill` · `context refresh` · `status` · `dashboard` ·
-`projects` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals`. Every
+`projects` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals` ·
+`engine consult` / `engine propose` · `my-office sync` / `my-office review` / `my-office approve`. Every
 command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a repair command,
 excepted); installs/compiles are idempotent and reversible. `cohort --version` prints the release.
 
@@ -206,7 +209,8 @@ below Opus) researches and plans, routes each task to the cheapest capable model
 (fable/opus/sonnet/haiku, max 10 agents in flight), and verifies every task itself before signoff.
 `/consult-gpt` brings a second vendor's model into the room — an advisory, read-only ChatGPT
 opinion via the OpenAI Codex CLI, cross-examined against Claude's own analysis, never executed
-blindly.
+blindly. `/code-simplify` reviews recently changed code for reuse, simplification, and
+maintainability — reducing complexity without changing behavior.
 
 ## Versioning
 

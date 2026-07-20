@@ -1,6 +1,6 @@
 ---
 description: Fable-led development — research and plan on Fable, fan implementation out to model-tiered agents (max 10 in flight), Fable signs off completion
-argument-hint: [task]
+argument-hint: '[task]'
 ---
 
 The standard development protocol: the **coordinating session researches, plans, and
@@ -83,15 +83,31 @@ of shipping an uncertain attempt. Routing is the coordinator's call from above; 
 kickback is the worker's check from below, so a mismatch is caught before the attempt,
 not only at signoff.
 
-## 4. Fan out — never more than 10 agents in flight
+## 4. Fan out — coordinator keeps ≤10 agents in flight
 
-Launch independent tasks concurrently, dependent tasks in dependency order.
-**Never more than 10 agents in flight at once, across all tiers** — queue the rest.
-Parallel writers require disjoint file footprints or worktree isolation; when in
-doubt, serialize. If a worker stalls or dies, its task returns to the queue — the
-cap is on live agents, not total tasks. If a fable-tier launch fails mid-run for
-credit or availability reasons, reroute that task to opus and note it in the
-completion report.
+Launch independent tasks concurrently, dependent tasks in dependency order. The
+**coordinator keeps no more than 10 agents in flight at once, across all tiers**
+— queue the rest. This is a coordination discipline the coordinator maintains,
+not a runtime limit the system enforces.
+
+**Concurrent writers require per-task git worktrees** — a shared `.git/index.lock`
+is not isolated by disjoint file footprints. The coordinator:
+
+1. Creates a branch and ephemeral worktree for each parallel-writer task (e.g.,
+   `git worktree add --detach <tmpdir>/task-N <branch-name>`).
+2. **Forbids worker commits in the coordinator's shared checkout.** Each worker
+   receives a worktree-rooted path and commits to that worktree's detached HEAD.
+3. After signoff, integrates: merges or cherry-picks the committed branch back
+   to the coordinator's branch, **serially** (one per task), then deletes the
+   worktree.
+4. Runs the full suite after each integration to catch cross-task conflicts.
+
+If a worker stalls or dies, its worktree remains; the task returns to the queue.
+When in doubt (small changes, no write concurrency), serialize rather than create
+worktrees. If a fable-tier launch fails mid-run for credit or availability
+reasons, **ask the user** whether to wait for Fable or authorize an Opus reroute;
+do not silently reroute to opus (mirror the `/consult-gpt` unavailability consent
+flow).
 
 ## 5. Signoff — the coordinator verifies, never rubber-stamps
 

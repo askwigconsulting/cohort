@@ -33,7 +33,7 @@ def _compiled_orchestrate_body() -> str:
 
 def test_orchestrate_locks_the_ten_agent_cap():
     body = _compiled_orchestrate_body()
-    assert "Never more than 10 agents in flight at once, across all tiers" in body
+    assert "no more than 10 agents in flight at once, across all tiers" in body
 
 
 def test_orchestrate_locks_coordinator_signoff():
@@ -46,7 +46,10 @@ def test_orchestrate_locks_coordinator_signoff():
 
 def test_orchestrate_locks_parallel_writer_isolation():
     body = _compiled_orchestrate_body()
-    assert "disjoint file footprints or worktree isolation" in body
+    # Reworded (review GT1/GT3): concurrent writers must use per-task worktrees,
+    # and workers may not commit in the coordinator's shared checkout.
+    assert "Concurrent writers require per-task git worktrees" in body
+    assert "Forbids worker commits in the coordinator's shared checkout" in body
 
 
 def test_orchestrate_locks_the_worker_kickback():
