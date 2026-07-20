@@ -11,6 +11,23 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- **RFC 0004 gate hardening (pre-merge review).** Five defects found reviewing the
+  Grok engine before merge, each with a regression test that fails without the fix:
+  `cohort engine consult` ran **no gates at all** — the per-repo egress opt-out and the
+  secret scan existed only as prose in the compiled command, so an opted-out repo still
+  egressed; a proposed path could traverse a **symlink** to redirect an in-footprint
+  write to a sensitive location inside the worktree while the manifest reported the
+  lexical path, showing the reviewer a file that was not the one on disk; a footprint
+  entry sensitive in one class **laundered** paths sensitive in another (`authors/**`
+  granted `.git` writes, via prefix matching that also mis-classified innocuous names);
+  a Windows drive-qualified path (`C:\…`) passed the scope gate on every platform; the
+  proposal **worktree leaked** on any unanticipated exception or Ctrl-C, and is now
+  created only once the reply is parsed and gated; and `apply_patch` wrote **CRLF** on
+  Windows, violating the repo's `eol=lf` byte-stability invariant. Also: engine replies
+  are now escaped before reaching the terminal on the consult path, and non-`PatchError`
+  stdlib exceptions (`UnicodeDecodeError`, `OSError`) fold into `PatchApplyError`.
+
 ### Added
 - **External engines (RFC 0004): Grok, API-direct.** `/consult-grok` brings xAI's
   Grok into the office as an advisory second opinion (a sibling of `/consult-gpt`), and

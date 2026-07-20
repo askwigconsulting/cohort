@@ -835,11 +835,18 @@ def engine_consult(
     process list. The response is capped by ``--max-tokens`` to bound cost.
     """
     try:
-        get_engine(engine)
+        spec = get_engine(engine)
     except UnknownEngineError:
         typer.echo(
             f"error: unknown engine {engine!r}; registered engines: "
             f"{', '.join(sorted(ENGINES))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if "consult" not in spec.roles:
+        typer.echo(
+            f"error: engine {engine!r} is not registered for the 'consult' role",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -864,6 +871,34 @@ def engine_consult(
         typer.echo("error: prompt is empty", err=True)
         raise typer.Exit(code=2)
 
+    # Gate the outbound prompt the same way `engine propose` does. Without this the
+    # per-repo egress opt-out and the secret scan exist only as prose in the compiled
+    # `/consult-grok` command — an instruction to a model, not a control. RFC 0004 §5
+    # is explicit that enforcement moves from prose to code, and does not scope that
+    # to the patch path; consult is the higher-traffic one.
+    from .engines import gates as engine_gates
+
+    repo_root = find_repo_root(Path.cwd())
+    context_path = repo_root / ".cohort" / "project_context.md"
+    project_context_text = (
+        context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
+    )
+
+    try:
+        engine_gates.preflight(
+            prompt=prompt,
+            project_context_text=project_context_text,
+        )
+    except engine_gates.EgressBlockedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.SecretFoundError as exc:
+        typer.echo(f"error: {exc}. Nothing was sent.", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.GateError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
     try:
         text = engine_xai.consult(prompt, model=None, max_tokens=max_tokens)
     except engine_xai.EngineAuthError:
@@ -880,7 +915,12 @@ def engine_consult(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
 
-    typer.echo(text)
+    # The reply is engine-controlled and untrusted: escape it per line before it
+    # reaches the terminal, exactly as `engine propose` does. Raw echo would let a
+    # reply containing ANSI/OSC sequences rewrite prior output and spoof the very
+    # result a human is about to act on.
+    for line in text.splitlines():
+        typer.echo(_display_safe(line))
     raise typer.Exit(code=0)
 
 
