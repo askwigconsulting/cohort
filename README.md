@@ -201,7 +201,7 @@ can end with an opt-in offer to file its decomposed tasks as GitHub issues — n
 without an explicit confirmation naming the target repo, and a `[tracker]` table in
 `.cohort/cohort.toml` (`project_owner`, `project_number`) optionally adds them to a project board.
 The dev-workflow commands live here too: `/plan` · `/spec` · `/build` (the inner
-implement–test–verify loop) · `/test` · `/review` · `/ship`, and `/goal <issue>` — the issue-driven
+implement–test–verify loop) · `/test` · `/code-review` · `/ship`, and `/goal <issue>` — the issue-driven
 outer loop that builds on a branch, has an independent judge verify each acceptance criterion
 (max 3 rounds), and ends at a **draft** PR a human reviews. `/orchestrate` is the fan-out loop for
 larger work: a coordinator-tier session (Fable preferred, Opus a full coordinator too — never

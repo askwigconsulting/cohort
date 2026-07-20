@@ -1,11 +1,11 @@
 ---
-name: review
+name: code-review
 kind: command
 scope: global
 description: Conduct a five-axis code review — correctness, readability, architecture, security, performance
 targets:
 - claude
-invocation: review
+invocation: code-review
 dry_run: true
 ---
 Invoke the agent-skills:code-review-and-quality skill.
