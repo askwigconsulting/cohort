@@ -17,14 +17,18 @@ from pathlib import Path
 import pytest
 
 from cohort import quarantine
+from cohort.install import do_install
 from cohort.install_model import CohortPaths
 from cohort.myoffice import (
     MySyncError,
     _record_pulled_gated,
+    _recompile_if_installed,
     _redact_url,
     do_my_sync,
     my_remote,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _HOOK = (
     "---\nname: {name}\nkind: hook\nscope: global\n"
@@ -67,6 +71,25 @@ def _write_personal(home: Path, name: str, text: str = "personal advisor\n") -> 
     d.mkdir(parents=True, exist_ok=True)
     p = d / f"{name}.md"
     p.write_text(text, encoding="utf-8")
+    return p
+
+
+_VALID_AGENT = (
+    "---\nname: {name}\nkind: agent\nscope: global\n"
+    "description: A pulled personal advisor.\ntargets: [all]\n"
+    "department: MyDesk\ntopology: specialist\nadvisory: true\ntools: [read]\n"
+    "display_name: {name}\n---\nPersonal advisor body.\n"
+)
+
+
+def _write_valid_personal_agent(home: Path, name: str) -> Path:
+    """Drop a *schema-valid* personal agent — needed by any test whose sync
+    actually recompiles (an installed manifest is present), since a plain
+    placeholder body fails compile validation the moment it is rendered."""
+    d = _my(home) / "canonical" / "agents"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{name}.md"
+    p.write_text(_VALID_AGENT.format(name=name), encoding="utf-8")
     return p
 
 
@@ -325,6 +348,76 @@ def test_default_gitignore_excludes_secret_files_from_the_sync(home, tmp_path):
     pushed = _clone_files(remote, tmp_path, "secrets")
     assert ".env" not in pushed
     assert ".gitignore" in pushed  # the exclusion list itself is synced
+
+
+# === GS2: recompile targets exactly the installed IDE set, never a hardcoded
+# ["claude"] (a Codex-only machine must recompile Codex — never place Claude
+# artifacts nobody asked for; a Claude+Cursor machine must recompile both) =====
+
+
+def test_recompile_if_installed_recompiles_codex_only_and_never_places_claude(home):
+    # A Codex-only install: Claude was never selected.
+    do_install(home=home, selection=["codex"], mode="copy", force=False,
+               source=REPO_ROOT, dry_run=False)
+
+    recompiled = _recompile_if_installed(home)
+
+    assert recompiled == ["codex"]
+    assert (home / ".codex" / "agents" / "chief-of-staff.toml").exists()
+    # The bug this guards: a Codex-only manifest must never place a Claude
+    # artifact the user never asked for.
+    assert not (home / ".claude").exists()
+
+
+def test_recompile_if_installed_recompiles_every_installed_ide(home):
+    # A Claude+Cursor install: both must be recompiled, not just Claude.
+    do_install(home=home, selection=["claude", "cursor"], mode="copy", force=False,
+               source=REPO_ROOT, dry_run=False)
+
+    recompiled = _recompile_if_installed(home)
+
+    assert recompiled == ["claude", "cursor"]
+    assert (home / ".claude" / "agents" / "chief-of-staff.md").exists()
+    assert (home / ".cursor" / "agents" / "chief-of-staff.md").exists()
+    assert not (home / ".codex").exists()  # never installed, never placed
+
+
+def test_recompile_if_installed_is_a_noop_without_an_install(home):
+    # A fresh machine (no manifest yet) must not try to recompile anything —
+    # in particular it must never fall through to a hardcoded Claude install.
+    assert _recompile_if_installed(home) == []
+    assert not (home / ".claude").exists()
+    assert not (home / ".codex").exists()
+    assert not (home / ".cursor").exists()
+
+
+def test_sync_on_a_codex_only_machine_recompiles_codex_not_claude(home, tmp_path):
+    # End-to-end through `cohort my-office sync`: the "recompiled" field in the
+    # sync report must reflect the actually-installed IDE, and the sync must not
+    # place a Claude artifact on a Codex-only machine.
+    remote = _bare_remote(tmp_path)
+    do_install(home=home, selection=["codex"], mode="copy", force=False,
+               source=REPO_ROOT, dry_run=False)
+    _write_valid_personal_agent(home, "solo")
+
+    report = do_my_sync(home, remote=str(remote))
+
+    assert report["recompiled"] == ["codex"]
+    assert (home / ".codex" / "agents" / "chief-of-staff.toml").exists()
+    # The pulled personal artifact was actually placed for the installed IDE...
+    assert (home / ".codex" / "agents" / "solo.toml").exists()
+    # ...and never for Claude, which was never installed on this machine.
+    assert not (home / ".claude").exists()
+
+
+def test_sync_on_a_fresh_machine_does_not_attempt_a_recompile(home, tmp_path):
+    remote = _bare_remote(tmp_path)
+    _write_personal(home, "solo")
+
+    report = do_my_sync(home, remote=str(remote))
+
+    assert report["recompiled"] == []
+    assert not (home / ".claude").exists()
 
 
 def test_diverged_history_is_refused_for_the_user_to_reconcile(home, tmp_path):

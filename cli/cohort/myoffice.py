@@ -239,21 +239,26 @@ def do_my_sync(
             "quarantine_state_unreadable": state_unreadable}
 
 
-def _recompile_if_installed(home: Path) -> bool:
-    """Recompile the global Claude tier so a pulled personal artifact is placed.
-    A no-op (returns False) when nothing is installed."""
+def _recompile_if_installed(home: Path) -> list[str]:
+    """Recompile + reinstall every IDE the manifest actually records, so a pulled
+    personal artifact is placed for each one the user installed — never just
+    Claude, and never an IDE that was never selected (GS2). Returns the list of
+    IDE names recompiled; empty (falsy, same as the old bare ``False``) when
+    nothing is installed, the source can't be resolved, or the recompile hiccups
+    — a sync already succeeded, so this best-effort tail must not fail it."""
     from .manifest import load_manifest
-    from .roster import recompile_global_claude
+    from .roster import recompile_global_ides
     from .source import resolve_source_lenient
 
     paths = CohortPaths.for_global(home)
-    if load_manifest(paths.manifest) is None:
-        return False
+    manifest = load_manifest(paths.manifest)
+    if manifest is None or not manifest.ides:
+        return []
     source = resolve_source_lenient(home)
     if source is None:
-        return False
+        return []
     try:
-        recompile_global_claude(home, source)
-        return True
+        recompile_global_ides(home, source, manifest.ides)
+        return list(manifest.ides)
     except Exception:  # noqa: BLE001 - sync succeeded; a recompile hiccup isn't fatal
-        return False
+        return []

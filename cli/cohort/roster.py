@@ -427,21 +427,41 @@ class EditError(Exception):
     """A refused ``cohort edit`` (missing artifact, invalid result)."""
 
 
-def recompile_global_claude(home: Path, source: Path):
-    """Compile + place the global Claude tier honoring the persisted roster subset,
-    the recorded install mode, and the my-office overlay — the single tail every
-    global authoring/edit path shares."""
+def recompile_global_ides(home: Path, source: Path, ides: Optional[list[str]] = None):
+    """Compile + place the given global IDE tier(s), honoring the persisted roster
+    subset, the recorded install mode, and the my-office overlay — the single tail
+    every global authoring/edit/sync path shares. ``ides`` defaults to
+    ``["claude"]`` (the historical single-IDE behavior of ``recompile_global_claude``).
+
+    Every requested IDE is compiled, staged, then installed via ONE ``do_install``
+    call covering the whole selection, so the plan/preflight/apply is atomic across
+    IDEs (GS2): a Codex-only manifest recompiles only Codex, a Claude+Cursor
+    manifest recompiles both, and neither leaves a stray IDE untouched nor places
+    an artifact for an IDE that was never installed."""
     paths = CohortPaths.for_global(home)
     manifest = load_manifest(paths.manifest)
     only = frozenset(manifest.roster) if manifest and manifest.roster else None
     mode = (manifest.mode if manifest and manifest.mode else None) or resolve_mode(copy=False)
-    result = compile_ide(source, "claude", scope="global", only_agents=only, overlay=paths.my)
-    write_staging(paths, result)
+    selection = list(ides) if ides else ["claude"]
+    results = [
+        compile_ide(source, ide, scope="global", only_agents=only, overlay=paths.my)
+        for ide in selection
+    ]
+    for result in results:
+        write_staging(paths, result)
     return do_install(
-        home=home, selection=["claude"], mode=mode, force=False, source=source,
-        dry_run=False, prune_stale=True, fresh_dests=planned_dests(paths, [result]),
-        fresh_ides={"claude"} if result.staged else set(),
+        home=home, selection=selection, mode=mode, force=False, source=source,
+        dry_run=False, prune_stale=True, fresh_dests=planned_dests(paths, results),
+        fresh_ides={r.ide for r in results if r.staged},
     )
+
+
+def recompile_global_claude(home: Path, source: Path):
+    """Compile + place the global Claude tier — the single-IDE case of
+    ``recompile_global_ides``, kept as a named shorthand for the many call sites
+    that only ever touch the Claude tier (add-agent/add-skill/add-command/add-hook/
+    edit/personalize)."""
+    return recompile_global_ides(home, source, ["claude"])
 
 
 def _author_global(
