@@ -28,10 +28,10 @@ from typing import Optional
 from ..ir import IRArtifact, is_doer
 from .base import MergeTarget
 from .claude import (
-    OFFICE_DIRECTORY_MARKER,
     StagedFile,
     _assemble,
     _frontmatter,
+    _resolve_marker,
     render_office_directory,
     render_memory_corpus,
 )
@@ -65,18 +65,19 @@ def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     # alongside the next Cursor doc pass; add a tier→model table here if/when
     # Cursor ships a verified per-agent model key.
     # readonly for every agent except a scope:project doer (is_doer) — same rule
-    # as the Claude tool-strip / Codex sandbox_mode.
+    # as the Claude tool-strip / Codex sandbox_mode. A real bool so dump_frontmatter
+    # emits a native `readonly: true`/`false` (a "true" string would be quoted).
     fm = _frontmatter(
         [("name", ir.name), ("description", ir.description),
-         ("readonly", "false" if is_doer(ir) else "true")]
+         ("readonly", not is_doer(ir))]
     )
     label = ir.display_name or ir.name
     dept = ir.fields.get("department", "")
     topology = ir.fields.get("topology", "specialist")
     header = f"> **{label}** — {dept} · {topology} (advisory office agent)"
-    body = ir.body.strip()
-    if topology == "generalist":
-        body = body.replace(OFFICE_DIRECTORY_MARKER, directory or "")
+    # Validate/resolve the office-directory marker (generalist ↔ specialist
+    # invariant), matching the Claude renderer instead of an unchecked replace.
+    body = _resolve_marker(ir, ir.body.strip(), directory)
     return StagedFile(
         f".cursor/agents/{ir.name}.md", _assemble(fm, f"{header}\n\n{body}").encode("utf-8")
     )
@@ -97,7 +98,7 @@ def render_command(ir: IRArtifact) -> StagedFile:
 
 
 def render_memories(memory_irs: list[IRArtifact]) -> StagedFile:
-    fm = _frontmatter([("description", "Cohort office memories"), ("alwaysApply", "true")])
+    fm = _frontmatter([("description", "Cohort office memories"), ("alwaysApply", True)])
     body = render_memory_corpus(memory_irs).strip()
     return StagedFile(MEMORIES_REL, _assemble(fm, body).encode("utf-8"))
 

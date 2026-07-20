@@ -1,6 +1,6 @@
 ---
 description: Get a second opinion from ChatGPT (via the OpenAI Codex CLI, read-only) on a hard problem — advisory, cross-examined, never executed blindly
-argument-hint: [question]
+argument-hint: '[question]'
 ---
 
 Bring a second model into the room. `/consult-gpt` asks **ChatGPT** (through the OpenAI

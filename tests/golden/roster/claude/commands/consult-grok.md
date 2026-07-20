@@ -1,6 +1,6 @@
 ---
 description: Get a second opinion from Grok (via xAI's API, direct) on a hard problem — advisory, cross-examined, never executed blindly
-argument-hint: [question]
+argument-hint: '[question]'
 ---
 
 Bring a second model into the room. `/consult-grok` asks **Grok** (via xAI's API,

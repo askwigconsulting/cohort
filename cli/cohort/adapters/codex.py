@@ -38,10 +38,10 @@ from typing import Optional
 from ..ir import IRArtifact, is_doer
 from .base import MergeTarget
 from .claude import (
-    OFFICE_DIRECTORY_MARKER,
     StagedFile,
     _assemble,
     _frontmatter,
+    _resolve_marker,
     render_office_directory,
     render_memory_corpus,
 )
@@ -68,8 +68,26 @@ HOOK_EVENT_MAP = {
 }
 
 
+class TomlLiteralError(Exception):
+    """Raised when a value cannot be safely embedded in a TOML string."""
+
+
 def _toml_basic(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Render a TOML basic (double-quoted) string, escaping every metacharacter.
+
+    Backslash and quote first, then the control characters that would otherwise
+    terminate or break the single-line string (a literal newline is invalid TOML
+    and would let a crafted value inject a new key — the S1 class for this
+    renderer). All use TOML's own escape vocabulary.
+    """
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+        .replace("\t", "\\t")
+    )
+    return '"' + escaped + '"'
 
 
 def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
@@ -82,10 +100,18 @@ def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     dept = ir.fields.get("department", "")
     topology = ir.fields.get("topology", "specialist")
     header = f"> **{label}** — {dept} · {topology} (advisory office agent)"
-    body = ir.body.strip()
-    if ir.fields.get("topology") == "generalist":
-        body = body.replace(OFFICE_DIRECTORY_MARKER, directory or "")
+    # Validate/resolve the office-directory marker (generalist ↔ specialist
+    # invariant), matching the Claude renderer instead of an unchecked replace.
+    body = _resolve_marker(ir, ir.body.strip(), directory)
     instructions = f"{header}\n\n{body}"
+    # A TOML multi-line literal ('''…''') has NO escape mechanism, so a body
+    # containing ''' cannot be embedded safely (it would terminate the literal and
+    # inject TOML). Reject at render rather than emit a broken/injected file.
+    if "'''" in instructions:
+        raise TomlLiteralError(
+            f"{ir.name}: agent body contains \"'''\", which cannot be embedded in a "
+            "TOML literal string (developer_instructions)"
+        )
     lines = [
         f"name = {_toml_basic(ir.name)}",
         f"description = {_toml_basic(ir.description)}",
@@ -96,7 +122,8 @@ def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     # keeps write access — same rule the Claude renderer applies.
     if not is_doer(ir):
         lines.append('sandbox_mode = "read-only"')
-    # TOML literal (''') needs no escaping; our bodies never contain '''.
+    # Safe now that a ''' in the body is rejected above: the literal can't be
+    # broken, so no escaping is needed inside it.
     lines += ["developer_instructions = '''", instructions, "'''"]
     return StagedFile(f".codex/agents/{ir.name}.toml", ("\n".join(lines) + "\n").encode("utf-8"))
 

@@ -1,6 +1,6 @@
 ---
 description: Write a dated session snapshot to the project context.
-argument-hint: [note]
+argument-hint: '[note]'
 ---
 
 Capture changed files, decisions, and open items into a dated Session Log entry.
