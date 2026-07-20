@@ -412,3 +412,185 @@ def test_corrupt_state_fails_closed_withholding_every_gated(tmp_path):
     assert result.withheld == ["hook pulled-hook", "memory pulled-memory"]
     text = _placed_text(result)
     assert _HOOK_MARKER not in text and _MEMORY_MARKER not in text
+
+
+# --- F3: office/source-layer quarantine --------------------------------------
+#
+# The threat: `cohort update` fast-forwards the office SOURCE; on a shared office
+# remote an update pull can introduce a gated artifact (hook/memory/skill/agent)
+# that a recompile auto-activates with no review. These tests exercise the office
+# store + compile's office withhold gate directly (the recorder wiring into
+# `cohort update` is the documented residual gap in quarantine.py).
+
+_OFFICE_HOOK_MARKER = "cohort office-evil-pulled-action"
+_OFFICE_HOOK = (
+    "---\nname: office-hook\nkind: hook\nscope: global\n"
+    "description: A hook introduced by an office update pull.\ntargets: [claude]\n"
+    f"event: session_start\naction: {_OFFICE_HOOK_MARKER}\n---\nHook body.\n"
+)
+
+
+def _office_source_with_new_hook(tmp_path: Path) -> tuple[Path, Path]:
+    """A full office source (real canonical) plus one NEW gated hook, and its path."""
+    src = _source(tmp_path)
+    d = src / "canonical" / "hooks"
+    d.mkdir(parents=True, exist_ok=True)
+    hook = d / "office-hook.md"
+    hook.write_text(_OFFICE_HOOK, encoding="utf-8")
+    return src, hook
+
+
+def _state_dir(tmp_path: Path) -> Path:
+    # compile derives the office store from `overlay.parent / "state"`, so the overlay
+    # sits at <home>/.cohort/my and the store at <home>/.cohort/state.
+    my = tmp_path / "home" / ".cohort" / "my"
+    (my.parent / "state").mkdir(parents=True)
+    return my.parent / "state"
+
+
+def test_office_pending_absent_is_empty(tmp_path):
+    state = _state(tmp_path)
+    assert q.load_office_pending(state) == []
+    assert q.office_pending_keys(state) == set()
+    assert q.load_office_baseline(state) is None  # no baseline yet ⇒ first install
+
+
+def test_first_install_establishes_baseline_and_quarantines_nothing(tmp_path):
+    # The shipped office (baseline absent) must NOT be quarantined wholesale on the
+    # first compile/update — only later-introduced deltas are.
+    state = _state_dir(tmp_path)
+    src, _hook = _office_source_with_new_hook(tmp_path)
+    added = q.record_office_delta(state, src)
+    assert added == []  # nothing quarantined on first install
+    baseline = q.load_office_baseline(state)
+    assert baseline is not None
+    assert ("hook", "office-hook", q.content_hash(src / "canonical" / "hooks" / "office-hook.md")) in baseline
+
+
+def test_update_pull_quarantines_only_the_new_office_gated_artifact(tmp_path):
+    # Establish a baseline WITHOUT the new hook (simulating the office before the
+    # update), then introduce the hook and record the delta: only it is quarantined.
+    state = _state_dir(tmp_path)
+    src = _source(tmp_path)
+    assert q.record_office_delta(state, src) == []  # baseline = shipped office
+    # the update pull adds a new gated hook
+    d = src / "canonical" / "hooks"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "office-hook.md").write_text(_OFFICE_HOOK, encoding="utf-8")
+    added = q.record_office_delta(state, src)
+    assert [(a.kind, a.name) for a in added] == [("hook", "office-hook")]
+    assert q.office_pending_keys(state) == {
+        ("hook", "office-hook", q.content_hash(d / "office-hook.md"))
+    }
+
+
+def test_office_withhold_holds_back_the_pending_office_hook_at_compile(tmp_path):
+    # End-to-end: a recorded office pending hook is withheld from the staged output,
+    # so its action never reaches settings.json on recompile.
+    state = _state_dir(tmp_path)
+    src, hook = _office_source_with_new_hook(tmp_path)
+    my = state.parent / "my"  # overlay so compile derives the state dir (no my/canonical)
+    q.record_office_delta(state, src)  # first: baseline incl. the hook → not withheld
+    # Force the hook to be treated as newly-introduced: drop it from the baseline.
+    baseline = q.load_office_baseline(state)
+    baseline.discard(("hook", "office-hook", q.content_hash(hook)))
+    q._save_office_baseline(state, baseline)
+    q.record_office_delta(state, src)  # now records it as delta → pending
+
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    assert "hook office-hook" in result.withheld
+    assert _OFFICE_HOOK_MARKER not in _placed_text(result)
+
+
+def test_office_withhold_is_a_noop_on_first_install(tmp_path):
+    # With no office store populated (fresh clone), the shipped office compiles
+    # normally — the gate must never withhold the whole shipped office.
+    state = _state_dir(tmp_path)
+    src, hook = _office_source_with_new_hook(tmp_path)
+    my = state.parent / "my"
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    assert result.withheld == []
+    assert _OFFICE_HOOK_MARKER in _placed_text(result)  # the office hook DOES place
+
+
+def test_explicit_office_withhold_set_is_honored(tmp_path):
+    # The hermetic path: pass office_withhold directly (like the my-layer `withhold`).
+    src, hook = _office_source_with_new_hook(tmp_path)
+    my = tmp_path / "home" / ".cohort" / "my"
+    my.mkdir(parents=True)
+    ident = ("hook", "office-hook", q.content_hash(hook))
+    result = compile_ide(src, "claude", scope="global", overlay=my, office_withhold={ident})
+    assert "hook office-hook" in result.withheld
+    assert _OFFICE_HOOK_MARKER not in _placed_text(result)
+
+
+def test_office_withhold_is_content_pinned(tmp_path):
+    # A stale office pending record (wrong bytes) does NOT withhold — the on-disk
+    # artifact is not the reviewed-and-refused content.
+    src, hook = _office_source_with_new_hook(tmp_path)
+    my = tmp_path / "home" / ".cohort" / "my"
+    my.mkdir(parents=True)
+    result = compile_ide(
+        src, "claude", scope="global", overlay=my,
+        office_withhold={("hook", "office-hook", "STALEHASH")},
+    )
+    assert result.withheld == []
+    assert _OFFICE_HOOK_MARKER in _placed_text(result)
+
+
+def test_corrupt_office_store_fails_closed(tmp_path):
+    # A corrupt office store must not read as "nothing pending": every gated office
+    # artifact is withheld until it is repaired (the shipped office goes dark — the
+    # safe direction).
+    state = _state_dir(tmp_path)
+    src, _hook = _office_source_with_new_hook(tmp_path)
+    my = state.parent / "my"
+    (state / "office_quarantine.json").write_text("{ truncated", encoding="utf-8")
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    # every gated office artifact (agents/skills/memories/hooks) is held back
+    assert "hook office-hook" in result.withheld
+    assert _OFFICE_HOOK_MARKER not in _placed_text(result)
+
+
+def test_approve_office_lets_the_artifact_through_next_record(tmp_path):
+    # Approving clears the office pending record (compile stops withholding); the
+    # identity stays in the baseline, so it is not re-quarantined on the next pull.
+    state = _state_dir(tmp_path)
+    src, hook = _office_source_with_new_hook(tmp_path)
+    my = state.parent / "my"
+    q.record_office_delta(state, src)
+    baseline = q.load_office_baseline(state)
+    baseline.discard(("hook", "office-hook", q.content_hash(hook)))
+    q._save_office_baseline(state, baseline)
+    q.record_office_delta(state, src)
+    assert "hook office-hook" in compile_ide(src, "claude", scope="global", overlay=my).withheld
+
+    cleared = q.approve_office(state, ["office-hook"])
+    assert cleared == ["office-hook"]
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    assert "hook office-hook" not in result.withheld
+    assert _OFFICE_HOOK_MARKER in _placed_text(result)
+    # not re-quarantined on a subsequent pull (identity is in the baseline)
+    assert q.record_office_delta(state, src) == []
+
+
+def test_office_store_is_separate_from_my_reconcile(tmp_path):
+    # The office records must survive a my-office `reconcile` (which prunes against
+    # my/canonical): they live in a separate store keyed on the office tree.
+    state = _state_dir(tmp_path)
+    src, hook = _office_source_with_new_hook(tmp_path)
+    my = state.parent / "my"
+    (my / "canonical").mkdir(parents=True)  # empty my overlay
+    q._save_office_pending(
+        state, [q.QuarantinedArtifact("hook", "office-hook", q.content_hash(hook), "t")]
+    )
+    q.reconcile(state, my)  # my-office reconcile — must NOT touch the office store
+    assert q.office_pending_keys(state) == {("hook", "office-hook", q.content_hash(hook))}
+
+
+def test_project_tier_compile_has_no_office_withhold(tmp_path):
+    # No overlay ⇒ no state dir ⇒ the office gate never runs (project tier / hermetic).
+    src, _hook = _office_source_with_new_hook(tmp_path)
+    result = compile_ide(src, "claude", scope="global")  # no overlay
+    assert result.withheld == []
+    assert _OFFICE_HOOK_MARKER in _placed_text(result)

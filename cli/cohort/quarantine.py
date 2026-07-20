@@ -143,16 +143,18 @@ def all_gated_in(canonical_root: Path) -> list[tuple[str, str, Path]]:
     return gated_artifacts(sorted(canonical_root.rglob("*.md")))
 
 
+_QUARANTINE_FILE = "quarantine.json"  # my-office (personal overlay) pull quarantine
+_OFFICE_QUARANTINE_FILE = "office_quarantine.json"  # office/source-layer pull quarantine
+
+
 def _state_file(state_dir: Path) -> Path:
-    return state_dir / "quarantine.json"
+    return state_dir / _QUARANTINE_FILE
 
 
-def load_pending(state_dir: Path) -> list[QuarantinedArtifact]:
-    """The quarantined artifacts recorded under ``state_dir``. A *missing* file
-    yields [] (no install / no pull yet). A *present-but-unparseable* file raises
-    ``QuarantineStateError`` so the caller fails closed rather than silently
-    activating records it can no longer read."""
-    path = _state_file(state_dir)
+def _read_pending_file(path: Path) -> list[QuarantinedArtifact]:
+    """Parse a pending-list file. A *missing* file yields [] (no install / no pull
+    yet). A *present-but-unparseable* file raises ``QuarantineStateError`` so the
+    caller fails closed rather than silently activating records it can no longer read."""
     if not path.exists():
         return []
     try:
@@ -162,18 +164,11 @@ def load_pending(state_dir: Path) -> list[QuarantinedArtifact]:
         raise QuarantineStateError(f"unreadable quarantine state at {path}: {exc}") from exc
 
 
-def pending_keys(state_dir: Path) -> set[tuple[str, str, str]]:
-    """The ``(kind, name, content_hash)`` identities currently withheld. Propagates
-    ``QuarantineStateError`` on a corrupt file (the caller must fail closed)."""
-    return {a.key for a in load_pending(state_dir)}
-
-
-def _save_pending(state_dir: Path, items: Iterable[QuarantinedArtifact]) -> None:
-    """Atomically persist the pending list (mirrors ``Manifest.persist``). A no-op
-    if ``state_dir`` does not exist yet (nothing is installed)."""
+def _write_pending_file(state_dir: Path, path: Path, items: Iterable[QuarantinedArtifact]) -> None:
+    """Atomically persist a pending list (mirrors ``Manifest.persist``). A no-op if
+    ``state_dir`` does not exist yet (nothing is installed)."""
     if not state_dir.exists():
         return
-    path = _state_file(state_dir)
     tmp = path.with_suffix(".json.tmp")
     payload = json.dumps({"pending": [a.to_dict() for a in items]}, indent=2)
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -187,6 +182,25 @@ def _save_pending(state_dir: Path, items: Iterable[QuarantinedArtifact]) -> None
             os.fsync(dir_fd)
         finally:
             os.close(dir_fd)
+
+
+def load_pending(state_dir: Path) -> list[QuarantinedArtifact]:
+    """The quarantined artifacts recorded under ``state_dir``. A *missing* file
+    yields [] (no install / no pull yet). A *present-but-unparseable* file raises
+    ``QuarantineStateError`` so the caller fails closed rather than silently
+    activating records it can no longer read."""
+    return _read_pending_file(_state_file(state_dir))
+
+
+def pending_keys(state_dir: Path) -> set[tuple[str, str, str]]:
+    """The ``(kind, name, content_hash)`` identities currently withheld. Propagates
+    ``QuarantineStateError`` on a corrupt file (the caller must fail closed)."""
+    return {a.key for a in load_pending(state_dir)}
+
+
+def _save_pending(state_dir: Path, items: Iterable[QuarantinedArtifact]) -> None:
+    """Atomically persist the my-office pending list. No-op if ``state_dir`` absent."""
+    _write_pending_file(state_dir, _state_file(state_dir), items)
 
 
 def add_pending(
@@ -282,4 +296,193 @@ def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
     survivors = [a for a in pending if a.key in live]
     if len(survivors) != len(pending):
         _save_pending(state_dir, survivors)
+    return survivors
+
+
+# --- office/source-layer quarantine (F3) ------------------------------------
+#
+# The my-office quarantine above guards artifacts pulled into the PERSONAL overlay.
+# The same threat applies to the shared OFFICE/source layer: ``cohort update``
+# fast-forwards the office source, and on a shared office remote an update pull can
+# introduce an auto-activating gated artifact (hook/memory/skill/agent) that a
+# recompile would place with no review. This mirror guards that layer.
+#
+# Two deliberate design choices keep it correct and separate:
+#   * A SEPARATE store file (``office_quarantine.json``). The my-office ``reconcile``
+#     prunes records whose bytes are absent from ``my/canonical``; office records
+#     point at the office source tree, so sharing one store would let ``reconcile``
+#     silently drop — and thus re-activate — them. Separate stores can't collide.
+#   * A ``office_baseline.json`` recording the office gated identities already trusted
+#     (the shipped set at first install, grown as records are approved). It exists so
+#     ``record_office_delta`` can tell a FIRST install (baseline absent ⇒ trust the
+#     shipped office, quarantine nothing) from an UPDATE pull (baseline present ⇒
+#     quarantine only identities not yet trusted — the delta).
+#
+# RESIDUAL GAP (documented): compile READS this store (``office_pending_keys``) and
+# withholds, exactly as it reads ``pending_keys`` for my-office. Populating it is
+# ``record_office_delta`` and clearing it is ``approve_office`` — the office analogue
+# of what ``my-office sync``/``approve`` call. Wiring those into ``cohort update`` and
+# a ``cohort office approve`` command lives in ``cli.py``, which is outside this
+# change's footprint. Until that wiring lands the store stays empty, so the compile
+# gate is a safe no-op: it never breaks a first install or an update, it simply does
+# not yet withhold in production. The mechanism and its fail-closed behavior are
+# complete and tested here.
+
+_OFFICE_BASELINE_FILE = "office_baseline.json"
+
+
+def _office_state_file(state_dir: Path) -> Path:
+    return state_dir / _OFFICE_QUARANTINE_FILE
+
+
+def _office_baseline_file(state_dir: Path) -> Path:
+    return state_dir / _OFFICE_BASELINE_FILE
+
+
+def load_office_pending(state_dir: Path) -> list[QuarantinedArtifact]:
+    """Office-layer analogue of ``load_pending``. Missing file ⇒ []; corrupt ⇒
+    ``QuarantineStateError`` (caller fails closed)."""
+    return _read_pending_file(_office_state_file(state_dir))
+
+
+def office_pending_keys(state_dir: Path) -> set[tuple[str, str, str]]:
+    """The gated-office ``(kind, name, content_hash)`` identities currently withheld.
+    Propagates ``QuarantineStateError`` on a corrupt store (caller must fail closed)."""
+    return {a.key for a in load_office_pending(state_dir)}
+
+
+def _save_office_pending(state_dir: Path, items: Iterable[QuarantinedArtifact]) -> None:
+    _write_pending_file(state_dir, _office_state_file(state_dir), items)
+
+
+def load_office_baseline(state_dir: Path) -> Optional[set[tuple[str, str, str]]]:
+    """The trusted office gated identities, or ``None`` when no baseline exists yet
+    (⇒ first install: nothing has been established as trusted). A present-but-corrupt
+    baseline raises ``QuarantineStateError`` so callers fail closed."""
+    path = _office_baseline_file(state_dir)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return {tuple(x) for x in data["baseline"]}  # type: ignore[misc]
+    except Exception as exc:  # noqa: BLE001 - corrupt/schema drift → fail closed
+        raise QuarantineStateError(f"unreadable office baseline at {path}: {exc}") from exc
+
+
+def _save_office_baseline(state_dir: Path, identities: Iterable[tuple[str, str, str]]) -> None:
+    """Atomically persist the trusted-office baseline. No-op if ``state_dir`` absent."""
+    if not state_dir.exists():
+        return
+    path = _office_baseline_file(state_dir)
+    tmp = path.with_suffix(".json.tmp")
+    payload = json.dumps({"baseline": sorted(identities)}, indent=2)
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(payload)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    if os.name != "nt":
+        dir_fd = os.open(str(state_dir), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+
+def _current_office_identities(office_root: Path) -> dict[tuple[str, str, str], Path]:
+    """``(kind, name, content_hash) -> path`` for every gated artifact in the office
+    canonical tree, classified by frontmatter kind (matching the compiler)."""
+    out: dict[tuple[str, str, str], Path] = {}
+    for kind, name, path in all_gated_in(office_root / "canonical"):
+        out[(kind, name, content_hash(path))] = path
+    return out
+
+
+def record_office_delta(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
+    """Record the gated-office artifacts an update pull introduced (the office
+    analogue of ``my-office sync``'s ``add_pending``). Call this AFTER an office
+    ``cohort update`` pull, before recompiling.
+
+    First call (no baseline ⇒ first install): establish the baseline as the shipped
+    office's gated set — trusted, so *nothing* is quarantined and the first install is
+    never blocked. Returns []. Later calls: every current gated identity not already
+    in the baseline is the pull delta; each is added to the office pending store
+    (withheld by compile until approved) and folded into the baseline so it is not
+    re-flagged (it stays withheld via the pending store, not by re-detection). Returns
+    the newly-quarantined records. No-op returning [] if ``state_dir`` is absent."""
+    if not state_dir.exists():
+        return []
+    current = _current_office_identities(office_root)
+    baseline = load_office_baseline(state_dir)
+    if baseline is None:  # first install: trust the shipped office, quarantine nothing
+        _save_office_baseline(state_dir, current.keys())
+        return []
+    new_identities = [ident for ident in current if ident not in baseline]
+    if not new_identities:
+        return []
+    existing = load_office_pending(state_dir)
+    seen = {a.key for a in existing}
+    added: list[QuarantinedArtifact] = []
+    for kind, name, chash in new_identities:
+        if (kind, name, chash) not in seen:
+            added.append(QuarantinedArtifact(kind, name, chash, now_iso()))
+    if added:
+        _save_office_pending(state_dir, existing + added)
+        # Fold the delta into the baseline: it is now "seen" and must not be
+        # re-detected on the next pull. It remains WITHHELD by the pending store
+        # until approved — approval removes it from pending, not from the baseline.
+        _save_office_baseline(state_dir, set(baseline) | set(current))
+    return added
+
+
+def approve_office(
+    state_dir: Path, names: Iterable[str] | None = None, *, approve_all: bool = False
+) -> list[str]:
+    """Clear the office quarantine for reviewed artifacts (office analogue of
+    ``approve``). Same content-addressed, ambiguity-refusing semantics: a bare name
+    matching two distinct pending hashes raises ``AmbiguousApprovalError`` rather than
+    guess. Approving removes the record from the office pending store; the identity
+    stays in the baseline, so it is not re-quarantined and compile places it next
+    recompile. Propagates ``QuarantineStateError`` on a corrupt store."""
+    pending = load_office_pending(state_dir)
+    if approve_all:
+        cleared = sorted({a.name for a in pending})
+        _save_office_pending(state_dir, [])
+        return cleared
+
+    to_clear: set[tuple[str, str, str]] = set()
+    cleared_names: set[str] = set()
+    for selector in names or ():
+        name, sep, hash_prefix = selector.partition("@")
+        matches = [a for a in pending if a.name == name]
+        if sep:
+            matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
+        if not matches:
+            continue
+        distinct_hashes = sorted({a.content_hash for a in matches})
+        if len(distinct_hashes) > 1:
+            shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
+            raise AmbiguousApprovalError(
+                f"{name!r} matches {len(distinct_hashes)} pending office records with "
+                f"different content — refusing to guess which was reviewed. "
+                f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
+            )
+        for a in matches:
+            to_clear.add(a.key)
+            cleared_names.add(a.name)
+    if to_clear:
+        _save_office_pending(state_dir, [a for a in pending if a.key not in to_clear])
+    return sorted(cleared_names)
+
+
+def office_reconcile(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
+    """Drop office pending records whose exact bytes are no longer in the office tree
+    (deleted or superseded by a later pull), returning survivors. Office analogue of
+    ``reconcile`` — but against ``office_root/canonical``, never ``my/canonical`` (the
+    reason the two stores are separate)."""
+    live = set(_current_office_identities(office_root))
+    pending = load_office_pending(state_dir)
+    survivors = [a for a in pending if a.key in live]
+    if len(survivors) != len(pending):
+        _save_office_pending(state_dir, survivors)
     return survivors

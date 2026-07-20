@@ -246,3 +246,74 @@ def test_compile_logs_carry_key_set(home):
     for line in log_lines:
         keys = {p.split("=", 1)[0] for p in line.split(" ")}
         assert all(f in keys for f in required), line
+
+
+# --- FIX 1: the IR field contract (a new field can't silently go Claude-only) --
+
+from cohort.adapters.base import FIELD_CONTRACTS, FieldContract
+from cohort.compile import (
+    CompileError,
+    assert_field_contract,
+    canonical_field_universe,
+)
+
+
+def test_field_universe_is_derived_from_the_schemas():
+    # The universe is the union of shared + per-kind schema properties plus `body`,
+    # so adding a schema property automatically widens it (and thus forces every
+    # renderer to classify the new field). Spot-check representative fields.
+    u = canonical_field_universe()
+    for f in ("name", "targets", "model", "matcher", "args", "triggers", "priority", "body"):
+        assert f in u, f
+
+
+def test_every_renderer_classifies_every_canonical_field():
+    # (a) The real, shipped contracts cover the whole universe with no gaps and no
+    # contradictions — so today's schema is fully accounted for by all three targets.
+    # This test also fails the moment a new schema field is added without classifying
+    # it for every renderer: the regression guard the fix exists to provide.
+    universe = canonical_field_universe()
+    for ide in ("claude", "codex", "cursor"):
+        contract = FIELD_CONTRACTS[ide]
+        assert universe - contract.classified() == set(), f"{ide} leaves fields unclassified"
+        assert contract.handled & contract.declined == frozenset(), f"{ide} double-classifies"
+    assert_field_contract()  # the live check passes end-to-end
+
+
+def test_field_handled_by_all_adapters_passes():
+    # (a) A field every adapter handles is accepted with no violation.
+    universe = frozenset({"body", "widget"})
+    contracts = {
+        ide: FieldContract(handled=universe, declined=frozenset())
+        for ide in ("claude", "codex", "cursor")
+    }
+    assert_field_contract(universe=universe, contracts=contracts)  # no raise
+
+
+def test_field_neither_handled_nor_declined_fails_loudly():
+    # (b) A field an adapter neither handles nor declines fails closed, naming the
+    # field AND the adapter — so a new IR field cannot silently vanish for Codex.
+    universe = frozenset({"body", "new_shiny_field"})
+    contracts = {
+        "claude": FieldContract(handled=universe, declined=frozenset()),
+        "codex": FieldContract(handled=frozenset({"body"}), declined=frozenset()),  # gap!
+        "cursor": FieldContract(handled=universe, declined=frozenset()),
+    }
+    with pytest.raises(CompileError) as exc:
+        assert_field_contract(universe=universe, contracts=contracts)
+    msg = str(exc.value)
+    assert "new_shiny_field" in msg
+    assert "codex" in msg
+    assert "claude" not in msg  # claude accounted for it → not implicated
+
+
+def test_field_declared_both_handled_and_declined_fails():
+    universe = frozenset({"body", "confused"})
+    contracts = {
+        ide: FieldContract(handled=frozenset({"body", "confused"}),
+                           declined=frozenset({"confused"}))
+        for ide in ("claude", "codex", "cursor")
+    }
+    with pytest.raises(CompileError) as exc:
+        assert_field_contract(universe=universe, contracts=contracts)
+    assert "both handled and declined" in str(exc.value)
