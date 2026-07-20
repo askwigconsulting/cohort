@@ -40,12 +40,20 @@ def test_gated_identity_classifies_by_frontmatter_not_directory(tmp_path):
     agent = _art_file(tmp_path / "agents" / "counsel.md", kind="agent", name="counsel",
                       extra="department: Law\ntopology: specialist\nadvisory: true\ntools: [read]\n"
                             "display_name: Counsel\n")
+    skill = _art_file(tmp_path / "skills" / "office-guide.md", kind="skill", name="office-guide",
+                      extra="triggers: [office]\n")
+    cmd = _art_file(tmp_path / "commands" / "snapshot.md", kind="command", name="snapshot")
     # A hook MISFILED in the agents directory is still a hook by frontmatter.
     misfiled = _art_file(tmp_path / "agents" / "evil.md", kind="hook", name="evil",
                          extra="event: session_start\naction: cohort rce\n")
     assert q.gated_identity(hook) == ("hook", "on-start")
     assert q.gated_identity(mem) == ("memory", "ctx")
-    assert q.gated_identity(agent) is None  # agents are not gated
+    # A skill's description auto-loads into every session and its body is
+    # model-invocable; an agent's description auto-loads and it is
+    # model-spawnable — both are prompt-injection sinks equal to memories (F1).
+    assert q.gated_identity(agent) == ("agent", "counsel")
+    assert q.gated_identity(skill) == ("skill", "office-guide")
+    assert q.gated_identity(cmd) is None  # commands are user-invoked, not gated
     assert q.gated_identity(misfiled) == ("hook", "evil")  # the bypass, closed
 
 
@@ -87,12 +95,39 @@ def test_save_is_noop_when_state_dir_absent(tmp_path):
 # --- approve -----------------------------------------------------------------
 
 
-def test_approve_by_name_clears_all_hashes_of_that_name(tmp_path):
+def test_approve_by_bare_name_is_unambiguous_when_only_one_hash_pending(tmp_path):
     state = _state(tmp_path)
-    q.add_pending(state, [_art(name="a", h="1"), _art(name="a", h="2"), _art(name="b", h="3")])
+    q.add_pending(state, [_art(name="a", h="1"), _art(name="b", h="3")])
     cleared = q.approve(state, ["a"])
     assert cleared == ["a"]
     assert q.pending_keys(state) == {("hook", "b", "3")}
+
+
+def test_approve_by_bare_name_fails_closed_when_two_hashes_share_the_name(tmp_path):
+    # F2: reconcile/add_pending key on the FULL (kind, name, hash) identity, so a
+    # name pulled twice with different bytes leaves two pending records. Approving
+    # the reviewed one by bare name must NOT also clear the unreviewed one that
+    # happens to share the name — that was the cross-provider-confirmed bug: it
+    # silently re-activated an unreviewed artifact. approve() must refuse and
+    # clear nothing rather than guess.
+    state = _state(tmp_path)
+    q.add_pending(state, [_art(name="a", h="1111111111"), _art(name="a", h="2222222222")])
+    with pytest.raises(q.AmbiguousApprovalError) as exc_info:
+        q.approve(state, ["a"])
+    assert "1111111111" in str(exc_info.value)
+    assert "2222222222" in str(exc_info.value)
+    # nothing was cleared — both records are still pending
+    assert q.pending_keys(state) == {("hook", "a", "1111111111"), ("hook", "a", "2222222222")}
+
+
+def test_approve_by_hash_prefix_clears_only_that_record_leaves_sibling_pending(tmp_path):
+    # The disambiguation escape hatch: "name@hash-prefix" names one specific
+    # record. The sibling with a different hash must survive, still withheld.
+    state = _state(tmp_path)
+    q.add_pending(state, [_art(name="a", h="1111111111"), _art(name="a", h="2222222222")])
+    cleared = q.approve(state, ["a@1111"])
+    assert cleared == ["a"]
+    assert q.pending_keys(state) == {("hook", "a", "2222222222")}
 
 
 def test_approve_all_clears_everything(tmp_path):
@@ -277,6 +312,95 @@ def test_misfiled_hook_is_still_gated_by_frontmatter(tmp_path):
     result = compile_ide(src, "claude", scope="global", overlay=my)
     assert result.withheld == ["hook evil"]
     assert _HOOK_MARKER not in _placed_text(result)  # never reaches settings.json
+
+
+# --- F1: skill/agent are gated sinks equal to hook/memory --------------------
+
+_SKILL_MARKER = "PULLED-SKILL-MARKER-XYZ"
+_AGENT_MARKER = "PULLED-AGENT-MARKER-XYZ"
+_MY_SKILL = (
+    "---\nname: pulled-skill\nkind: skill\nscope: global\n"
+    "description: A skill pulled from a shared remote.\ntargets: [claude]\n"
+    f"---\n{_SKILL_MARKER} body.\n"
+)
+_MY_AGENT = (
+    "---\nname: pulled-agent\nkind: agent\nscope: global\n"
+    "description: An agent pulled from a shared remote.\ntargets: [claude]\n"
+    "department: Ops\ntopology: specialist\nadvisory: true\ntools: [read]\n"
+    f"display_name: PulledAgent\n---\n{_AGENT_MARKER} body.\n"
+)
+
+
+def _my_overlay_skill_agent(tmp_path: Path) -> Path:
+    """A my-office overlay holding a gated skill + agent (the F1 sinks)."""
+    my = tmp_path / "home" / ".cohort" / "my"
+    (my.parent / "state").mkdir(parents=True)
+    for sub, name, text in (
+        ("skills", "pulled-skill", _MY_SKILL),
+        ("agents", "pulled-agent", _MY_AGENT),
+    ):
+        d = my / "canonical" / sub
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{name}.md").write_text(text, encoding="utf-8")
+    return my
+
+
+def test_synced_skill_and_agent_are_recorded_as_gated(tmp_path):
+    # A synced SKILL's description auto-loads into every session and its body is
+    # model-invocable; a synced AGENT's description auto-loads too and it is
+    # model-spawnable — both are prompt-injection sinks equal to a memory (F1).
+    # Verify via the recording functions themselves: gated_identity/all_gated_in
+    # classify them as gated, and add_pending durably records them as pending.
+    my = _my_overlay_skill_agent(tmp_path)
+    state = my.parent / "state"
+    skill = my / "canonical" / "skills" / "pulled-skill.md"
+    agent = my / "canonical" / "agents" / "pulled-agent.md"
+
+    assert q.gated_identity(skill) == ("skill", "pulled-skill")
+    assert q.gated_identity(agent) == ("agent", "pulled-agent")
+    gated = q.all_gated_in(my / "canonical")
+    assert {(k, n) for k, n, _p in gated} == {("skill", "pulled-skill"), ("agent", "pulled-agent")}
+
+    added = q.add_pending(state, [
+        q.QuarantinedArtifact("skill", "pulled-skill", q.content_hash(skill), "t"),
+        q.QuarantinedArtifact("agent", "pulled-agent", q.content_hash(agent), "t"),
+    ])
+    assert {a.name for a in added} == {"pulled-skill", "pulled-agent"}
+    assert q.pending_keys(state) == {
+        ("skill", "pulled-skill", q.content_hash(skill)),
+        ("agent", "pulled-agent", q.content_hash(agent)),
+    }
+
+
+def test_synced_skill_and_agent_are_withheld_from_compile(tmp_path):
+    # Full-pipeline confirmation: GATED_KINDS is the single source consumed by
+    # compile's withhold, so a pending skill/agent record must never reach the
+    # staged output (the skill's description would auto-load; the agent would
+    # become model-spawnable).
+    src, my = _source(tmp_path), _my_overlay_skill_agent(tmp_path)
+    state = my.parent / "state"
+    skill = my / "canonical" / "skills" / "pulled-skill.md"
+    agent = my / "canonical" / "agents" / "pulled-agent.md"
+    q.add_pending(state, [
+        q.QuarantinedArtifact("skill", "pulled-skill", q.content_hash(skill), "t"),
+        q.QuarantinedArtifact("agent", "pulled-agent", q.content_hash(agent), "t"),
+    ])
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    assert result.withheld == ["agent pulled-agent", "skill pulled-skill"]
+    text = _placed_text(result)
+    assert _SKILL_MARKER not in text
+    assert _AGENT_MARKER not in text
+
+
+def test_unquarantined_synced_skill_and_agent_place_normally(tmp_path):
+    # Without a pending record, a synced skill/agent compiles like any other
+    # artifact — gating only withholds what is actually recorded as pending.
+    src, my = _source(tmp_path), _my_overlay_skill_agent(tmp_path)
+    result = compile_ide(src, "claude", scope="global", overlay=my)
+    assert result.withheld == []
+    text = _placed_text(result)
+    assert _SKILL_MARKER in text
+    assert _AGENT_MARKER in text
 
 
 def test_corrupt_state_fails_closed_withholding_every_gated(tmp_path):

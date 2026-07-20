@@ -18,9 +18,11 @@ on-disk *directory* is not authoritative (nothing enforces ``kind: hook`` living
 in ``canonical/agents/`` still renders as a hook, and must still be quarantined.
 
 Design notes:
-* Gated kinds are the auto-activating sinks only (hooks, memories). Skills, agents,
-  and commands are not gated (advisory text a session reads; the maintainer
-  decision scoped skills out).
+* Gated kinds are the auto-activating sinks: hooks, memories, skills, and agents.
+  A skill's description auto-loads into every session's context and its body is
+  model-invocable; an agent's description auto-loads too and it is
+  model-spawnable — both are prompt-injection sinks equal to memories. Commands
+  are user-invoked (a human must run them), so they are not gated here.
 * Identity is content-addressed, so approving a name approves the bytes reviewed —
   not the name forever. A locally *authored* gated artifact is never recorded: sync
   reconciles the remote before committing local work, so the pull delta that feeds
@@ -43,13 +45,28 @@ from .loader import load_artifact
 from .manifest import now_iso
 
 # Auto-activating sinks that must not place without review (maintainer decision,
-# #107): hooks run on IDE events, memories load into every session's corpus.
-GATED_KINDS: tuple[str, ...] = ("hook", "memory")
+# #107, extended by adversarial review): hooks run on IDE events, memories load
+# into every session's corpus, a skill's description auto-loads into every
+# session's context and its body is model-invocable, and an agent's description
+# auto-loads too and it is model-spawnable — all four are prompt-injection sinks.
+# Commands are user-invoked (a human must explicitly run them), so they carry
+# lower risk than these auto-activating kinds and are not gated here; that could
+# change if evidence shows otherwise.
+GATED_KINDS: tuple[str, ...] = ("hook", "memory", "skill", "agent")
 
 
 class QuarantineStateError(Exception):
     """The quarantine state file exists but could not be parsed. Callers must fail
     closed (withhold every gated artifact), never read it as an empty pending set."""
+
+
+class AmbiguousApprovalError(Exception):
+    """A name selector passed to ``approve`` matches more than one pending
+    content-hash and no hash prefix was given to disambiguate. Approving would
+    have to guess which record was actually reviewed — and clearing all of them
+    would also clear an unreviewed record that merely shares the name (the risk
+    ``approve`` must never take). Callers must re-invoke with a hash-prefix
+    selector (``"name@hashprefix"``) naming the specific record reviewed."""
 
 
 @dataclass(frozen=True)
@@ -195,19 +212,55 @@ def add_pending(
 def approve(
     state_dir: Path, names: Iterable[str] | None = None, *, approve_all: bool = False
 ) -> list[str]:
-    """Clear quarantine for the given ``names`` (any pending hash of that name), or
-    every pending artifact when ``approve_all``. Returns the names actually cleared.
-    Propagates ``QuarantineStateError`` on a corrupt file (refuse rather than reset)."""
+    """Clear quarantine for the given ``names``, or every pending artifact when
+    ``approve_all``. Returns the names actually cleared.
+
+    Each entry in ``names`` is either a bare artifact name, or ``"name@hash-prefix"``
+    (a prefix of the record's ``content_hash``) to name one specific record. A bare
+    name that currently has only one pending hash clears unambiguously — the common
+    case. But ``reconcile``/``add_pending`` deliberately key on the full
+    ``(kind, name, content_hash)`` identity, so two *different* pulls can share a
+    name while differing in bytes (e.g. a name pulled once, reviewed and left
+    pending, then pulled again from a compromised or racing pusher with different
+    content). Clearing by bare name alone would approve BOTH — silently
+    re-activating the unreviewed record. So when a bare name (or a hash prefix that
+    still matches more than one distinct hash) is ambiguous, ``approve`` clears
+    NOTHING for that selector and raises ``AmbiguousApprovalError`` listing the
+    pending hashes, rather than guessing. ``approve_all`` is unaffected — it is the
+    explicit "clear everything" escape hatch and stays name-only.
+
+    Propagates ``QuarantineStateError`` on a corrupt file (refuse rather than reset).
+    """
     pending = load_pending(state_dir)
     if approve_all:
         cleared = sorted({a.name for a in pending})
         _save_pending(state_dir, [])
         return cleared
-    wanted = set(names or ())
-    cleared = sorted({a.name for a in pending if a.name in wanted})
-    if cleared:
-        _save_pending(state_dir, [a for a in pending if a.name not in wanted])
-    return cleared
+
+    to_clear: set[tuple[str, str, str]] = set()
+    cleared_names: set[str] = set()
+    for selector in names or ():
+        name, sep, hash_prefix = selector.partition("@")
+        matches = [a for a in pending if a.name == name]
+        if sep:
+            matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
+        if not matches:
+            continue  # unknown name/hash → no-op, matches prior behavior
+        distinct_hashes = sorted({a.content_hash for a in matches})
+        if len(distinct_hashes) > 1:
+            shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
+            raise AmbiguousApprovalError(
+                f"{name!r} matches {len(distinct_hashes)} pending records with "
+                f"different content — refusing to guess which was reviewed. "
+                f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
+            )
+        for a in matches:
+            to_clear.add(a.key)
+            cleared_names.add(a.name)
+
+    if to_clear:
+        _save_pending(state_dir, [a for a in pending if a.key not in to_clear])
+    return sorted(cleared_names)
 
 
 def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
