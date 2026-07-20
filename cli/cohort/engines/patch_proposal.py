@@ -35,7 +35,7 @@ from pathlib import Path
 
 from cohort.engines import EngineSpec, get_engine
 from cohort.engines import gates, patch
-from cohort.engines import xai
+from cohort.engines import xai, xai_agentic
 from cohort.engines.patch import PatchResult, PatchProposal
 
 # A proposal that rewrites a large number of files is not blocked, but it is flagged:
@@ -305,7 +305,20 @@ def propose_patch(
         max_prompt_bytes=max_prompt_bytes,
     )
     proposal = patch.parse_patch(text)
+    return _gate_and_apply(proposal, repo_root, allowed_footprint)
 
+
+def _gate_and_apply(
+    proposal: PatchProposal, repo_root: Path, allowed_footprint: list[str]
+) -> "ProposalOutcome":
+    """Re-gate a parsed proposal and apply it in an isolated worktree.
+
+    The single trusted write path, shared by the one-shot :func:`propose_patch` and the
+    agentic :func:`propose_patch_agentic`: however the engine produced the patch, it is
+    re-gated here (footprint + sensitive class on the paths, secret backstop on the
+    content) and applied only inside a detached worktree — ``repo_root``'s working tree
+    is never touched, and the worktree is cleaned up on *any* failure.
+    """
     proposed_paths = [e.path for e in proposal.edits] + [
         f.path for f in proposal.new_files
     ]
@@ -353,3 +366,104 @@ def _require_patch_proposal_engine(engine_name: str) -> EngineSpec:
             f"engine {engine_name!r} is not trusted with the 'patch_proposal' role"
         )
     return spec
+
+
+def _assemble_agentic_task(
+    task: str, allowed_footprint: list[str], project_context_text: str
+) -> str:
+    """Instruction for the agentic proposer: explore read-only, then emit the patch.
+
+    Same JSON wire contract as :func:`_assemble_prompt`, but the engine gathers its own
+    context through the read-only tools first rather than reading a packaged bundle."""
+    footprint_lines = "\n".join(f"  - {entry}" for entry in allowed_footprint)
+    context_section = (
+        f"Repository conventions and context:\n{project_context_text.strip()}\n\n"
+        if project_context_text.strip()
+        else ""
+    )
+    return (
+        "You are proposing a code change for a repository. FIRST explore the repository "
+        "with the read-only tools (list_dir, read_file, grep, find_files) to understand "
+        "the code you are about to change — verify what exists before you propose an "
+        "edit. You have no write access; you only return a structured patch that the "
+        "repository's own tooling reviews and applies.\n\n"
+        f"Task:\n{task.strip()}\n\n"
+        f"{context_section}"
+        "You may only touch files inside this declared footprint (paths are "
+        "repo-relative):\n"
+        f"{footprint_lines}\n\n"
+        "When you have gathered enough context, STOP calling tools and give a FINAL "
+        "answer that is ONLY a single JSON object matching exactly this contract — no "
+        "prose, no markdown fence, nothing else:\n"
+        '{"summary":"...","edits":[{"path":"...","search":"<exact existing '
+        'substring>","replace":"..."}],"new_files":[{"path":"...","content":"..."}]}\n\n'
+        "Rules:\n"
+        "- Every 'path' is repo-relative and MUST stay within the declared footprint.\n"
+        "- Each 'search' MUST be an exact substring that occurs exactly once in the "
+        "current file (read the file first to be sure); do not guess or emit a diff.\n"
+        "- 'edits' and 'new_files' may each be empty or omitted.\n"
+        "- Do not introduce secrets, API keys, or credentials.\n"
+        "- Your final message must be JSON only."
+    )
+
+
+def propose_patch_agentic(
+    engine_name: str,
+    task: str,
+    *,
+    repo_root: Path,
+    allowed_footprint: list[str],
+    project_context_text: str = "",
+    model: str | None = None,
+    max_iterations: int = 24,
+    max_tokens: int = 4096,
+    transcript_path: Path | None = None,
+) -> ProposalOutcome:
+    """Like :func:`propose_patch`, but the engine EXPLORES the repo read-only to gather
+    its own context, then proposes the patch — instead of working from a packaged bundle.
+
+    The trust boundary is unchanged. Exploration is read-only and egress-gated per read
+    (a sensitive path or secret-bearing file is refused, its bytes never returned) and
+    recorded to ``transcript_path`` for audit; the repo's egress opt-out is checked
+    before the loop starts. The proposed patch is then parsed, re-gated (footprint +
+    sensitive class + secret backstop), and applied only inside an isolated worktree by
+    the same :func:`_gate_and_apply` the one-shot path uses — ``repo_root``'s working
+    tree is never touched, nothing is committed, and the change still faces the
+    coordinator's verification and the human PR review.
+
+    Raises:
+        ProposalError: unknown/unauthorised engine, empty footprint, or the loop hit a
+            bound (iterations/output) before producing a final patch.
+        EgressBlockedError: the repo opted out of external-engine egress.
+        GateError: a proposed path or content was blocked (fail closed).
+        EngineError / PatchError: the engine failed, or its patch could not be
+            parsed/applied.
+    """
+    spec = _require_patch_proposal_engine(engine_name)
+    if not any(entry.strip() for entry in allowed_footprint):
+        raise ProposalError(
+            "allowed_footprint is empty; refusing to propose with no declared write "
+            "scope (pass at least one repo-relative path or glob)"
+        )
+
+    # Egress opt-out is checked before any exploration begins; the per-read gate inside
+    # the loop then covers each file the engine touches.
+    gates.require_egress_allowed(project_context_text)
+
+    result = xai_agentic.run_agentic(
+        _assemble_agentic_task(task, allowed_footprint, project_context_text),
+        root=repo_root,
+        model=model or spec.model_tiers.get("flagship") or spec.model_tiers.get("cheap"),
+        engine_name=engine_name,
+        max_iterations=max_iterations,
+        max_tokens=max_tokens,
+        transcript_path=transcript_path,
+    )
+    if result.stopped_reason != "final":
+        raise ProposalError(
+            f"the engine did not produce a patch (stopped: {result.stopped_reason} "
+            f"after {result.iterations} tool rounds) — retry with a narrower task or a "
+            "higher iteration budget"
+        )
+    proposal = patch.parse_patch(result.text)
+    return _gate_and_apply(proposal, repo_root, allowed_footprint)
