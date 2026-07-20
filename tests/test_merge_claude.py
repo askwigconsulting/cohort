@@ -81,6 +81,38 @@ def test_block_insert_into_empty_creates_just_block():
     assert merge.remove_block(text) == ""
 
 
+def test_remove_block_preserves_distant_blank_run():
+    """O2: removing the block must not collapse user blank runs far from it."""
+    # A deliberate 4-blank-line run (5 newlines) between two user paragraphs.
+    user = "para A\n\n\n\n\npara B\n"
+    text = merge.upsert_block(user, "@x")
+    restored = merge.remove_block(text)
+    assert restored == user  # byte-identical; the distant blank run survives
+    assert "\n\n\n\n\n" in restored  # the 4-blank-line run was NOT collapsed
+
+
+def test_render_rejects_sentinel_in_inner():
+    """R2-N1: inner content embedding a sentinel would truncate the block and
+    freeze it (hash can never match). Reject loudly at render time."""
+    poisoned = f"a project memory mentioning {merge.BLOCK_END} inline"
+    with pytest.raises(ValueError, match="sentinel"):
+        merge.upsert_block("user\n", poisoned)
+    with pytest.raises(ValueError, match="sentinel"):
+        merge.upsert_block("user\n", f"prefix {merge.BLOCK_BEGIN} suffix")
+
+
+def test_block_hash_is_eol_agnostic():
+    """GK-F4: a CRLF file's block must hash and extract identically to LF, so the
+    ownership check matches and the block never freezes on Windows."""
+    lf = merge.upsert_block("user content\n", "@cohort/x.md")
+    crlf = lf.replace("\n", "\r\n")
+    assert merge.block_hash(merge.extract_block(crlf)) == merge.block_hash(
+        merge.extract_block(lf)
+    )
+    # detection itself is EOL-agnostic: the CRLF block is found and its inner matches
+    assert merge.extract_block(crlf) == merge.extract_block(lf) == "@cohort/x.md"
+
+
 # --- unit: json key-merge ---------------------------------------------------
 
 
@@ -94,11 +126,31 @@ def test_json_merge_appends_and_preserves_user_keys():
 
 
 def test_json_merge_is_idempotent():
+    # A real re-merge carries prior_tags (from the manifest) recording that Cohort
+    # placed the entry last round; it stays ours and is not duplicated.
     entry = {"matcher": "", "hooks": [{"type": "command", "command": "x"}]}
     existing = {"hooks": {"SessionStart": [entry]}}
-    new, owned, skipped = merge.merge_hooks(existing, {"hooks": {"SessionStart": [entry]}})
+    prior_tags = [{"event": "SessionStart", "entry_hash": merge.entry_hash(entry)}]
+    new, owned, skipped = merge.merge_hooks(
+        existing, {"hooks": {"SessionStart": [entry]}}, prior_tags
+    )
     assert new == existing  # no duplication
-    assert skipped == 0 and len(owned) == 1
+    assert skipped == 0 and len(owned) == 1  # still ours across re-merge
+
+
+def test_first_install_does_not_claim_user_identical_entry():
+    """GK-F2: a user's pre-existing entry byte-identical to a Cohort one must not
+    be claimed on first install (no prior_tags) — else uninstall deletes it."""
+    entry = {"matcher": "", "hooks": [{"type": "command", "command": "x"}]}
+    existing = {"hooks": {"SessionStart": [entry]}}  # the USER already has it
+    fragment = {"hooks": {"SessionStart": [entry]}}  # Cohort ships the same entry
+    new, owned, skipped = merge.merge_hooks(existing, fragment)  # first install: no prior_tags
+    assert new == existing  # not duplicated
+    assert owned == []  # NOT claimed — it is the user's entry
+    # reverse using the (empty) owned tags leaves the user's entry intact
+    reversed_settings, removed, _skipped = merge.remove_tagged(new, owned)
+    assert removed == 0
+    assert reversed_settings == existing  # survives uninstall
 
 
 def test_json_remerge_after_user_edit_skips_not_duplicates():

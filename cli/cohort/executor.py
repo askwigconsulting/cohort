@@ -42,6 +42,20 @@ class ClobberRefused(Exception):
         super().__init__(f"refusing to overwrite pre-existing file(s): {names}")
 
 
+class InvalidJSONError(Exception):
+    """Raised when a file Cohort must parse as JSON is not valid JSON (O4).
+
+    Surfaces a clean, file-naming refusal instead of letting a bare
+    ``json.JSONDecodeError`` traceback escape from a read-only preflight or a
+    reverse — e.g. a JSONC comment or trailing comma in the user's existing
+    settings file.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(f"existing {path} is not valid JSON — fix or move it")
+
+
 # --- Hashing ----------------------------------------------------------------
 
 
@@ -82,6 +96,16 @@ def _symlink_points_to(dest: Path, src: str) -> bool:
     if not dest.is_symlink():
         return False
     return Path(_strip_extended_prefix(os.readlink(dest))) == Path(_strip_extended_prefix(src))
+
+
+def _load_json(path: Path) -> dict:
+    """Parse ``path`` as JSON, converting a decode failure into a clean,
+    file-naming :class:`InvalidJSONError` (O4) rather than letting a raw
+    ``json.JSONDecodeError`` traceback escape."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise InvalidJSONError(path) from exc
 
 
 # --- Classification (preflight) --------------------------------------------
@@ -154,7 +178,7 @@ def _plan_merge(op: Op, prior: Optional[Op], force: bool = False) -> dict:
         return plan
     # json
     fragment = json.loads(Path(op.src).read_text(encoding="utf-8"))
-    existing = json.loads(dest.read_text(encoding="utf-8")) if dest.exists() else {}
+    existing = _load_json(dest) if dest.exists() else {}
     new_obj, owned, skipped = merge.merge_hooks(
         existing, fragment, prior.tags if prior else None, force
     )
@@ -315,6 +339,54 @@ def _inject_backup(op: Op, paths: CohortPaths, manifest: Manifest, dest: Path) -
     return backup_op
 
 
+def _copy_atomic(src: Path, dest: Path) -> None:
+    """Copy ``src`` to ``dest`` via a temp sibling + atomic renames (O1).
+
+    Previously ``shutil.copytree``/``copy2`` wrote straight into ``dest``, and
+    the manifest only recorded the op after the copy returned — an interrupt
+    (Ctrl-C, disk-full) mid-copy left a partial ``dest`` with no manifest op,
+    which the next run's ``classify`` sees as a foreign file (hash matches
+    neither the source nor any recorded hash) and refuses the whole install as
+    a CLOBBER, even without ``--force`` having ever displaced anything.
+
+    Here the slow, interruptible work (building the new tree) happens at a
+    temp sibling that is never visible at ``dest``. Swapping it into place is
+    then two renames — metadata-only, not content copies, so they are
+    effectively instant and atomic regardless of tree size:
+
+    1. rename the old ``dest`` (if any) out of the way,
+    2. rename the temp sibling into ``dest``.
+
+    If interrupted anywhere before step 1, ``dest`` is untouched (still its
+    prior valid state, or still absent). If interrupted between steps 1 and 2,
+    ``dest`` is simply absent (not partial) — the next ``classify`` sees
+    "doesn't exist" and returns APPLY, never CLOBBER. Once step 2 completes,
+    ``dest`` already hashes equal to ``src``, so ``classify`` reports SATISFIED
+    even if the manifest write that follows never happens.
+    """
+    tmp = dest.with_name(f".{dest.name}.cohort-tmp")
+    if tmp.exists() or tmp.is_symlink():
+        _remove_path(tmp)  # leftover from a prior interrupted attempt
+    try:
+        if src.is_dir():
+            shutil.copytree(src, tmp, symlinks=True)
+        else:
+            shutil.copy2(src, tmp)
+    except BaseException:
+        if tmp.exists() or tmp.is_symlink():
+            _remove_path(tmp)
+        raise
+    old: Optional[Path] = None
+    if dest.exists() or dest.is_symlink():
+        old = dest.with_name(f".{dest.name}.cohort-old")
+        if old.exists() or old.is_symlink():
+            _remove_path(old)
+        os.replace(dest, old)
+    os.replace(tmp, dest)
+    if old is not None:
+        _remove_path(old)  # best-effort cleanup; dest is already correct either way
+
+
 def _place(op: Op, paths: CohortPaths, manifest: Manifest, recorded: dict[str, str]) -> OpOutcome:
     dest = Path(op.dest)
     if op.op == OpType.MKDIR.value:
@@ -330,13 +402,8 @@ def _place(op: Op, paths: CohortPaths, manifest: Manifest, recorded: dict[str, s
         manifest.ops = [o for o in manifest.ops if not (o.op == OpType.LINK.value and o.dest == op.dest)]
         recorded_op = Op(op=op.op, ide=op.ide, dest=op.dest, src=op.src)
     elif op.op == OpType.COPY.value:
-        if dest.exists() or dest.is_symlink():
-            _remove_path(dest)  # overwrite-ours
         src = Path(op.src or "")
-        if src.is_dir():
-            shutil.copytree(src, dest, symlinks=True)
-        else:
-            shutil.copy2(src, dest)
+        _copy_atomic(src, dest)
         recorded_op = Op(op=op.op, ide=op.ide, dest=op.dest, src=op.src, tree_hash=path_hash(dest))
         recorded[op.dest] = recorded_op.tree_hash
     elif op.op == OpType.SCAFFOLD.value:
@@ -418,8 +485,24 @@ def _reverse_place_ops(ops: list[Op], result: ReverseResult, purge: bool = False
             _reverse_merge(op, dest, result)
 
 
+def _backup_alongside(dest: Path) -> Path:
+    """Snapshot ``dest``'s current bytes to a sibling ``<name>.bak`` before a
+    merge-reverse rewrites or removes it (O2-backup), so a bad block/entry
+    removal is recoverable — mirroring the recoverability CLOBBER's apply-time
+    backup gives, without reusing ``backups/<install_id>/``: ``reverse_full``
+    deletes that whole tree moments later as part of full-uninstall cleanup,
+    which would destroy a backup stored there before the user ever saw it.
+    Overwrites any stale ``.bak`` left by a prior reverse attempt."""
+    backup = dest.with_name(dest.name + ".bak")
+    shutil.copy2(dest, backup)
+    return backup
+
+
 def _reverse_merge(op: Op, dest: Path, result: ReverseResult) -> None:
-    """Remove Cohort's block / tagged entries, verifying ownership first (B)."""
+    """Remove Cohort's block / tagged entries, verifying ownership first (B).
+
+    Backs up ``dest`` (see ``_backup_alongside``) before any rewrite/removal.
+    """
     if not dest.exists():
         result.skipped += 1
         return
@@ -431,18 +514,23 @@ def _reverse_merge(op: Op, dest: Path, result: ReverseResult) -> None:
             return
         new_text = merge.remove_block(text)
         if op.created and new_text.strip() == "":
+            # Delete-if-only-ours ([L]): the file was purely Cohort's content, so
+            # there is nothing of the user's to recover — unlink cleanly, no .bak
+            # (a sidecar here would survive `deinit --purge` and litter the dir).
             dest.unlink()
         else:
+            _backup_alongside(dest)  # user content survives the rewrite — snapshot it
             dest.write_text(new_text, encoding="utf-8")
         result.outcomes.append(OpOutcome(op=op, status="removed"))
     else:  # json
-        existing = json.loads(dest.read_text(encoding="utf-8"))
+        existing = _load_json(dest)
         new_obj, removed, skipped = merge.remove_tagged(existing, op.tags or [])
         result.skipped += skipped
         if removed:
             if op.created and not new_obj:
-                dest.unlink()
+                dest.unlink()  # purely ours → no backup (see block branch)
             else:
+                _backup_alongside(dest)
                 dest.write_text(merge.dumps_json(new_obj), encoding="utf-8")
             result.outcomes.append(OpOutcome(op=op, status="removed"))
 

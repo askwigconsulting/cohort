@@ -129,6 +129,51 @@ def test_update_pip_failure_surfaces_and_does_not_recompile(tmp_path):
     assert res.status == "pip_failed" and res.recompiled_ides == []
 
 
+def test_update_warns_when_renderer_changed_same_process(tmp_path):
+    """A fast-forward that touches compile.py/adapters is compiled in *this*
+    process using the already-imported (pre-update) renderer modules — do_update
+    must warn that a manual `cohort recompile` is needed under a fresh process,
+    not silently report a clean `updated` with no caveat (#O3)."""
+    up, src = _make_upstream_and_clone(tmp_path)
+    (up / "cli" / "cohort").mkdir(parents=True)
+    _commit(up, "cli/cohort/compile.py", "# renderer change\n")
+
+    with pytest.warns(UserWarning, match="recompile"):
+        res = do_update(src, tmp_path / "home", pip_run=_no_pip)
+
+    assert res.status == "updated"
+    assert "recompile" in res.detail.lower()
+    assert "stale" in res.detail.lower()
+
+
+def test_update_warns_when_adapter_changed_same_process(tmp_path):
+    """Same as above but for a file under cli/cohort/adapters/ rather than
+    compile.py itself — both are cached renderer modules (#O3)."""
+    up, src = _make_upstream_and_clone(tmp_path)
+    (up / "cli" / "cohort" / "adapters").mkdir(parents=True)
+    _commit(up, "cli/cohort/adapters/claude.py", "# adapter change\n")
+
+    with pytest.warns(UserWarning, match="recompile"):
+        res = do_update(src, tmp_path / "home", pip_run=_no_pip)
+
+    assert res.status == "updated" and "adapter" in res.detail.lower()
+
+
+def test_update_no_warning_when_renderer_untouched(tmp_path):
+    """The ordinary happy path (no compiler/renderer file in the incoming range)
+    must stay silent — the warning is specific to #O3, not every update."""
+    import warnings
+
+    up, src = _make_upstream_and_clone(tmp_path)
+    _commit(up, "README.md", "hi\n")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any UserWarning here fails the test
+        res = do_update(src, tmp_path / "home", pip_run=_no_pip)
+
+    assert res.status == "updated" and res.detail == ""
+
+
 def test_recompile_installed_recompiles_manifest_ides(tmp_path):
     """With an install on disk, recompile re-places that IDE's artifacts (incl. the
     new /update command)."""

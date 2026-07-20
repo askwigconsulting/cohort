@@ -1,7 +1,7 @@
 # Cohort — Design history & rationale
 
 The "why" the code can't carry: the architectural spine, the cross-phase decisions
-(referenced as `[J]`–`[R]` and a few inline ones), the verified environment facts,
+(referenced as `[J]`–`[S]` and a few inline ones), the verified environment facts,
 and the one through-line that makes the safety story real. Read this before
 proposing changes — several of these were arrived at by catching a guarantee that
 was *asserted* rather than *proven*, and the fix each time was to make the property
@@ -74,7 +74,7 @@ structural and testable.
   honest: my-over-office is resolved at compile into one flat `~/.claude/agents/`;
   only project-over-user is resolved by Claude Code at runtime. This is the
   machine-local overlay #42 deferred — it ends personal authoring dirtying the clone.
-- **[P] Pulled auto-activating artifacts are quarantined until reviewed (#107).**
+- **[Q] Pulled auto-activating artifacts are quarantined until reviewed (#107).**
   `my-office sync` fast-forward-pulls the overlay from a Git remote; on a shared
   remote, a pushed **hook** (runs on IDE events) or **memory** (loads into every
   session) is a code/prompt-injection sink. Sync records the `(kind, name,
@@ -88,7 +88,7 @@ structural and testable.
   hermeticity. Cleared by an explicit `cohort my-office review` + `approve`. Skills
   are out of scope (advisory text, not an execute-on-event sink); agents/commands
   likewise. Supersedes the incomplete "exclude hooks at sync time" of #103/PR #106.
-- **[Q] Model tier is an abstract cost/latency hint, resolved per renderer (#143).**
+- **[R] Model tier is an abstract cost/latency hint, resolved per renderer (#143).**
   Canonical agents may declare `model: fast|default|top`; canonical never names a
   concrete model ID, so it stays IDE-agnostic and doesn't rot when model names
   change. Each renderer owns exactly one tier→model table: Claude's maps
@@ -105,7 +105,7 @@ structural and testable.
   tier → model mapping (both this agent field and `/orchestrate`'s routing tiers) is
   documented in one place — `docs/model-tiers.md` — and `cohort lint` fails if that doc
   drifts from `_MODEL_MAP` or lists an orchestration tier the canon no longer uses.
-- **[R] Multi-model orchestration is instruction-level, coordinator-verified, and
+- **[S] Multi-model orchestration is instruction-level, coordinator-verified, and
   vendor-extensible.** `/orchestrate` (with the `model-orchestration` + `fable-mode`
   memories) is prose in canonical artifacts, not a CLI code path — Cohort adds no
   scheduler; the coordinating Claude session *is* the scheduler. Two invariants keep it
@@ -265,3 +265,7 @@ not because anyone promised it wouldn't, but because a test fails if it tries.
    `[claude]` only, so those paths are latent until a codex/cursor artifact is authored.
 
 The fitting first trip through Cohort's own loop is the proposal that closes gap (2).
+
+## Withdrawn RFCs
+
+- **RFC 0003 (Personal agentic OS / life)** was withdrawn in v0.7.0, superseded by a dedicated standalone app. The life project feature has been removed from Cohort; do not restore it to the codebase.

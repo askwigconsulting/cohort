@@ -7,6 +7,7 @@ asserted in the CLI tests, not here.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 
@@ -14,6 +15,7 @@ import pytest
 
 from cohort.executor import (
     ClobberRefused,
+    InvalidJSONError,
     apply,
     path_hash,
     preflight,
@@ -405,3 +407,169 @@ def test_reverse_removes_dangling_owned_link(home, src):
 
     result = reverse_full(m, paths)
     assert not dest.is_symlink() and result.removed == 1  # removed, not skipped/leaked
+
+
+# --- O1: an interrupted copy must never masquerade as a foreign clobber -----
+
+
+def test_interrupted_copy_never_leaves_a_clobber(home, src, monkeypatch):
+    """A crash mid-``shutil.copytree`` (Ctrl-C, disk-full) must never leave a
+    partial ``dest`` — previously that partial dest had no manifest op, so the
+    next preflight's ``classify`` saw it as foreign and refused the whole
+    install with CLOBBER, even though nothing was ever actually clobbered."""
+    paths = paths_for(home)
+    dest = home / "copy_dir"
+    op = Op(OpType.COPY.value, GLOBAL_IDE, str(dest), src=str(src))
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(shutil, "copytree", boom)
+    m = make_manifest()
+    with pytest.raises(OSError):
+        apply([op], paths, m, force=False)
+
+    assert not dest.exists()  # never partially materialized at the real path
+    # no stray temp sibling left behind either
+    assert list(home.iterdir()) == []
+    assert m.ops == []  # nothing recorded — apply never got that far
+
+    # next run: classify must resolve this as a normal fresh install, not CLOBBER
+    pf = preflight([op], m, force=False)
+    assert pf.clobbers == []
+    assert pf.classified[0].status == OpStatus.APPLY
+
+
+def test_interrupted_copy_over_existing_dest_leaves_old_content_intact(home, src, monkeypatch):
+    """If a prior good copy already exists at ``dest`` and a re-copy (e.g. after
+    the source changed) is interrupted while building the new tree, the old
+    ``dest`` must be left exactly as it was — never partially replaced."""
+    paths = paths_for(home)
+    dest = home / "copy_dir"
+    op = Op(OpType.COPY.value, GLOBAL_IDE, str(dest), src=str(src))
+    m = make_manifest()
+    apply([op], paths, m, force=False)
+    before = path_hash(dest)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(shutil, "copytree", boom)
+    (src / "new_file.txt").write_text("new\n", encoding="utf-8")  # force a re-copy
+    with pytest.raises(OSError):
+        apply([op], paths, m, force=False)
+
+    assert path_hash(dest) == before  # untouched by the failed re-copy
+    assert not any(p.name.startswith(".") for p in home.iterdir())  # no stray temp
+
+
+# --- O4: an unparseable existing JSON file must refuse cleanly, not crash ---
+
+
+def test_merge_preflight_refuses_cleanly_on_invalid_existing_json(home, src):
+    """A JSONC comment / trailing comma in the user's existing settings file
+    must raise a clean, file-naming refusal, not an uncaught JSONDecodeError."""
+    dest = home / "settings.json"
+    dest.write_text('{\n  "a": 1,\n}\n', encoding="utf-8")  # trailing comma
+    fragment_src = src / "fragment.json"
+    fragment_src.write_text(json.dumps({"hooks": {"PostToolUse": [{"command": "x"}]}}), encoding="utf-8")
+    op = Op(OpType.MERGE.value, GLOBAL_IDE, str(dest), src=str(fragment_src), strategy="json")
+
+    with pytest.raises(InvalidJSONError) as exc_info:
+        preflight([op], None, force=False)
+    assert str(dest) in str(exc_info.value)
+    with pytest.raises(json.JSONDecodeError):
+        raise exc_info.value.__cause__  # the original decode error is chained, not swallowed
+
+
+def test_merge_reverse_refuses_cleanly_on_invalid_existing_json(home, src):
+    """Same refusal on the reverse path (~439): a settings file corrupted after
+    install must not crash uninstall with a raw JSONDecodeError."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "settings.json"
+    fragment_src = src / "fragment.json"
+    fragment_src.write_text(json.dumps({"hooks": {"PostToolUse": [{"command": "x"}]}}), encoding="utf-8")
+    op = Op(OpType.MERGE.value, GLOBAL_IDE, str(dest), src=str(fragment_src), strategy="json")
+    m = make_manifest()
+    apply([op], paths, m, force=False)
+
+    dest.write_text('{\n  "hooks": {},\n}\n', encoding="utf-8")  # user corrupts it (trailing comma)
+    with pytest.raises(InvalidJSONError) as exc_info:
+        reverse_full(m, paths)
+    assert str(dest) in str(exc_info.value)
+
+
+# --- O2-backup: a merge reverse must snapshot the file before mutating it ---
+
+
+@requires_symlinks
+def test_block_merge_reverse_backs_up_before_removal(home, src):
+    """A block-merge reverse rewrites/deletes the file it merged into — it must
+    snapshot the pre-write content to a sibling ``.bak`` first (O2-backup),
+    otherwise a wrong block removal is unrecoverable. Previously only the
+    CLOBBER path got a backup."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "CLAUDE.md"
+    dest.write_text("# my notes\n", encoding="utf-8")  # user content the block gets merged into
+    block_src = src / "block.md"
+    block_src.write_text("cohort managed content\n", encoding="utf-8")
+    op = Op(OpType.MERGE.value, GLOBAL_IDE, str(dest), src=str(block_src), strategy="block")
+    m = make_manifest()
+    apply([op], paths, m, force=False)
+    pre_reverse_content = dest.read_text(encoding="utf-8")
+    assert "cohort managed content" in pre_reverse_content
+
+    result = reverse_full(m, paths)
+
+    backup = dest.with_name(dest.name + ".bak")
+    assert backup.exists()
+    assert backup.read_text(encoding="utf-8") == pre_reverse_content
+    assert result.removed == 1
+
+
+def test_json_merge_reverse_backs_up_before_removal(home, src):
+    """Same guarantee for the json (hook key-merge) strategy: when the user's own
+    content survives the reverse (the file is rewritten, not deleted), snapshot it
+    to ``.bak`` first."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "settings.json"
+    # Pre-existing USER content — so reverse rewrites (keeps this), never deletes.
+    dest.write_text(
+        json.dumps({"hooks": {"PreToolUse": [{"command": "user-own"}]}}), encoding="utf-8"
+    )
+    fragment_src = src / "fragment.json"
+    fragment_src.write_text(json.dumps({"hooks": {"PostToolUse": [{"command": "x"}]}}), encoding="utf-8")
+    op = Op(OpType.MERGE.value, GLOBAL_IDE, str(dest), src=str(fragment_src), strategy="json")
+    m = make_manifest()
+    apply([op], paths, m, force=False)
+    pre_reverse_content = dest.read_text(encoding="utf-8")
+
+    reverse_full(m, paths)
+
+    backup = dest.with_name(dest.name + ".bak")
+    assert backup.exists()
+    assert backup.read_text(encoding="utf-8") == pre_reverse_content
+    assert "user-own" in dest.read_text(encoding="utf-8")  # user's entry survived
+
+
+def test_delete_if_only_ours_reverse_leaves_no_backup(home, src):
+    """A file Cohort CREATED that has nothing but Cohort's content is unlinked on
+    reverse with NO ``.bak`` sidecar. A backup there would have nothing of the
+    user's to protect and would survive ``deinit --purge``, littering the dir
+    (regression guard for the O2-backup / purge interaction)."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "settings.json"  # does NOT pre-exist → Cohort creates it
+    fragment_src = src / "fragment.json"
+    fragment_src.write_text(json.dumps({"hooks": {"PostToolUse": [{"command": "x"}]}}), encoding="utf-8")
+    op = Op(OpType.MERGE.value, GLOBAL_IDE, str(dest), src=str(fragment_src), strategy="json")
+    m = make_manifest()
+    apply([op], paths, m, force=False)
+
+    reverse_full(m, paths)
+
+    assert not dest.exists()  # delete-if-only-ours
+    assert not dest.with_name(dest.name + ".bak").exists()  # no litter

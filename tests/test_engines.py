@@ -215,8 +215,11 @@ def test_get_engine_returns_grok_spec() -> None:
     assert spec.auth_env == "GROK_API_KEY"
     assert spec.roles == frozenset({"consult", "patch_proposal"})
     assert spec.cost_class == "metered"
-    assert spec.model_tiers["cheap"] == "grok-code-fast-1"
-    assert spec.model_tiers["flagship"] == "grok-4-latest"
+    # Concrete verified ids, not moving aliases: `grok-4-latest`/`grok-code-fast-1`
+    # resolve server-side to `grok-4.3`/`grok-build-0.1`, so the flagship alias served
+    # the second tier. Pin the real ids the account lists.
+    assert spec.model_tiers["cheap"] == "grok-4.3"
+    assert spec.model_tiers["flagship"] == "grok-4.5"
 
 
 def test_get_engine_unknown_name_raises() -> None:

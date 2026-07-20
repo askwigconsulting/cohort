@@ -71,8 +71,13 @@ ENGINES: dict[str, EngineSpec] = {
         auth_env="GROK_API_KEY",
         roles=frozenset({"consult", "patch_proposal"}),
         cost_class="metered",
+        # Pin concrete, verified model ids — never moving aliases. The xAI aliases
+        # `grok-4-latest` and `grok-code-fast-1` silently resolve to `grok-4.3` and
+        # `grok-build-0.1` respectively (confirmed against the response `model` field),
+        # so the "flagship" alias was quietly serving the second tier. Name the real
+        # ids the account lists so the tier we request is the tier we get.
         model_tiers=MappingProxyType(
-            {"cheap": "grok-code-fast-1", "flagship": "grok-4-latest"}
+            {"cheap": "grok-4.3", "flagship": "grok-4.5"}
         ),
     ),
 }

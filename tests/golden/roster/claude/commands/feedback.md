@@ -1,6 +1,6 @@
 ---
 description: Rate an office agent or command from inside the IDE (fuels the improvement loop).
-argument-hint: [rating] [subject]
+argument-hint: '[rating] [subject]'
 ---
 
 Record a piece of feedback about the office — the raw signal `cohort propose-improvement`

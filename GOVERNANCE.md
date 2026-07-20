@@ -12,7 +12,9 @@ approves**. This is the norm the project is built around:
 - **The self-improvement loop is human-gated by construction.** `cohort
   propose-improvement` + `cohort submit-proposals` can only ever open **draft
   PRs** — Cohort structurally cannot edit `canonical/` in place or merge/push a
-  default branch (proven by tests). A human reviews and merges every proposal.
+  default branch (proven by tests). The Steward agent observes usage and proposes
+  improvements as draft PRs that a human maintainer reviews and merges. Every
+  proposal is an untrusted recommendation.
 - **CI must pass.** The Ubuntu + Windows matrix, schema lint, and the full test
   suite gate every PR; branches must be up to date with `master` before merge.
 - **Canonical is law.** Review focuses on the canonical source, never the

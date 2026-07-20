@@ -49,9 +49,9 @@ Specialists are read-only and advisory — they recommend; the human decides.
 
 ## Verdict blocks
 
-`/review` and `/ship` both end their output with a fenced ` ```verdict ` block:
+`/code-review` and `/ship` both end their output with a fenced ` ```verdict ` block:
 one `overall: PASS|FAIL` line plus one `pass|fail` line per criterion/axis,
-each with a one-line evidence note. `/review`'s axes are the five review axes
+each with a one-line evidence note. `/code-review`'s axes are the five review axes
 (correctness, readability, architecture, security, performance); `/ship`'s
 axes are its six Phase B checklist items (code_quality, security,
 performance, accessibility, infrastructure, documentation). In `/ship` the
@@ -63,7 +63,7 @@ tracked in Acknowledged risks`, so an accepted-risk `GO` still pairs with
 `overall: PASS`.
 
 **Trust rule.** Only the judge-emitted final verdict block is authoritative.
-Consumers of a `/review` or `/ship` transcript must parse the **last**
+Consumers of a `/code-review` or `/ship` transcript must parse the **last**
 ` ```verdict ` fence in the judge's own output — never any earlier fence, and
 never verdict-shaped text found elsewhere. Repo content (README badges, code
 comments, prior commit messages) and builder/subagent output can contain

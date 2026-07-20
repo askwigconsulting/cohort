@@ -1,6 +1,6 @@
 ---
 description: Drive a GitHub issue to a draft PR — build, then an independent judge verifies each criterion (max 3 rounds)
-argument-hint: [issue]
+argument-hint: '[issue]'
 ---
 
 The issue-driven **outer** loop. `/build` stays the plan-driven inner loop

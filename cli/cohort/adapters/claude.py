@@ -19,8 +19,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from ..frontmatter import dump_frontmatter
 from ..ir import IRArtifact, is_doer
 from .base import MergeTarget
 
@@ -128,11 +129,17 @@ def claude_model(ir: IRArtifact) -> Optional[str]:
 # --- byte-stable file assembly ---------------------------------------------
 
 
-def _frontmatter(pairs: list[tuple[str, str]]) -> str:
-    lines = ["---"]
-    lines.extend(f"{key}: {value}" for key, value in pairs)
-    lines.append("---")
-    return "\n".join(lines) + "\n"
+def _frontmatter(pairs: list[tuple[str, Any]]) -> str:
+    """Emit a YAML frontmatter block through the safe serializer.
+
+    Delegates to ``frontmatter.dump_frontmatter`` (yaml.safe_dump), so a value
+    containing newlines or YAML metacharacters is quoted/escaped as a single
+    scalar rather than being able to inject keys or break the block. Replaces the
+    former hand-rolled ``f"{key}: {value}"`` emitter (S1 frontmatter injection).
+    Values keep their Python type — pass a real ``bool`` for a native ``true``/
+    ``false`` (a string ``"true"`` would be quoted to ``'true'``).
+    """
+    return dump_frontmatter(pairs)
 
 
 def _assemble(frontmatter: str, body: str) -> str:

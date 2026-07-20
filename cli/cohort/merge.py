@@ -19,6 +19,9 @@ import json
 import re
 from typing import Any, Optional
 
+# TODO(review): GK-F1 nonce — a per-install nonce inside the sentinel would let
+# concurrent installs disambiguate ownership without a content hash. Out of scope
+# for this pass (it changes the on-disk output format); tracked for a later review.
 BLOCK_BEGIN = "<!-- >>> cohort (managed) — do not edit inside this block >>> -->"
 BLOCK_END = "<!-- <<< cohort (managed) <<< -->"
 
@@ -28,12 +31,39 @@ _BLOCK_RE = re.compile(re.escape(BLOCK_BEGIN) + r".*?" + re.escape(BLOCK_END), r
 # --- managed-block (text) ---------------------------------------------------
 
 
+def _normalize_eol(text: str) -> str:
+    """Fold CRLF/CR line endings to ``\\n`` so detection and hashing are EOL-agnostic.
+
+    Managed-block ownership is verified by hashing the block's inner content
+    (GK-F4). Without this, a CRLF file hashes differently from its LF equivalent,
+    the ownership check never matches, and the block becomes frozen/unremovable.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _render_block(inner: str) -> str:
+    """Render Cohort's managed block around ``inner``.
+
+    Rejects ``inner`` that embeds either sentinel literal (R2-N1): a stray
+    ``BLOCK_END`` would truncate the rendered region so its ownership hash could
+    never match, freezing the block as unremovable. Fail loudly at render time
+    instead of writing a self-corrupting block.
+    """
+    if BLOCK_BEGIN in inner or BLOCK_END in inner:
+        raise ValueError(
+            "managed-block content contains a Cohort sentinel marker "
+            "(BLOCK_BEGIN/BLOCK_END); refusing to render a self-corrupting block"
+        )
     return f"{BLOCK_BEGIN}\n{inner.strip(chr(10))}\n{BLOCK_END}"
 
 
 def extract_block(text: str) -> Optional[str]:
-    """Return the inner content of Cohort's managed block, or None if absent."""
+    """Return the inner content of Cohort's managed block, or None if absent.
+
+    Line endings are normalized to ``\\n`` first so a CRLF file's block is
+    detected and its inner content extracted identically to the LF equivalent
+    (GK-F4)."""
+    text = _normalize_eol(text)
     m = _BLOCK_RE.search(text)
     if m is None:
         return None
@@ -53,14 +83,27 @@ def upsert_block(text: str, inner: str) -> str:
 
 
 def remove_block(text: str) -> str:
-    """Remove Cohort's managed block, collapsing leftover blank lines."""
-    new = _BLOCK_RE.sub("", text, count=1)
-    new = re.sub(r"\n{3,}", "\n\n", new).strip("\n")
-    return new + "\n" if new else ""
+    """Remove Cohort's managed block, folding only the local seam.
+
+    Normalizes just the newlines immediately adjacent to the block (the seam
+    ``upsert_block`` introduced) and leaves the rest of the file byte-identical
+    (O2). A whole-file blank-run collapse here would destroy user-authored blank
+    runs far from the block, so it is deliberately avoided."""
+    m = _BLOCK_RE.search(text)
+    if m is None:
+        return text
+    before = text[: m.start()].rstrip("\n")
+    after = text[m.end() :].lstrip("\n")
+    if before and after:
+        return before + "\n\n" + after
+    if before:
+        return before + "\n"
+    return after
 
 
 def block_hash(inner: str) -> str:
-    return hashlib.sha256(inner.strip("\n").encode("utf-8")).hexdigest()
+    """Ownership hash of a managed block's inner content, EOL-agnostic (GK-F4)."""
+    return hashlib.sha256(_normalize_eol(inner).strip("\n").encode("utf-8")).hexdigest()
 
 
 # --- key-merge (JSON) -------------------------------------------------------
@@ -118,7 +161,12 @@ def merge_hooks(
         # 3. Add canonical entries not already present; suppress diverged ones.
         for entry, h in zip(canon_entries, canon_hashes):
             if h in kept_set:
-                owned.append({"event": event, "entry_hash": h})
+                # Already in the file. Claim ownership only if it was ours before
+                # (in prior_set); a byte-identical entry the user authored and we
+                # never placed must NOT be claimed (GK-F2) — else reverse would
+                # delete the user's own entry on uninstall.
+                if h in prior_set:
+                    owned.append({"event": event, "entry_hash": h})
                 continue
             if h in diverged and not force:
                 skipped += 1  # the user took over this entry → don't re-add

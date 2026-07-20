@@ -12,8 +12,9 @@ The gates cover four surfaces:
   leaves the machine. Regex scanning has false negatives and is a *backstop*, not a
   guarantee; the primary control is Claude-curated, byte-bounded payloads.
 * **Path/scope gate** — a produced patch may only touch its declared footprint, and
-  never a sensitive class (git internals, hooks, CI, lockfiles, build/install
-  scripts, auth/crypto/secret files) without a deliberate, reviewed override.
+  never a sensitive class (git internals, hooks, CI, lockfiles, build/install/
+  executable scripts, auth/crypto/secret files) without a deliberate, reviewed
+  override.
 * **Payload bound** — a hard UTF-8 byte cap mirroring :mod:`cohort.engines.xai`; the
   primary cost/egress control.
 
@@ -63,8 +64,20 @@ class PayloadTooLargeError(GateError):
 # or (explicitly) allow external-engine egress. Matched case-insensitively, with
 # optional whitespace around the separators so a hand-typed variant still trips it.
 # These are the *reliable* signals — deny wins over allow (fail closed).
-_EGRESS_DENY_MARKER_RE = re.compile(r"cohort\s*:\s*egress\s*=\s*deny", re.IGNORECASE)
-_EGRESS_ALLOW_MARKER_RE = re.compile(r"cohort\s*:\s*egress\s*=\s*allow", re.IGNORECASE)
+#
+# Both markers are **line-anchored**: the directive must be the entire line (module a
+# few leading spaces and trailing whitespace), not merely a substring anywhere in the
+# file. A whole-file substring search would let ordinary prose weaponize the marker —
+# e.g. "do NOT add cohort:egress=allow" contains the literal allow-marker text inside
+# a *prohibition*, and a substring match would misread that sentence as permission and
+# disable the opt-out. Requiring the marker to stand alone on its own line makes that
+# negation-proof: prose that merely *mentions* a marker never matches.
+_EGRESS_DENY_MARKER_RE = re.compile(
+    r"^\s{0,3}cohort\s*:\s*egress\s*=\s*deny\s*$", re.IGNORECASE | re.MULTILINE
+)
+_EGRESS_ALLOW_MARKER_RE = re.compile(
+    r"^\s{0,3}cohort\s*:\s*egress\s*=\s*allow\s*$", re.IGNORECASE | re.MULTILINE
+)
 
 # Heading that opens an "## Egress" policy section. Merely *having* such a section is
 # a deliberate policy statement, so it flips the repo to deny-by-default; only the
@@ -89,7 +102,10 @@ def egress_opted_out(project_context_text: str) -> bool:
     deny-by-default; to permit egress despite that section, add the explicit
     ``cohort:egress=allow`` marker. Free-text words in the section (``allowed``,
     ``disabled``, ``forbidden`` …) are intentionally **not** trusted — a sentence like
-    "external engines are NOT allowed" must never be misread as permission.
+    "external engines are NOT allowed" must never be misread as permission. The same
+    goes for the structured markers themselves: each must stand alone on its own line,
+    so a sentence that merely *mentions* the marker text (e.g. "do NOT add
+    cohort:egress=allow") is never read as the directive.
 
     An absent file or a file with no ``## Egress`` section and no deny marker means
     *not opted out* (returns False); the default is allow, per Cohort's
@@ -147,6 +163,37 @@ _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 # "Bearer" followed by a short word does not trip it.
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=\-]{10,}")
 
+# High-signal, fixed-prefix vendor credential shapes. Each prefix is distinctive
+# enough on its own (near-zero false-positive rate) that no surrounding context is
+# required, unlike the generic-assignment heuristic below.
+#
+# GitHub personal-access tokens: the classic `gh[pousr]_` prefix (personal, oauth,
+# user-to-server, server-to-server, refresh) followed by 36 alphanumerics, and the
+# newer fine-grained `github_pat_` form.
+_GITHUB_TOKEN_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36}\b")
+_GITHUB_FINE_GRAINED_PAT_RE = re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b")
+
+# Slack tokens: bot/app/user/legacy prefixes followed by a dash-delimited body.
+_SLACK_TOKEN_RE = re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")
+
+# OpenAI/Anthropic API keys: the shared `sk-` prefix, with Anthropic's `sk-ant-`
+# variant as an optional sub-prefix.
+_AI_API_KEY_RE = re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")
+
+# Google API key: the fixed "AIza" prefix plus 35 URL-safe base64 chars.
+_GOOGLE_API_KEY_RE = re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")
+
+# JSON Web Token: base64url header and payload segments joined by dots, followed by
+# the dot that opens the signature segment. The signature itself is not required so
+# the pattern still catches a token that was truncated in a log line.
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.")
+
+# Connection-string credential: a `user:password@` pair immediately after a URI
+# scheme separator, e.g. `postgres://svc:S3cret@db/prod` or `mysql://root:hunter2@…`.
+# The password segment requires >=4 chars to keep the false-positive rate low while
+# still catching short-but-real passwords.
+_CONNECTION_STRING_CREDENTIAL_RE = re.compile(r"://[^/\s:@]+:[^/\s:@]{4,}@")
+
 # Sensitive assignment: any identifier that contains one of these keywords, set to
 # a non-trivial value (>=6 non-space chars). Covers both source assignments and
 # ``.env``-style ``KEY=value`` lines. The value is captured only to be discarded;
@@ -163,6 +210,15 @@ _ASSIGNMENT_RE = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_\-]*)\s*[:=]\s*['\"]?([^\s'\"]{6,})",
 )
 
+# RHS shapes that are unambiguously *code*, not a credential value, even when the
+# identifier on the left names a secret keyword — e.g. ``_URL_PASSWORD =
+# re.compile(r"...")`` or a comment-shaped string. Checked against the start of the
+# captured value token (COORD-1: precision fix for the assignment heuristic).
+_CODE_SHAPED_VALUE_RE = re.compile(
+    r"^(?:re\.compile\(|r['\"]|import\b|from\b|lambda\b|None\b|True\b|False\b"
+    r"|[A-Za-z_][A-Za-z0-9_.]*\()"
+)
+
 
 def _assignment_keyword(identifier: str) -> str | None:
     """Return the first sensitive keyword contained in ``identifier``, else None."""
@@ -171,6 +227,19 @@ def _assignment_keyword(identifier: str) -> str | None:
         if keyword in upper:
             return keyword
     return None
+
+
+def _looks_secret_shaped(value: str) -> bool:
+    """True if a captured assignment value looks like a credential, not source code.
+
+    The generic-assignment heuristic previously flagged any identifier containing a
+    keyword like ``PASSWORD`` regardless of what it was set to — so security source
+    that merely *names* a secret (``_URL_PASSWORD = re.compile(r"...")``, a validator
+    naming ``API_KEY`` in a docstring) false-positived. This rejects values that are
+    unambiguously code-shaped: a compiled regex, a raw-string literal, an
+    import/keyword, or a plain function/constructor call.
+    """
+    return _CODE_SHAPED_VALUE_RE.match(value) is None
 
 
 def scan_for_secrets(text: str) -> list[str]:
@@ -185,9 +254,19 @@ def scan_for_secrets(text: str) -> list[str]:
     * ``aws-access-key-id`` — ``AKIA`` + 16 uppercase base-32 chars.
     * ``private-key-block`` — a ``-----BEGIN ... PRIVATE KEY-----`` header.
     * ``bearer-token`` — ``Bearer <token>`` with a non-trivial token.
+    * ``github-token`` — a GitHub PAT (``gh[pousr]_...`` or ``github_pat_...``).
+    * ``slack-token`` — a Slack token (``xox[baprs]-...``).
+    * ``ai-api-key`` — an OpenAI/Anthropic-shaped key (``sk-...`` / ``sk-ant-...``).
+    * ``google-api-key`` — a Google API key (``AIza...``).
+    * ``jwt`` — a JSON Web Token (``eyJ....eyJ....``).
+    * ``connection-string-credential`` — a ``user:password@`` pair in a URI, e.g.
+      ``postgres://svc:S3cret@db/prod``.
     * ``generic-assignment:<KEYWORD>`` — an identifier containing ``API_KEY``,
       ``SECRET``, ``TOKEN``, ``PASSWORD``, ``PASSWD`` or ``ACCESS_KEY`` assigned a
-      non-trivial value (both ``KEY = value`` and ``.env``-style ``KEY=value``).
+      non-trivial, credential-shaped value (both ``KEY = value`` and ``.env``-style
+      ``KEY=value``); a code-shaped RHS (a compiled regex, a raw string, an
+      import/keyword, a function call) is exempted to cut false positives on
+      security source that merely names a secret keyword.
 
     Regex scanning has **false negatives** (a value split across lines, an unusual
     key name, a short secret) and is a backstop, not a guarantee — the primary
@@ -208,10 +287,22 @@ def scan_for_secrets(text: str) -> list[str]:
         labels.add("private-key-block")
     if _BEARER_RE.search(text):
         labels.add("bearer-token")
+    if _GITHUB_TOKEN_RE.search(text) or _GITHUB_FINE_GRAINED_PAT_RE.search(text):
+        labels.add("github-token")
+    if _SLACK_TOKEN_RE.search(text):
+        labels.add("slack-token")
+    if _AI_API_KEY_RE.search(text):
+        labels.add("ai-api-key")
+    if _GOOGLE_API_KEY_RE.search(text):
+        labels.add("google-api-key")
+    if _JWT_RE.search(text):
+        labels.add("jwt")
+    if _CONNECTION_STRING_CREDENTIAL_RE.search(text):
+        labels.add("connection-string-credential")
 
     for match in _ASSIGNMENT_RE.finditer(text):
         keyword = _assignment_keyword(match.group(1))
-        if keyword is not None:
+        if keyword is not None and _looks_secret_shaped(match.group(2)):
             labels.add(f"generic-assignment:{keyword}")
 
     return sorted(labels)
@@ -338,7 +429,8 @@ def _classify_sensitive(path: str) -> str | None:
 
     Sensitive classes require elevated approval regardless of footprint. The check is
     deliberately broad (segment-level prefix matching for auth/crypto/secret,
-    ``*.lock`` for lockfiles) so it fails closed on near-misses.
+    ``*.lock`` for lockfiles, ``*.sh``/``*.bash``/``*.ps1``/``Makefile``/``Dockerfile``
+    at any depth for executable scripts) so it fails closed on near-misses.
     """
     segments = [seg for seg in path.split("/") if seg not in ("", ".")]
     if not segments:
@@ -379,6 +471,11 @@ def _classify_sensitive(path: str) -> str | None:
         return "build-manifest"
     if base.startswith("install") or (base.endswith(".sh") and len(segments) == 1):
         return "install-script"
+    if base.endswith((".sh", ".bash", ".ps1")) or base in {"makefile", "dockerfile"}:
+        # An executable script or build-entrypoint file anywhere in the tree, not
+        # just at repo root — a nested `scripts/release.sh` or `docker/Dockerfile`
+        # is just as capable of running arbitrary commands as a root-level one.
+        return "executable-script"
     if any(_AUTH_SEGMENT_RE.match(seg.lower()) is not None for seg in segments):
         return "auth-crypto-secret"
     return None
@@ -393,8 +490,9 @@ def check_changed_paths(
     every entry in ``allowed_footprint`` (prefixes or ``*``/``**``/``?`` globs
     relative to the repo root), or if it falls in a **sensitive** class — anything
     under ``.git/``, a git hook, CI config, a dependency lockfile, a build/install
-    manifest or script, or an auth/crypto/secret/``.env`` path — which requires
-    elevated approval *regardless of footprint*.
+    manifest or script, an executable script (``*.sh``/``*.bash``/``*.ps1``,
+    ``Makefile``, ``Dockerfile``) at any depth, or an auth/crypto/secret/``.env``
+    path — which requires elevated approval *regardless of footprint*.
 
     A sensitive path can be allowed only by an **explicit, reviewed override**: a
     footprint entry that matches the path and is classified into the *same* sensitive

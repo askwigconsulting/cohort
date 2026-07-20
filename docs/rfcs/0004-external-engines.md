@@ -1,6 +1,6 @@
 # RFC 0004 — External engines: non-Claude models as orchestrated doers
 
-- Status: **Accepted + implemented** (2026-07-17) — office review complete; **Grok enters API-direct, not via the community grok-cli**. Two PRs: foundation (registry + xAI client + `/consult-grok`) and the `patch_proposal` loop + code-enforced egress gates.
+- Status: **Accepted; implementation under review** (2026-07-17) — office review complete; **Grok enters API-direct, not via the community grok-cli**. Two PRs: foundation (registry + xAI client + `/consult-grok`) and the `patch_proposal` loop + code-enforced egress gates.
 - Author: Cohort maintainers
 - Created: 2026-07-17
 - Depends on: `/orchestrate` (the coordinator protocol — delivered), `/consult-gpt` (advisory external consult — delivered), the worker-kickback + coordinator-verify signoff (delivered)

@@ -111,6 +111,43 @@ def test_resolve_upstream_default_and_config(tmp_path):
     assert resolve_upstream(src, home) == ("up", "release")
 
 
+def test_resolve_upstream_master_default_without_origin_head(tmp_path):
+    """When origin/HEAD is unset locally (e.g. a manual `remote add` + `fetch`
+    with followRemoteHEAD disabled, rather than a `clone`) and the remote's real
+    default branch is `master` (not the hardcoded fallback `main`),
+    resolve_upstream must ask the remote directly (`ls-remote --symref`) rather
+    than silently guessing `main` — a wrong guess makes rev-list fail and the
+    user is never told they're behind (#O7)."""
+    up = tmp_path / "upstream"
+    up.mkdir()
+    _git(up, "init", "-q", "-b", "master")
+    _git(up, "config", "user.email", "t@e.st")
+    _git(up, "config", "user.name", "T")
+    _commit(up, "f.txt", "1\n")
+
+    # Clone (which sets origin/HEAD automatically) so src genuinely shares
+    # history with up, then drop the symref to reproduce the precondition: a
+    # checkout whose local origin/HEAD is unset (e.g. an older git, or
+    # `remote.origin.followRemoteHEAD=never`) while origin's real default is
+    # `master`, not the hardcoded fallback `main`.
+    src = tmp_path / "src"
+    _git(tmp_path, "clone", "-q", str(up), str(src))
+    _git(src, "config", "user.email", "t@e.st")
+    _git(src, "config", "user.name", "T")
+    _git(src, "remote", "set-head", "origin", "-d")
+
+    home = tmp_path / "home"
+    assert resolve_upstream(src, home) == ("origin", "master")
+
+    # And update_status can now actually see "behind" against that resolved
+    # branch — this is the concrete symptom #O7 was about: silence, not a bad
+    # value, because rev-list against a nonexistent origin/main would fail
+    # closed into "unavailable".
+    _commit(up, "h.txt", "2\n")
+    st = update_status(src, home)
+    assert st["available"] and st["behind"] == 1 and st["upstream"] == "origin/master"
+
+
 def test_do_update_check_advisory_then_throttled_then_next_day(tmp_path, monkeypatch):
     up, src = _make_upstream_and_clone(tmp_path)
     _commit(up, "a.txt", "1\n")
