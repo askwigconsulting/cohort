@@ -29,8 +29,14 @@ _HASH_B = "b" * 64
 
 @pytest.fixture()
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A throwaway $HOME whose ~/.cohort/state exists (so the stores are writable)."""
+    """A throwaway home whose ~/.cohort/state exists (so the stores are writable).
+
+    Set both HOME and USERPROFILE: ``Path.home()`` reads HOME on POSIX but
+    USERPROFILE on Windows, so seeding only HOME leaves the Windows CLI pointed at
+    the real home and the seeded store is never found.
+    """
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     state = tmp_path / ".cohort" / "state"
     state.mkdir(parents=True)
     return tmp_path
