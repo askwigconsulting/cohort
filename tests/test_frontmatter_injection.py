@@ -110,7 +110,7 @@ def test_cursor_advisory_agent_readonly_is_unquoted_true():
     [
         ("feedback", "[rating] [subject]"),
         ("goal", "[issue]"),
-        ("orchestrate", "[task]"),
+        ("crew", "[task]"),
         ("consult-gpt", "[question]"),
     ],
 )

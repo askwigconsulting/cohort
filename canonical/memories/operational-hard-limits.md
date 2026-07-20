@@ -9,7 +9,7 @@ display_name: Operational hard limits
 ---
 These are **hard limits**, not preferences — they hold in every session, and they hold
 for every subagent a coordinator fans out (a worker does not inherit this memory, so an
-`/orchestrate` coordinator states the relevant limits in each worker's prompt). Cohort's
+`/crew` coordinator states the relevant limits in each worker's prompt). Cohort's
 `advisory: true` invariant governs an agent's *tools*; these govern *actions* the tools
 could still take.
 

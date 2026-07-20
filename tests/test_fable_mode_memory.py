@@ -1,4 +1,4 @@
-"""Wording-lock for the fable-mode memory and its /orchestrate wiring.
+"""Wording-lock for the fable-mode memory and its /crew wiring.
 
 Fable mode is the five-gate operational discipline non-Fable models (chiefly
 Opus) apply so they think and act like Fable. Two things must not silently
@@ -40,17 +40,17 @@ def test_fable_mode_locks_the_five_gates_in_the_memory_corpus():
 
 
 def test_fable_mode_requires_gates_embedded_in_worker_prompts():
-    # Subagents don't inherit memories — the corpus and the orchestrate command
+    # Subagents don't inherit memories — the corpus and the crew command
     # must both carry the embedding rule.
     corpus = _staged()["cohort/CLAUDE.cohort.md"]
     assert "does not inherit this memory automatically" in corpus
-    body = _staged()["commands/orchestrate.md"]
+    body = _staged()["commands/crew.md"]
     assert "Fable-mode five gates" in body
     assert "does not inherit the `fable-mode`" in body
 
 
-def test_orchestrate_opus_fallback_coordinator_adopts_fable_mode():
-    body = _staged()["commands/orchestrate.md"]
+def test_crew_opus_fallback_coordinator_adopts_fable_mode():
+    body = _staged()["commands/crew.md"]
     assert "operating in **Fable\nmode**" in body or "operating in **Fable mode**" in body
 
 

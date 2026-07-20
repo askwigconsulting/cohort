@@ -25,7 +25,7 @@ If any step fails, follow the agent-skills:debugging-and-error-recovery skill.
 
 ## Worktrees for concurrent writes (in orchestrated work)
 
-When `/build` is run as a worker task within `/orchestrate` and multiple writers
+When `/build` is run as a worker task within `/crew` and multiple writers
 run in parallel:
 
 - **Use the worktree provided by the coordinator.** The coordinator creates a

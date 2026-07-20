@@ -1,4 +1,4 @@
-"""Wording-lock for the compiled /consult-gpt command and its /orchestrate wiring.
+"""Wording-lock for the compiled /consult-gpt command and its /crew wiring.
 
 /consult-gpt brings ChatGPT (via the OpenAI Codex CLI) into the office as an
 advisory second opinion. Four guards are safety-critical and must never
@@ -86,8 +86,8 @@ def test_consult_gpt_asks_the_user_when_the_flagship_model_is_unavailable():
     assert "have Fable handle it single-model" in body
 
 
-def test_orchestrate_consults_gpt_on_fable_tier_work():
-    body = _staged()["commands/orchestrate.md"]
+def test_crew_consults_gpt_on_fable_tier_work():
+    body = _staged()["commands/crew.md"]
     # Plan cross-examination before fan-out, and an independent opinion at signoff.
     assert "cross-examine\nthe plan with `/consult-gpt`" in body.replace("  ", " ") or (
         "cross-examine" in body and "`/consult-gpt`" in body

@@ -1215,6 +1215,18 @@ def engine_propose(
         "--max-tokens",
         help="Cap on the engine's response length (bounds cost).",
     ),
+    agentic: bool = typer.Option(
+        False,
+        "--agentic",
+        help="Let the engine EXPLORE the repo read-only (gated per read, transcript "
+        "recorded) to gather its own context before proposing, instead of a bundle.",
+    ),
+    max_iterations: int = typer.Option(
+        24,
+        "--max-iterations",
+        help="With --agentic: cap on read-only tool rounds before the engine must "
+        "propose.",
+    ),
 ) -> None:
     """Ask an external engine to propose a patch, staged in an isolated worktree.
 
@@ -1222,6 +1234,10 @@ def engine_propose(
     and applies it inside a throwaway git worktree — never in this repo's working tree
     and never committed. The task is read from ``--task-file`` or stdin (never a shell
     argument), and ``--footprint`` is required so there is no unbounded write scope.
+
+    With ``--agentic`` the engine first explores the repo through the read-only tools
+    (each read egress-gated, the whole exploration recorded to a transcript) to gather
+    its own context, then proposes — the same gates and worktree isolation apply.
     """
     from .engines import patch_proposal
     from .engines import gates as engine_gates
@@ -1273,14 +1289,28 @@ def engine_propose(
     )
 
     try:
-        outcome = patch_proposal.propose_patch(
-            engine,
-            task,
-            repo_root=repo_root,
-            allowed_footprint=cleaned_footprint,
-            project_context_text=project_context_text,
-            max_tokens=max_tokens,
-        )
+        if agentic:
+            transcript = _next_transcript_path(repo_root, None)
+            outcome = patch_proposal.propose_patch_agentic(
+                engine,
+                task,
+                repo_root=repo_root,
+                allowed_footprint=cleaned_footprint,
+                project_context_text=project_context_text,
+                max_iterations=max_iterations,
+                max_tokens=max_tokens,
+                transcript_path=transcript,
+            )
+            typer.echo(f"exploration transcript: {transcript}", err=True)
+        else:
+            outcome = patch_proposal.propose_patch(
+                engine,
+                task,
+                repo_root=repo_root,
+                allowed_footprint=cleaned_footprint,
+                project_context_text=project_context_text,
+                max_tokens=max_tokens,
+            )
     except engine_gates.EgressBlockedError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)

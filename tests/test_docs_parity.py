@@ -61,7 +61,7 @@ def test_model_tiers_doc_matches_the_renderer_code():
 def test_lint_flags_model_tier_doc_drift_from_code(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "canonical" / "commands").mkdir(parents=True)
-    (tmp_path / "canonical" / "commands" / "orchestrate.md").write_text(
+    (tmp_path / "canonical" / "commands" / "crew.md").write_text(
         "fable opus sonnet haiku", encoding="utf-8"
     )
     # A doc whose agent-tier table disagrees with the real _MODEL_MAP.

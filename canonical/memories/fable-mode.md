@@ -8,7 +8,7 @@ priority: high
 display_name: Fable mode
 ---
 When a Cohort session or subagent runs on **Opus or any model other than Fable** — most
-importantly the `/orchestrate` Opus fallback coordinator and opus-tier workers — it
+importantly the `/crew` Opus fallback coordinator and opus-tier workers — it
 operates in **Fable mode**: Fable's structured operational discipline. Before taking
 any action or writing code, execute the five gates:
 

@@ -102,11 +102,11 @@ structural and testable.
   anything unrecognized; it never emits a value outside the schema's enum, so
   adoption can't produce a schema-invalid artifact. Purely a hint — no behavioral
   semantics, fail-closed like every other enum (`_check_enum`, E020). The concrete
-  tier → model mapping (both this agent field and `/orchestrate`'s routing tiers) is
+  tier → model mapping (both this agent field and `/crew`'s routing tiers) is
   documented in one place — `docs/model-tiers.md` — and `cohort lint` fails if that doc
   drifts from `_MODEL_MAP` or lists an orchestration tier the canon no longer uses.
 - **[S] Multi-model orchestration is instruction-level, coordinator-verified, and
-  vendor-extensible.** `/orchestrate` (with the `model-orchestration` + `fable-mode`
+  vendor-extensible.** `/crew` (with the `model-orchestration` + `fable-mode`
   memories) is prose in canonical artifacts, not a CLI code path — Cohort adds no
   scheduler; the coordinating Claude session *is* the scheduler. Two invariants keep it
   safe. **A coordinator tier floor:** orchestration runs only on Fable (preferred) or

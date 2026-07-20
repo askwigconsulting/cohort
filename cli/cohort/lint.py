@@ -71,7 +71,7 @@ def _iter_docs(repo_root: Path):
 # The single documented tier→model mapping, and the orchestration canon it governs.
 _MODEL_TIERS_DOC = "docs/model-tiers.md"
 _ORCH_CANON = (
-    "canonical/commands/orchestrate.md",
+    "canonical/commands/crew.md",
     "canonical/memories/model-orchestration.md",
     "canonical/memories/fable-mode.md",
 )

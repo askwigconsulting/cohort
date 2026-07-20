@@ -11,6 +11,19 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Grok as an agentic doer: `cohort engine propose --agentic`.** The external engine
+  now EXPLORES the repository read-only (`list_dir`/`read_file`/`grep`/`find_files`, each
+  read egress-gated, the whole exploration recorded to an inspectable transcript) to
+  gather its own multi-file context, then proposes a patch — instead of working from a
+  Claude-packaged bundle. The trust boundary is unchanged: the proposed patch is parsed,
+  re-gated (footprint + sensitive class + secret backstop), and applied only inside an
+  isolated worktree by the *same* path the one-shot proposer uses. Grok writes real code
+  that lands, coordinator-verified and PR-reviewed; it is never handed a write tool.
+- **`/crew` is the single orchestration command** (renamed from `/orchestrate`), carrying
+  the full protocol plus the cross-vendor doer rule: Claude subagents write directly,
+  external engines only ever propose gated patches.
+
 ### Fixed
 - **RFC 0004 gate hardening (pre-merge review).** Five defects found reviewing the
   Grok engine before merge, each with a regression test that fails without the fix:
