@@ -105,7 +105,10 @@ def test_engine_consult_requires_a_prompt_source_when_stdin_is_a_tty(capsys: pyt
     fake_stdin.isatty.return_value = True
     with patch("cohort.cli.sys.stdin", fake_stdin):
         with pytest.raises(typer.Exit) as exc_info:
-            cli_module.engine_consult("grok", prompt_file=None, max_tokens=4096)
+            cli_module.engine_consult(
+                "grok", prompt_file=None, tier=None, model=None,
+                allow_egress=False, max_tokens=4096,
+            )
     assert exc_info.value.exit_code == 2
     err = capsys.readouterr().err
     assert "prompt-file" in err or "stdin" in err
@@ -131,7 +134,10 @@ def test_engine_consult_reads_prompt_from_file_and_caps_max_tokens_by_default(tm
     assert result.exit_code == 0, result.output
     assert result.output.strip() == "grok's reply"
     assert captured["prompt"] == "what is wrong with this plan?"
-    assert captured["model"] is None
+    # Default tier is flagship, resolved to a concrete model id and passed explicitly
+    # (behaviourally identical to the old model=None, which the client resolved the
+    # same way — but now the CLI owns tier selection).
+    assert captured["model"] == "grok-4.5"
     assert captured["max_tokens"] == 4096  # bounded by default even though the
     # client itself leaves max_tokens unset
 

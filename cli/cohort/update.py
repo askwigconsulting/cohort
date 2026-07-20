@@ -742,6 +742,19 @@ def do_update(
         _record_update(home, pre_sha, post_sha, "update",
                        at=datetime.now(timezone.utc).isoformat())
 
+    # F3: record the gated-office artifacts this pull introduced into the office
+    # quarantine store BEFORE recompiling, so the recompile below withholds any
+    # auto-activating hook/memory/skill/agent an update pull brought in on a shared
+    # office remote — until it is reviewed (`cohort office review`/`approve`). First
+    # call (no baseline) just trusts the shipped office and quarantines nothing.
+    # A corrupt baseline must not break the update: the compile-time office gate reads
+    # the pending store independently and fails closed, so it stays the real backstop.
+    from . import quarantine
+    try:
+        quarantine.record_office_delta(CohortPaths(home).state, source)
+    except quarantine.QuarantineStateError:
+        pass
+
     pip_reinstalled = False
     if "pyproject.toml" in changed_files:
         if pip_run([sys.executable, "-m", "pip", "install", "-e", str(source)]) != 0:

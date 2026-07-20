@@ -668,6 +668,11 @@ def _print_update_human(result: UpdateResult) -> None:
         typer.echo(f"Recompiled: {', '.join(result.recompiled_ides)}")
     else:
         typer.echo("No installed IDEs to recompile (run `cohort install`).")
+    # The renderer-staleness warning was machine-only (result.detail, surfaced in
+    # --json). Surface it to the human too: a compiler/adapter change means the
+    # recompile just run may have used stale logic until a fresh process recompiles.
+    if result.status == "updated" and result.detail:
+        typer.echo(f"warning: {result.detail}", err=True)
 
 
 def _print_rollback_human(result: UpdateResult) -> None:
@@ -813,6 +818,73 @@ app.add_typer(my_office_app, name="my-office")
 engine_app = typer.Typer(add_completion=False, help="External-engine (RFC 0004) commands.")
 app.add_typer(engine_app, name="engine")
 
+office_app = typer.Typer(
+    add_completion=False, help="Office-layer (shared source) quarantine commands."
+)
+app.add_typer(office_app, name="office")
+
+
+def _repo_has_egress_provenance(cwd: Path) -> bool:
+    """True if ``cwd`` sits inside a repository context — a ``.git`` or ``.cohort``
+    ancestor. When neither exists (e.g. a bare ``/tmp`` working dir), there is no repo
+    whose ``.cohort/project_context.md`` could carry an egress opt-out, so a piped
+    payload's provenance cannot be checked and engine egress must fail closed (F5)."""
+    cwd = Path(cwd).resolve()
+    for candidate in (cwd, *cwd.parents):
+        if (candidate / ".git").exists() or (candidate / ".cohort").exists():
+            return True
+    return False
+
+
+def _guard_engine_egress_provenance(allow_egress: bool) -> None:
+    """Fail closed (RFC 0004 F5) when the working directory has no repository context
+    to check a piped payload's provenance against; ``--allow-egress`` overrides.
+
+    Inside a real repo behaviour is unchanged (the ``.cohort`` egress opt-out is
+    consulted as before). Only the no-repo-context case is refused: run from a bare
+    directory, there is no per-repo opt-out to honour and no way to know where the
+    piped code came from.
+
+    Residual (documented): stdin provenance is fundamentally unknowable — even inside
+    a repo, piped bytes need not originate from that repo. This guard closes only the
+    "no repo context at all" hole; it cannot vouch for what a caller feeds to stdin.
+    """
+    if allow_egress:
+        return
+    if not _repo_has_egress_provenance(Path.cwd()):
+        typer.echo(
+            "error: refusing external-engine egress from a directory with no "
+            "repository context (no .git or .cohort ancestor). The piped code's "
+            "provenance can't be checked against any per-repo egress opt-out. Re-run "
+            "inside the repository, or pass --allow-egress to override deliberately.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+
+def _resolve_engine_model(spec, tier: Optional[str], model: Optional[str]) -> str:
+    """Resolve the concrete model id to request for ``spec`` from a ``--tier`` name or
+    an explicit ``--model`` override (mutually exclusive). Raises ``typer.Exit(2)`` on
+    a conflict or an unknown tier, with a message listing the engine's tiers."""
+    if model is not None and tier is not None:
+        typer.echo(
+            "error: --tier and --model are mutually exclusive; pass one or the other",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if model is not None:
+        return model
+    resolved_tier = tier or "flagship"
+    try:
+        return spec.model_tiers[resolved_tier]
+    except KeyError:
+        typer.echo(
+            f"error: unknown tier {resolved_tier!r} for engine {spec.name!r}; "
+            f"available tiers: {', '.join(sorted(spec.model_tiers))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
 
 @engine_app.command("consult")
 def engine_consult(
@@ -821,6 +893,23 @@ def engine_consult(
         None,
         "--prompt-file",
         help="Path to a file holding the prompt. Omit to read the prompt from stdin.",
+    ),
+    tier: Optional[str] = typer.Option(
+        None,
+        "--tier",
+        help="Model tier to request: flagship (default) | cheap. "
+        "Mutually exclusive with --model.",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Explicit model id, overriding the tier. Mutually exclusive with --tier.",
+    ),
+    allow_egress: bool = typer.Option(
+        False,
+        "--allow-egress",
+        help="Permit egress when run outside any repo context (no .git/.cohort "
+        "ancestor), where a piped payload's provenance can't be checked (F5).",
     ),
     max_tokens: int = typer.Option(
         4096,
@@ -832,7 +921,8 @@ def engine_consult(
 
     The prompt is read from ``--prompt-file`` or piped stdin — NEVER accepted as a
     positional shell argument — so it can't leak via shell history, quoting, or the
-    process list. The response is capped by ``--max-tokens`` to bound cost.
+    process list. The response is capped by ``--max-tokens`` to bound cost. ``--tier``
+    (flagship|cheap) or an explicit ``--model`` selects which model answers.
     """
     try:
         spec = get_engine(engine)
@@ -850,6 +940,8 @@ def engine_consult(
             err=True,
         )
         raise typer.Exit(code=2)
+
+    chosen_model = _resolve_engine_model(spec, tier, model)
 
     if prompt_file is not None:
         try:
@@ -870,6 +962,11 @@ def engine_consult(
     if not prompt.strip():
         typer.echo("error: prompt is empty", err=True)
         raise typer.Exit(code=2)
+
+    # F5 fail-closed provenance: outside any repo context there is no per-repo opt-out
+    # to honour and no way to check where the piped code came from — refuse unless
+    # --allow-egress is passed. Inside a real repo this is a no-op.
+    _guard_engine_egress_provenance(allow_egress)
 
     # Gate the outbound prompt the same way `engine propose` does. Without this the
     # per-repo egress opt-out and the secret scan exist only as prose in the compiled
@@ -900,7 +997,7 @@ def engine_consult(
         raise typer.Exit(code=1)
 
     try:
-        text = engine_xai.consult(prompt, model=None, max_tokens=max_tokens)
+        text = engine_xai.consult(prompt, model=chosen_model, max_tokens=max_tokens)
     except engine_xai.EngineAuthError:
         typer.echo(
             "error: GROK_API_KEY is unset or was rejected by xAI; export a developer "
@@ -921,6 +1018,170 @@ def engine_consult(
     # result a human is about to act on.
     for line in text.splitlines():
         typer.echo(_display_safe(line))
+    raise typer.Exit(code=0)
+
+
+def _next_transcript_path(repo_root: Path, override: Optional[Path]) -> Path:
+    """Resolve the JSONL transcript path for an ``engine review`` run.
+
+    An explicit ``override`` wins. Otherwise the next zero-padded index in the
+    ``.cohort/engine-transcripts`` directory is chosen — deterministic (no wall-clock),
+    so a caller/test controls the name and successive runs never collide.
+    """
+    if override is not None:
+        return override
+    tdir = repo_root / ".cohort" / "engine-transcripts"
+    highest = 0
+    if tdir.is_dir():
+        for existing in tdir.glob("*.jsonl"):
+            if existing.stem.isdigit():
+                highest = max(highest, int(existing.stem))
+    return tdir / f"{highest + 1:04d}.jsonl"
+
+
+@engine_app.command("review")
+def engine_review(
+    engine: str = typer.Argument(..., help="Registered engine name (e.g. 'grok')."),
+    task_file: Optional[Path] = typer.Option(
+        None,
+        "--task-file",
+        help="Path to a file holding the review task. Omit to read the task from stdin.",
+    ),
+    tier: Optional[str] = typer.Option(
+        None,
+        "--tier",
+        help="Model tier: flagship (default) | cheap. Mutually exclusive with --model.",
+    ),
+    model: Optional[str] = typer.Option(
+        None,
+        "--model",
+        help="Explicit model id, overriding the tier. Mutually exclusive with --tier.",
+    ),
+    allow_egress: bool = typer.Option(
+        False,
+        "--allow-egress",
+        help="Permit egress when run outside any repo context (no .git/.cohort "
+        "ancestor), where a piped payload's provenance can't be checked (F5).",
+    ),
+    max_tokens: int = typer.Option(
+        4096, "--max-tokens", help="Cap on each response's length (bounds cost)."
+    ),
+    max_iterations: int = typer.Option(
+        24, "--max-iterations", help="Hard cap on read-only tool-calling rounds."
+    ),
+    transcript: Optional[Path] = typer.Option(
+        None,
+        "--transcript",
+        help="Write the JSONL transcript here (default: the next index under "
+        ".cohort/engine-transcripts/).",
+    ),
+) -> None:
+    """Have an external engine EXPLORE this repo through read-only tools and report.
+
+    Unlike ``consult`` (one-shot, Claude packages the context), ``review`` gives the
+    engine a bounded, read-only tool loop rooted at the repo — its toolbox is the
+    egress gate, refusing sensitive paths and secret-bearing content. The task is read
+    from ``--task-file`` or piped stdin (never a shell argument), the outbound task is
+    run through the same egress opt-out + secret scan as ``consult``, and every tool
+    call is recorded to an inspectable JSONL transcript.
+    """
+    from .engines import gates as engine_gates
+    from .engines import xai_agentic
+
+    try:
+        spec = get_engine(engine)
+    except UnknownEngineError:
+        typer.echo(
+            f"error: unknown engine {engine!r}; registered engines: "
+            f"{', '.join(sorted(ENGINES))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if "consult" not in spec.roles:
+        typer.echo(
+            f"error: engine {engine!r} is not registered for the 'consult' role",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    chosen_model = _resolve_engine_model(spec, tier, model)
+
+    if task_file is not None:
+        try:
+            task = task_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read --task-file {task_file}: {exc}", err=True)
+            raise typer.Exit(code=2)
+    elif not sys.stdin.isatty():
+        task = sys.stdin.read()
+    else:
+        typer.echo(
+            "error: no task given — pass --task-file PATH or pipe the task to stdin "
+            "(the task is never accepted as a shell argument)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if not task.strip():
+        typer.echo("error: task is empty", err=True)
+        raise typer.Exit(code=2)
+
+    # F5 fail-closed provenance (see consult): refuse egress with no repo context.
+    _guard_engine_egress_provenance(allow_egress)
+
+    repo_root = find_repo_root(Path.cwd())
+    context_path = repo_root / ".cohort" / "project_context.md"
+    project_context_text = (
+        context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
+    )
+
+    try:
+        engine_gates.preflight(
+            prompt=task,
+            project_context_text=project_context_text,
+        )
+    except engine_gates.EgressBlockedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.SecretFoundError as exc:
+        typer.echo(f"error: {exc}. Nothing was sent.", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.GateError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    transcript_path = _next_transcript_path(repo_root, transcript)
+    try:
+        outcome = xai_agentic.run_agentic(
+            task,
+            root=repo_root,
+            model=chosen_model,
+            engine_name=engine,
+            max_iterations=max_iterations,
+            max_tokens=max_tokens,
+            transcript_path=transcript_path,
+        )
+    except engine_xai.EngineAuthError:
+        typer.echo(
+            "error: GROK_API_KEY is unset or was rejected by xAI; export a developer "
+            "key from https://console.x.ai and retry",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except engine_xai.EngineUnavailableError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_xai.EngineError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    # The final answer is engine-controlled and untrusted: escape each line before it
+    # reaches the terminal, exactly as consult does.
+    for line in outcome.text.splitlines():
+        typer.echo(_display_safe(line))
+    typer.echo(f"transcript: {transcript_path}")
+    typer.echo(f"stopped_reason: {outcome.stopped_reason}")
     raise typer.Exit(code=0)
 
 
@@ -1173,14 +1434,20 @@ def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
 
 @my_office_app.command("approve")
 def my_office_approve(
-    name: Optional[str] = typer.Argument(None, help="The artifact name to approve."),
+    name: Optional[str] = typer.Argument(
+        None,
+        help="The artifact name to approve. If one name has two pending records with "
+        "different content, select one with 'name@hashprefix'.",
+    ),
     approve_all: bool = typer.Option(False, "--all", help="Approve every pending artifact."),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Clear the quarantine for reviewed artifacts, then recompile so they activate.
 
     Approve pins nothing forever: it clears the exact bytes you reviewed. If the same
-    name is later pulled with different content, it is quarantined afresh.
+    name is later pulled with different content, it is quarantined afresh — and if that
+    leaves two pending records under one name, approving the bare name is refused;
+    disambiguate with ``name@hashprefix`` (the prefix shown by ``my-office review``).
     """
     from . import quarantine
     from .install_model import CohortPaths
@@ -1193,6 +1460,12 @@ def my_office_approve(
     paths = CohortPaths.for_global(Path.home())
     try:
         cleared = quarantine.approve(paths.state, [name] if name else [], approve_all=approve_all)
+    except quarantine.AmbiguousApprovalError as exc:
+        # A bare name maps to >1 pending hash; approving would guess which bytes were
+        # reviewed (and clear an unreviewed record sharing the name). Print the message
+        # (it lists the pending hashes) and exit non-zero cleanly — never a traceback.
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
     except quarantine.QuarantineStateError as exc:
         typer.echo(
             f"error: {exc}\nRefusing to approve against unreadable state. Delete the "
@@ -1209,6 +1482,116 @@ def my_office_approve(
             return
         typer.echo(
             "my-office approve: cleared " + ", ".join(r["approved"])
+            + (" · recompiled" if r["recompiled"]
+               else " — run `cohort recompile` to place them.")
+        )
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+@office_app.command("review")
+def office_review(json_output: bool = typer.Option(False, "--json")) -> None:
+    """List office-layer artifacts an update pull held back for review (F3).
+
+    ``cohort update`` fast-forwards the shared office source. On a shared office remote
+    an update pull can introduce an auto-activating gated artifact (hook/memory/skill/
+    agent) a recompile would otherwise place with no review. Those are withheld from
+    every recompile until you review the file in the office source's canonical/ and run
+    ``cohort office approve``.
+    """
+    from . import quarantine
+    from .install_model import CohortPaths
+
+    paths = CohortPaths.for_global(Path.home())
+    try:
+        keys = quarantine.office_pending_keys(paths.state)
+    except quarantine.QuarantineStateError as exc:
+        typer.echo(
+            f"error: {exc}\nThe office quarantine state is unreadable, so every "
+            "update-pulled office artifact stays withheld. Delete the file to reset, "
+            "then re-run `cohort update`.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    report = {
+        "action": "office-review",
+        "pending": [
+            {"kind": k, "name": n, "content_hash": h} for (k, n, h) in sorted(keys)
+        ],
+    }
+
+    def human(r: dict) -> None:
+        items = r["pending"]
+        if not items:
+            typer.echo(
+                "office review: nothing pending — no update-pulled office artifacts "
+                "awaiting approval."
+            )
+            return
+        typer.echo(
+            f"office review: {len(items)} office artifact(s) awaiting approval "
+            "(withheld from every recompile until approved):"
+        )
+        for a in items:
+            typer.echo(f"  • {a['kind']} {a['name']}  ({a['content_hash'][:12]}…)")
+        typer.echo(
+            "Review each file in the office source's canonical/, then "
+            "`cohort office approve <name>` (or --all)."
+        )
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+@office_app.command("approve")
+def office_approve(
+    name: Optional[str] = typer.Argument(
+        None,
+        help="Office artifact name to approve. If one name has two pending records "
+        "with different content, select one with 'name@hashprefix'.",
+    ),
+    approve_all: bool = typer.Option(False, "--all", help="Approve every pending office artifact."),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Clear the office-layer quarantine for reviewed artifacts, then recompile.
+
+    The office analogue of ``my-office approve``: same content-addressed semantics, so
+    a bare name matching two distinct pending hashes is refused (disambiguate with
+    ``name@hashprefix``).
+    """
+    from . import quarantine
+    from .install_model import CohortPaths
+    from .myoffice import _recompile_if_installed
+
+    if not approve_all and not name:
+        typer.echo("error: give an artifact name, or pass --all", err=True)
+        raise typer.Exit(code=1)
+
+    paths = CohortPaths.for_global(Path.home())
+    try:
+        cleared = quarantine.approve_office(
+            paths.state, [name] if name else [], approve_all=approve_all
+        )
+    except quarantine.AmbiguousApprovalError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except quarantine.QuarantineStateError as exc:
+        typer.echo(
+            f"error: {exc}\nRefusing to approve against unreadable state. Delete the "
+            "file to reset, then re-run `cohort update` to re-record what is pending.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    recompiled = _recompile_if_installed(Path.home()) if cleared else False
+    report = {"action": "office-approve", "approved": cleared, "recompiled": recompiled}
+
+    def human(r: dict) -> None:
+        if not r["approved"]:
+            typer.echo("office approve: nothing matched (already approved, or wrong name?).")
+            return
+        typer.echo(
+            "office approve: cleared " + ", ".join(r["approved"])
             + (" · recompiled" if r["recompiled"]
                else " — run `cohort recompile` to place them.")
         )
