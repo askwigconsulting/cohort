@@ -23,12 +23,12 @@ concrete model; the Claude renderer's is the source of truth (`cli/cohort/adapte
 (`default` is intentionally omitted from the renderer map: with no `model:` key, the
 agent inherits the conversation's model — see DESIGN decision `[Q]`.)
 
-## Orchestration routing tier (the `/orchestrate` protocol)
+## Orchestration routing tier (the `/crew` protocol)
 
-`/orchestrate` routes each task to the cheapest capable tier. These are richer than the
+`/crew` routes each task to the cheapest capable tier. These are richer than the
 3-value agent field because coordination needs a floor *between the top two* — the
 coordinator tier is Fable-or-Opus, never below. The names below are the concrete models
-as of the date this file was last updated; the orchestration canon (`orchestrate.md`,
+as of the date this file was last updated; the orchestration canon (`crew.md`,
 `model-orchestration.md`, `fable-mode.md`) references them, and `cohort lint` checks each
 tier here still appears there.
 

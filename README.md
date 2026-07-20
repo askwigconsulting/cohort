@@ -203,7 +203,7 @@ without an explicit confirmation naming the target repo, and a `[tracker]` table
 The dev-workflow commands live here too: `/plan` · `/spec` · `/build` (the inner
 implement–test–verify loop) · `/test` · `/code-review` · `/ship`, and `/goal <issue>` — the issue-driven
 outer loop that builds on a branch, has an independent judge verify each acceptance criterion
-(max 3 rounds), and ends at a **draft** PR a human reviews. `/orchestrate` is the fan-out loop for
+(max 3 rounds), and ends at a **draft** PR a human reviews. `/crew` is the fan-out loop for
 larger work: a coordinator-tier session (Fable preferred, Opus a full coordinator too — never
 below Opus) researches and plans, routes each task to the cheapest capable model tier
 (fable/opus/sonnet/haiku, max 10 agents in flight), and verifies every task itself before signoff.

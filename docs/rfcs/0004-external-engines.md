@@ -3,7 +3,7 @@
 - Status: **Accepted; implementation under review** (2026-07-17) — office review complete; **Grok enters API-direct, not via the community grok-cli**. Two PRs: foundation (registry + xAI client + `/consult-grok`) and the `patch_proposal` loop + code-enforced egress gates.
 - Author: Cohort maintainers
 - Created: 2026-07-17
-- Depends on: `/orchestrate` (the coordinator protocol — delivered), `/consult-gpt` (advisory external consult — delivered), the worker-kickback + coordinator-verify signoff (delivered)
+- Depends on: `/crew` (the coordinator protocol — delivered), `/consult-gpt` (advisory external consult — delivered), the worker-kickback + coordinator-verify signoff (delivered)
 - Reviewed by: SecurityEngineer, PrivacyOfficer, Procurement (done 2026-07-17); reconciled by ChiefOfStaff; design cross-examined via `/consult-gpt`
 - Tracking: issue #171
 
@@ -80,13 +80,13 @@ These come from the existing invariants and do not bend for this feature:
 
 - **Advisory by default; Claude coordinates and verifies.** No external engine coordinates.
   Every external output is an untrusted **claim** the coordinator re-verifies (re-run tests,
-  read the diff) before signoff — the `/orchestrate` §5 discipline, applied with *extra*
+  read the diff) before signoff — the `/crew` §5 discipline, applied with *extra*
   adversarial scrutiny to foreign-authored code.
 - **The human PR gate is unchanged.** External work lands as a diff a human reviews and
   merges; Cohort never merges unattended.
 - **Worktree isolation for any external write.** Foreign-authored changes never touch the
   main working tree until Claude has verified them — they are produced in a throwaway git
-  worktree, exactly as `/orchestrate` already isolates parallel writers.
+  worktree, exactly as `/crew` already isolates parallel writers.
 - **External content is untrusted input.** An engine's output (prose, diff, or tool call) can
   carry prompt injection; it is data to verify, never instructions to execute. Same stance as
   `/consult-gpt` and `distill`.
@@ -133,7 +133,7 @@ model_tiers `grok-code-fast-1` (cheap) → `grok-4-latest` (flagship).
 
 The coordinator assigns *(tier, engine, role)*. Default engine is Claude; an external engine
 is chosen only for a reason (approach diversity, a model's known strength, cost fit, user
-preference), and its output always re-enters the `/orchestrate` signoff.
+preference), and its output always re-enters the `/crew` signoff.
 
 ### 3. Confinement per engine × role — the load-bearing safety section
 
@@ -226,7 +226,7 @@ plus a synthesis step, and is invoked only where the stakes justify three flagsh
 ## What Cohort explicitly does NOT do (non-goals)
 
 - **No external engine coordinates.** Orchestration stays on Claude (Fable/Opus), never below
-  Opus (per `/orchestrate` §0).
+  Opus (per `/crew` §0).
 - **No unverified acceptance.** No external output — opinion or diff — is ever used without
   Claude's verification and the human's PR review.
 - **No unsandboxed foreign writes.** An engine never writes to the main tree; worktree
@@ -257,7 +257,7 @@ plus a synthesis step, and is invoked only where the stakes justify three flagsh
 - **Phase 1 — advisory + registry scaffolding.** The engine registry; `/consult-grok`
   (confined per §3 — API-direct or read-only-copy, since grok-cli has no read-only mode). No
   writes yet. Lowest risk; proves the registry and the Grok transport.
-- **Phase 2 — cost-aware routing + the flagship council.** The vendor axis in `/orchestrate`;
+- **Phase 2 — cost-aware routing + the flagship council.** The vendor axis in `/crew`;
   the council synthesis. Still advisory — no foreign writes.
 - **Phase 3 — external doers (the invariant-crossing part).** The `implement` role: worktree
   isolation, coordinator verification, per-repo write opt-in, attribution. This is the phase
