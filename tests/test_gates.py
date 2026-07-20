@@ -41,8 +41,19 @@ def test_egress_opted_out_via_literal_marker() -> None:
 
 
 def test_egress_marker_is_case_insensitive_and_whitespace_tolerant() -> None:
-    text = "Notes: Cohort : Egress = DENY is set here."
+    # The directive itself tolerates internal whitespace/case and a little leading
+    # indentation, but (per the negation-proof fix below) must still stand alone on
+    # its own line.
+    text = "Notes below.\n  Cohort : Egress = DENY  \nMore notes.\n"
     assert egress_opted_out(text) is True
+
+
+def test_egress_marker_embedded_in_a_sentence_does_not_count() -> None:
+    # EGRESS-PROSE regression: the marker text is no longer matched as a whole-file
+    # substring -- it must be the entire line, or a sentence that merely *contains*
+    # the marker text does not trip it either way.
+    text = "Notes: Cohort : Egress = DENY is set here.\n"
+    assert egress_opted_out(text) is False
 
 
 def test_egress_section_denies_by_default_without_allow_marker() -> None:
@@ -77,6 +88,23 @@ def test_egress_section_prose_allow_does_not_fail_open() -> None:
     ):
         text = f"## Egress\n\n{body}"
         assert egress_opted_out(text) is True, body
+
+
+def test_egress_prose_mentioning_allow_marker_inside_prohibition_stays_opted_out() -> (
+    None
+):
+    # EGRESS-PROSE: a whole-file substring search for the allow marker used to let a
+    # sentence that merely *mentions* the marker text disable the opt-out -- e.g. a
+    # prohibition like "do NOT add cohort:egress=allow" contains the literal allow
+    # string, so a substring match misread the prohibition as permission. The marker
+    # must now be the entire line to count, so this prose is not read as the allow
+    # directive, and the '## Egress' section still denies by default.
+    text = (
+        "# Project Context\n\n"
+        "## Egress\n\n"
+        "Do NOT add cohort:egress=allow to this file under any circumstance.\n"
+    )
+    assert egress_opted_out(text) is True
 
 
 def test_egress_deny_marker_beats_allow_marker() -> None:
@@ -149,6 +177,72 @@ def test_scan_detects_generic_assignment_keywords() -> None:
 def test_scan_detects_dotenv_style_sensitive_key() -> None:
     assert scan_for_secrets("MY_SECRET=supersecretvalue") == [
         "generic-assignment:SECRET"
+    ]
+
+
+def test_scan_detects_github_token() -> None:
+    labels = scan_for_secrets("classic token ghp_" + "a" * 36 + " in the wild")
+    assert labels == ["github-token"]
+
+
+def test_scan_detects_github_fine_grained_pat() -> None:
+    labels = scan_for_secrets("fine-grained github_pat_" + "a" * 30 + " leaked")
+    assert labels == ["github-token"]
+
+
+def test_scan_detects_slack_token() -> None:
+    labels = scan_for_secrets("found xoxb-1234567890-abcdefghij in logs")
+    assert labels == ["slack-token"]
+
+
+def test_scan_detects_openai_or_anthropic_api_key() -> None:
+    assert scan_for_secrets("leaked sk-ant-" + "a" * 25 + " value") == ["ai-api-key"]
+    assert scan_for_secrets("leaked sk-" + "a" * 25 + " value") == ["ai-api-key"]
+
+
+def test_scan_detects_google_api_key() -> None:
+    assert scan_for_secrets("leaked AIza" + "a" * 35 + " value") == ["google-api-key"]
+
+
+def test_scan_detects_jwt() -> None:
+    jwt = (
+        "eyJhbGciOiJIUzI1NiJ9."
+        "eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0."
+        "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
+    assert scan_for_secrets(f"the header carries {jwt} in transit") == ["jwt"]
+
+
+def test_scan_detects_connection_string_credential() -> None:
+    assert scan_for_secrets("db url is postgres://svc:S3cret@db/prod") == [
+        "connection-string-credential"
+    ]
+
+
+def test_scan_catches_previously_missed_vendor_credential_shapes() -> None:
+    # F4 regression: an adversarial review found these all passed `scan_for_secrets`
+    # silently before the vendor patterns were added.
+    assert "connection-string-credential" in scan_for_secrets(
+        "postgres://svc:S3cret@db/prod"
+    )
+    assert "github-token" in scan_for_secrets("ghp_" + "a" * 36)
+    assert "ai-api-key" in scan_for_secrets("sk-" + "a" * 25)
+    assert "slack-token" in scan_for_secrets("xoxb-1234567890-abcdefghij")
+    assert "google-api-key" in scan_for_secrets("AIza" + "a" * 35)
+
+
+def test_scan_ignores_compiled_regex_naming_a_secret_keyword() -> None:
+    # COORD-1: an identifier that merely *names* a secret keyword and is assigned a
+    # compiled regex (code, not a credential) must not false-positive.
+    text = '_URL_PASSWORD = re.compile(r"://[^:]+:([^@]+)@")\n'
+    assert scan_for_secrets(text) == []
+
+
+def test_scan_still_detects_real_password_assignment() -> None:
+    # The converse of the COORD-1 fix: a genuine credential-shaped value assigned to
+    # a sensitive identifier must still be flagged.
+    assert scan_for_secrets('PASSWORD = "hunter2abc123"') == [
+        "generic-assignment:PASSWORD"
     ]
 
 
@@ -262,6 +356,25 @@ def test_sensitive_class_blocked_even_when_nominally_in_footprint(
     path: str, expected_class: str
 ) -> None:
     # Even with a repo-wide footprint, a sensitive path is blocked with its class.
+    violations = check_changed_paths([path], allowed_footprint=["**", "."])
+    assert violations == [f"{path}: sensitive:{expected_class}"]
+
+
+@pytest.mark.parametrize(
+    "path, expected_class",
+    [
+        ("scripts/release.sh", "executable-script"),
+        ("tools/deploy/setup.bash", "executable-script"),
+        ("scripts/provision.ps1", "executable-script"),
+        ("Makefile", "executable-script"),
+        ("docker/Dockerfile", "executable-script"),
+    ],
+)
+def test_executable_script_is_sensitive_at_any_depth(
+    path: str, expected_class: str
+) -> None:
+    # F6: `.sh` used to classify sensitive only at repo-root depth, so a nested
+    # `scripts/release.sh` or a `Makefile`/`Dockerfile` slipped past the gate.
     violations = check_changed_paths([path], allowed_footprint=["**", "."])
     assert violations == [f"{path}: sensitive:{expected_class}"]
 
