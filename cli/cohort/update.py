@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -256,10 +257,41 @@ def _commit_signer_allowed(source: Path, sha: str, pins: list[str]) -> bool:
     return not keys.isdisjoint(wanted)
 
 
+def _remote_default_branch(source: Path, remote: str) -> Optional[str]:
+    """The remote's actual default branch, asked directly of the remote via
+    ``git ls-remote --symref <remote> HEAD`` — used when the local
+    ``refs/remotes/<remote>/HEAD`` symref is unset (e.g. a manual ``remote add``
+    + ``fetch`` rather than ``git clone``/a followRemoteHEAD-managed fetch, which
+    set it automatically). Parses the ``ref: refs/heads/<name>\tHEAD`` line.
+    ``--`` terminates option parsing so a config-derived ``remote`` that looks
+    like a flag is always read as the remote name. None on any failure/timeout/
+    missing-git — callers fall back to a hardcoded default."""
+    rc, out = _git(source, "ls-remote", "--symref", "--", remote, "HEAD", timeout=_FETCH_TIMEOUT)
+    if rc != 0 or not out:
+        return None
+    for line in out.splitlines():
+        if not line.startswith("ref:"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].startswith("refs/heads/"):
+            branch = parts[1][len("refs/heads/"):]
+            if branch:
+                return branch
+    return None
+
+
 def resolve_upstream(source: Path, home: Path) -> tuple[str, str]:
     """The ``(remote, branch)`` to compare against. Config overrides win; else
-    ``origin`` + the remote's default branch (only when ``symbolic-ref`` resolves
-    it cleanly), else ``main``."""
+    ``origin`` + the remote's default branch — from the local
+    ``refs/remotes/<remote>/HEAD`` symref when that resolves cleanly, else asked
+    directly of the remote (``ls-remote --symref``), else the hardcoded
+    ``_DEFAULT_BRANCH`` fallback.
+
+    The direct-remote lookup matters because this repo's (and many repos')
+    default branch is not ``main``: if ``origin/HEAD`` is unset locally and we
+    fell straight to a hardcoded ``main``, ``update_status``'s ``rev-list`` would
+    fail against a nonexistent ``origin/main`` and the caller silently reads
+    that as ``unavailable`` — the user is never told they're behind (#O7)."""
     remote_cfg, branch_cfg = _read_update_config(home)
     remote = remote_cfg or "origin"
     if branch_cfg:
@@ -272,6 +304,9 @@ def resolve_upstream(source: Path, home: Path) -> tuple[str, str]:
         branch = out[len(prefix):]
         if branch and branch != "HEAD":
             return remote, branch
+    branch = _remote_default_branch(source, remote)
+    if branch:
+        return remote, branch
     return remote, _DEFAULT_BRANCH
 
 
@@ -514,6 +549,26 @@ def _default_pip_run(args: list) -> int:
         return 1  # surfaces as pip_failed, a clean refusal
 
 
+# The compiler/renderer modules `_recompile_installed` imports (below). Once
+# imported, a module stays cached in this process's `sys.modules` for the rest
+# of the process lifetime — so a same-process recompile right after a fast-
+# forward that touched one of these still runs the PRE-update rendering logic
+# against the POST-update source tree. The placed artifacts would then reflect
+# old logic while `do_update` reports a clean success (#O3).
+_RENDERER_FILES = ("cli/cohort/compile.py",)
+_RENDERER_DIR_PREFIXES = ("cli/cohort/adapters/",)
+
+
+def _renderer_files_changed(changed_files: list) -> bool:
+    """True if the incoming range (``HEAD..upstream``) touches a compiler/
+    renderer module — ``compile.py`` or an ``adapters/*`` file — that this
+    process may already hold stale in ``sys.modules``."""
+    return any(
+        f in _RENDERER_FILES or f.startswith(_RENDERER_DIR_PREFIXES)
+        for f in changed_files
+    )
+
+
 def _recompile_installed(source: Path, home: Path) -> tuple:
     """Recompile + reinstall every IDE the manifest records, in its install mode.
 
@@ -708,10 +763,25 @@ def do_update(
             "path. Run `cohort recompile --force` to back up and replace them. " + refused,
         )
 
+    detail = ""
+    if _renderer_files_changed(changed_files):
+        # The recompile just above already ran — but under this process's stale,
+        # pre-update compile.py/adapters, against the just-pulled source. Warn
+        # rather than let `behind == 0` go quiet about it: nothing will
+        # auto-recompile this correctly until a fresh process does.
+        detail = (
+            "This update changed Cohort's own compiler/renderer (compile.py or "
+            "an adapter). This process already had the old version loaded, so "
+            "the recompile just performed may have used stale rendering logic. "
+            "Run `cohort recompile` in a new shell/session to regenerate the "
+            "installed artifacts under the updated code."
+        )
+        warnings.warn(detail, UserWarning, stacklevel=2)
+
     return UpdateResult(
         status="updated", upstream=upstream, behind=behind, current=current, target=target,
         commits=commits, changed_files=changed_files, pip_reinstalled=pip_reinstalled,
-        recompiled_ides=recompiled,
+        recompiled_ides=recompiled, detail=detail,
     )
 
 
