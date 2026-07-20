@@ -12,6 +12,15 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **External engines (RFC 0004): Grok, API-direct.** `/consult-grok` brings xAI's
+  Grok into the office as an advisory second opinion (a sibling of `/consult-gpt`), and
+  `cohort engine propose` lets Grok act as a `patch_proposal` engine — Cohort, never the
+  engine, parses its reply and applies it inside a throwaway git worktree behind
+  code-enforced gates (egress opt-out block, fail-closed secret scan, footprint +
+  sensitive-path denylist) and the unchanged human PR gate. Reached over the xAI HTTP API
+  (stdlib `urllib`, `GROK_API_KEY` from the environment); the community grok-cli was
+  rejected on security/privacy/procurement review (a 400-round agentic editor with no
+  read-only mode conflicts with the untrusted-input invariant). Stdlib-only, no new deps.
 - **Orchestration gains a worker kickback (escalation from below).** A non-Fable
   worker that judges a task genuinely beyond its tier returns it — with a specific
   reason — instead of shipping a plausible-but-uncertain attempt; the coordinator

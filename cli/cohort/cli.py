@@ -884,6 +884,156 @@ def engine_consult(
     raise typer.Exit(code=0)
 
 
+def _display_safe(text: str) -> str:
+    """Render engine-controlled ``text`` safe to echo to a terminal.
+
+    An external engine's reply (a patch summary, a proposed path) is untrusted; echoing
+    it raw would let embedded ANSI/control sequences rewrite the reviewer's terminal.
+    Replace every non-printable character with a visible escape (e.g. ``\\x1b``) while
+    leaving ordinary printable text — including spaces — untouched. Callers that render
+    multi-line output split into lines first, then sanitize each line.
+    """
+    return "".join(ch if ch.isprintable() or ch == " " else repr(ch)[1:-1] for ch in text)
+
+
+@engine_app.command("propose")
+def engine_propose(
+    engine: str = typer.Argument(..., help="Registered engine name trusted for patches (e.g. 'grok')."),
+    task_file: Optional[Path] = typer.Option(
+        None,
+        "--task-file",
+        help="Path to a file holding the task description. Omit to read the task from stdin.",
+    ),
+    footprint: list[str] = typer.Option(
+        [],
+        "--footprint",
+        help="Repo-relative path/glob the patch may touch (repeatable; required).",
+    ),
+    max_tokens: int = typer.Option(
+        4096,
+        "--max-tokens",
+        help="Cap on the engine's response length (bounds cost).",
+    ),
+) -> None:
+    """Ask an external engine to propose a patch, staged in an isolated worktree.
+
+    The engine only returns text; Cohort parses it, gates the proposed paths/content,
+    and applies it inside a throwaway git worktree — never in this repo's working tree
+    and never committed. The task is read from ``--task-file`` or stdin (never a shell
+    argument), and ``--footprint`` is required so there is no unbounded write scope.
+    """
+    from .engines import patch_proposal
+    from .engines import gates as engine_gates
+    from .engines.patch import PatchError
+
+    try:
+        get_engine(engine)
+    except UnknownEngineError:
+        typer.echo(
+            f"error: unknown engine {engine!r}; registered engines: "
+            f"{', '.join(sorted(ENGINES))}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    cleaned_footprint = [entry.strip() for entry in footprint if entry.strip()]
+    if not cleaned_footprint:
+        typer.echo(
+            "error: at least one --footprint is required (an empty footprint would "
+            "grant unbounded write scope)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if task_file is not None:
+        try:
+            task = task_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read --task-file {task_file}: {exc}", err=True)
+            raise typer.Exit(code=2)
+    elif not sys.stdin.isatty():
+        task = sys.stdin.read()
+    else:
+        typer.echo(
+            "error: no task given — pass --task-file PATH or pipe the task to stdin "
+            "(the task is never accepted as a shell argument)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if not task.strip():
+        typer.echo("error: task is empty", err=True)
+        raise typer.Exit(code=2)
+
+    repo_root = find_repo_root(Path.cwd())
+    context_path = repo_root / ".cohort" / "project_context.md"
+    project_context_text = (
+        context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
+    )
+
+    try:
+        outcome = patch_proposal.propose_patch(
+            engine,
+            task,
+            repo_root=repo_root,
+            allowed_footprint=cleaned_footprint,
+            project_context_text=project_context_text,
+            max_tokens=max_tokens,
+        )
+    except engine_gates.EgressBlockedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.PathViolationError as exc:
+        typer.echo(
+            f"error: the proposed patch was rejected — {exc}. Nothing was applied.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except engine_gates.SecretFoundError as exc:
+        typer.echo(f"error: {exc}. Nothing was applied.", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.GateError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_xai.EngineAuthError:
+        typer.echo(
+            "error: GROK_API_KEY is unset or was rejected by xAI; export a developer "
+            "key from https://console.x.ai and retry",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    except engine_xai.EngineError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except PatchError as exc:
+        typer.echo(f"error: could not use the engine's proposal — {exc}", err=True)
+        raise typer.Exit(code=1)
+    except patch_proposal.ProposalError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    # The summary, proposed paths, and commit subject all originate in the engine's
+    # (untrusted) reply; escape control characters before echoing so an embedded ANSI
+    # sequence cannot manipulate the reviewer's terminal.
+    typer.echo(f"summary: {_display_safe(outcome.summary)}")
+    for path in outcome.manifest.changed:
+        typer.echo(f"  changed: {_display_safe(path)}")
+    for path in outcome.manifest.created:
+        typer.echo(f"  created: {_display_safe(path)}")
+    if outcome.risk_labels:
+        typer.echo(f"risk: {', '.join(outcome.risk_labels)}")
+    typer.echo(f"worktree: {outcome.worktree}")
+    typer.echo("suggested commit message:")
+    for line in outcome.suggested_commit_message.splitlines():
+        typer.echo(f"  {_display_safe(line)}")
+    typer.echo(
+        "review the change in the worktree, run the tests, then merge — "
+        "nothing was committed and this repo's working tree is unchanged.",
+        err=True,
+    )
+    raise typer.Exit(code=0)
+
+
 @my_office_app.command("sync")
 def my_office_sync(
     remote: Optional[str] = typer.Option(
