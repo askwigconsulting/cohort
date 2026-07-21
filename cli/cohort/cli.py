@@ -1365,6 +1365,101 @@ def engine_propose(
     raise typer.Exit(code=0)
 
 
+@engine_app.command("work")
+def engine_work(
+    engine: str = typer.Argument(..., help="Engine with a sandboxed CLI doer (e.g. 'gpt'). Grok has none — use 'engine propose --agentic'."),
+    task_file: Optional[Path] = typer.Option(
+        None, "--task-file", help="Path to the task. Omit to read from stdin.",
+    ),
+    footprint: list[str] = typer.Option(
+        [], "--footprint", help="Repo-relative path/glob the change should stay within (repeatable; advisory — reported, not enforced by the sandbox).",
+    ),
+    model: Optional[str] = typer.Option(None, "--model", help="Model id override for the CLI."),
+    allow_egress: bool = typer.Option(
+        False, "--allow-egress", help="Permit the doer when run from a directory with no repository context (see engine consult).",
+    ),
+) -> None:
+    """Dispatch a vendor's own agentic CLI as a WRITE doer, confined to a throwaway worktree.
+
+    The CLI edits files directly (and may run its own tests) inside its OS sandbox, which
+    is pinned to a fresh detached worktree — never this repo's working tree. The task is
+    read from ``--task-file`` or stdin (never a shell argument) and egress-gated first.
+    Nothing is committed or merged: review the diff in the worktree and integrate it, or
+    discard the worktree. Codex (ChatGPT) is sandboxed; Grok is refused with a pointer to
+    ``engine propose --agentic``.
+    """
+    from .engines import cli_doer
+
+    if task_file is not None:
+        try:
+            task = task_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read --task-file {task_file}: {exc}", err=True)
+            raise typer.Exit(code=2)
+    elif not sys.stdin.isatty():
+        task = sys.stdin.read()
+    else:
+        typer.echo(
+            "error: no task given — pass --task-file PATH or pipe the task to stdin "
+            "(the task is never accepted as a shell argument)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if not task.strip():
+        typer.echo("error: task is empty", err=True)
+        raise typer.Exit(code=2)
+
+    _guard_engine_egress_provenance(allow_egress)
+    repo_root = find_repo_root(Path.cwd())
+    context_path = repo_root / ".cohort" / "project_context.md"
+    project_context_text = (
+        context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
+    )
+    cleaned_footprint = [e.strip() for e in footprint if e.strip()] or None
+
+    from .engines import gates as engine_gates
+    try:
+        result = cli_doer.run_doer(
+            engine,
+            task,
+            repo_root=repo_root,
+            model=model,
+            footprint=cleaned_footprint,
+            project_context_text=project_context_text,
+        )
+    except cli_doer.DoerUnavailableError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except engine_gates.EgressBlockedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.SecretFoundError as exc:
+        typer.echo(f"error: {exc}. Nothing was sent.", err=True)
+        raise typer.Exit(code=1)
+    except cli_doer.DoerError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if not result.changed_files:
+        typer.echo(f"the doer made no changes (exit {result.returncode}).", err=True)
+        typer.echo(f"worktree: {result.worktree}")
+        raise typer.Exit(code=1)
+
+    for path in result.changed_files:
+        typer.echo(f"  changed: {_display_safe(path)}")
+    if result.footprint_violations:
+        typer.echo("footprint violations (the doer edited paths outside the declared scope):", err=True)
+        for v in result.footprint_violations:
+            typer.echo(f"  ! {_display_safe(v)}", err=True)
+    typer.echo(f"worktree: {result.worktree}")
+    typer.echo(
+        "review the diff in the worktree, run the tests, then integrate — nothing was "
+        "committed and this repo's working tree is unchanged.",
+        err=True,
+    )
+    raise typer.Exit(code=0)
+
+
 @my_office_app.command("sync")
 def my_office_sync(
     remote: Optional[str] = typer.Option(
