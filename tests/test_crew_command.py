@@ -83,8 +83,9 @@ def test_crew_holds_the_claude_writes_external_proposes_line():
     # engines only ever produce a gated patch proposal Cohort applies.
     body = _compiled_crew_body()
     assert "Claude subagents write directly" in body
-    assert "External engines (Grok, ChatGPT) never write" in body
-    assert "gated patch proposal" in body
+    assert "External engines (Grok, ChatGPT) never touch the main working tree" in body
+    assert "Gated patch proposal" in body
+    assert "OS-sandboxed CLI doer" in body
 
 
 def test_crew_opus_is_a_first_class_coordinator():

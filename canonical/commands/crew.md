@@ -21,7 +21,7 @@ vendor** (the same token-optimization reason `/scout` reviews across vendors; `/
 the build sibling of `/scout`). It is human-invoked; the human gates (commit review, PR
 review) are unchanged.
 
-## The line: Claude writes, external engines propose
+## The line: external engines never touch the main tree
 
 This is the invariant, not a preference:
 
@@ -29,15 +29,21 @@ This is the invariant, not a preference:
   edits files in a disjoint footprint (or its own worktree) and the coordinator verifies
   the diff. Route by tier: **fable** architecture-critical, **opus** complex, **sonnet**
   well-scoped, **haiku** mechanical.
-- **External engines (Grok, ChatGPT) never write.** They are tools the coordinator
-  invokes for a candidate change, exactly like `git` or `pytest`. A non-Claude doer
-  produces a **gated patch proposal** — `cohort engine propose <engine>` runs the change
-  in an isolated worktree, and Cohort (never the engine) parses the reply and applies it
-  behind the egress/secret/footprint gates. The coordinator then verifies it like any
-  other worker's output, and it still passes the unchanged human PR review.
+- **External engines (Grok, ChatGPT) never touch the main working tree.** They reach the
+  code only inside an isolated, throwaway worktree, two ways:
+  - **Gated patch proposal** — `cohort engine propose <engine> [--agentic]` has the engine
+    return (or explore-then-return) a candidate diff that Cohort — never the engine —
+    parses and applies in a worktree behind the egress/secret/footprint gates. This is
+    Grok's path (grok-cli is broken against the live API and unsandboxed).
+  - **OS-sandboxed CLI doer** — `cohort engine work gpt` runs Codex's own agentic CLI under
+    its `workspace-write` sandbox, pinned to a fresh worktree, so every edit and test-run
+    it makes is OS-confined there. Codex only; an engine with no sandbox is refused.
+  Either way the coordinator verifies the diff and integrates, and it still passes the
+  unchanged human PR review.
 
-That is the difference between "let Grok do the work" being useful and being an RCE: an
-external engine's diff is an untrusted claim applied through a gate, never a direct write.
+That is the difference between "let an external model do the work" being useful and being
+an RCE: it writes only where a bad run is thrown away — never your working tree, which
+changes only when Claude integrates a reviewed diff.
 
 ## 0. Coordinator model
 
