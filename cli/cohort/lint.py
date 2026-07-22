@@ -140,6 +140,59 @@ def _model_tier_findings(repo_root: Path) -> list[LintFinding]:
     return findings
 
 
+# A "≤N agents in flight" orchestration cap, wherever it is restated in prose.
+_ORCH_CAP_RE = re.compile(
+    r"(\d+)\s+(?:agents?\s+|reviewers?\s+)?in\s+flight", re.IGNORECASE
+)
+
+
+def _declared_orch_cap(text: str) -> int | None:
+    """The in-flight cap declared in the model-tiers registry (source of truth)."""
+    m = re.search(r"in-flight cap[^0-9]*?(\d+)", text, re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def _orchestration_cap_findings(repo_root: Path) -> list[LintFinding]:
+    """The "≤N agents in flight" cap is restated in prose across the orchestration
+    canon (crew.md, scout.md, the office/adversarial-review skills, ...). This keeps
+    that *number* consistent: ``docs/model-tiers.md`` declares it once, and every
+    canonical file that restates an in-flight cap must use the same value — a drift is
+    a lint failure, not a silently divergent protocol.
+
+    This checks agreement of the documented number only; it is not runtime enforcement.
+    The cap itself is coordinator discipline plus the human PR gate by design (see the
+    DESIGN ``[S]`` decision) — the lint just stops the canon saying two different things.
+    """
+    doc = repo_root / _MODEL_TIERS_DOC
+    if not doc.is_file():
+        return []  # a missing registry is already reported by _model_tier_findings
+    cap = _declared_orch_cap(doc.read_text(encoding="utf-8"))
+    if cap is None:
+        return [
+            LintFinding(
+                _MODEL_TIERS_DOC,
+                0,
+                "no in-flight cap is declared (expected an 'in-flight cap ... N' line)",
+            )
+        ]
+    findings: list[LintFinding] = []
+    for path in sorted((repo_root / "canonical").rglob("*.md")):
+        rel = path.relative_to(repo_root).as_posix()
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for m in _ORCH_CAP_RE.finditer(line):
+                stated = int(m.group(1))
+                if stated != cap:
+                    findings.append(
+                        LintFinding(
+                            rel,
+                            lineno,
+                            f'states "{stated} ... in flight" but the orchestration '
+                            f"cap is {cap} (docs/model-tiers.md)",
+                        )
+                    )
+    return findings
+
+
 def run_lint(repo_root: Path) -> list[LintFinding]:
     """Return every doc-parity finding under ``repo_root`` (empty = clean)."""
     counts = canonical_counts(repo_root)
@@ -163,4 +216,5 @@ def run_lint(repo_root: Path) -> list[LintFinding]:
                         )
                     )
     findings.extend(_model_tier_findings(repo_root))
+    findings.extend(_orchestration_cap_findings(repo_root))
     return findings
