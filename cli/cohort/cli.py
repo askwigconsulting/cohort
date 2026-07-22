@@ -1460,6 +1460,90 @@ def engine_work(
     raise typer.Exit(code=0)
 
 
+@engine_app.command("ratchet")
+def engine_ratchet(
+    engine: str = typer.Argument(..., help="Proposing doer: 'gpt' (Codex) or 'grok' (agentic patch)."),
+    evaluator: str = typer.Option(..., "--evaluator", help="Shell command, run in the worktree, that prints the objective number (e.g. 'pytest -q 2>&1 | tail -1')."),
+    task_file: Optional[Path] = typer.Option(None, "--task-file", help="Path to the optimization task. Omit to read from stdin."),
+    metric_regex: Optional[str] = typer.Option(None, "--metric-regex", help="Capture the metric with group 1 (default: last number in the output)."),
+    goal: str = typer.Option("minimize", "--goal", help="'minimize' (default) or 'maximize' the metric."),
+    budget: int = typer.Option(10, "--budget", help="Hard cap on iterations."),
+    footprint: list[str] = typer.Option([], "--footprint", help="Scope for the change (repeatable)."),
+    model: Optional[str] = typer.Option(None, "--model", help="Model id override for the doer."),
+    allow_egress: bool = typer.Option(False, "--allow-egress", help="Permit the doer from a directory with no repo context."),
+) -> None:
+    """Climb a metric autonomously in a throwaway worktree, keeping only real gains.
+
+    A metric-gated optimization loop (Karpathy's AutoResearch, adapted): each iteration a
+    gated doer proposes one change in the worktree, ``--evaluator`` measures it, and the
+    change is committed if the metric improved or reverted if not — up to ``--budget``
+    iterations. Nothing touches this repo's working tree; review the staircase and the
+    worktree, then merge via PR. The evaluator is your own trusted command.
+    """
+    from .engines import ratchet
+    from .engines import gates as engine_gates
+    from .engines import cli_doer
+
+    if task_file is not None:
+        try:
+            task = task_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read --task-file {task_file}: {exc}", err=True)
+            raise typer.Exit(code=2)
+    elif not sys.stdin.isatty():
+        task = sys.stdin.read()
+    else:
+        typer.echo("error: no task given — pass --task-file PATH or pipe it to stdin", err=True)
+        raise typer.Exit(code=2)
+
+    _guard_engine_egress_provenance(allow_egress)
+    repo_root = find_repo_root(Path.cwd())
+    context_path = repo_root / ".cohort" / "project_context.md"
+    project_context_text = (
+        context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
+    )
+    cleaned_footprint = [e.strip() for e in footprint if e.strip()] or None
+
+    try:
+        result = ratchet.run_ratchet(
+            engine, task, repo_root=repo_root, evaluator_cmd=evaluator,
+            metric_regex=metric_regex, goal=goal, budget=budget,
+            footprint=cleaned_footprint, model=model,
+            project_context_text=project_context_text,
+        )
+    except cli_doer.DoerUnavailableError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except engine_gates.EgressBlockedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.SecretFoundError as exc:
+        typer.echo(f"error: {exc}. Nothing was sent.", err=True)
+        raise typer.Exit(code=1)
+    except ratchet.RatchetError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    # The staircase.
+    typer.echo(f"baseline: {result.baseline}  →  best: {result.best}  ({result.goal})")
+    kept = sum(1 for s in result.steps if s.kept)
+    typer.echo(f"{kept}/{len(result.steps)} iterations improved the metric")
+    for s in result.steps:
+        mark = "✓ keep" if s.kept else "· revert"
+        typer.echo(f"  i{s.iteration}: {s.metric}  {mark}  ({_display_safe(s.note)})")
+    typer.echo(f"ledger: {result.ledger_path}")
+    typer.echo(f"worktree: {result.worktree}")
+    if result.improved:
+        typer.echo(
+            "review the accumulated diff in the worktree and merge via PR — nothing "
+            "touched this repo's working tree.",
+            err=True,
+        )
+    else:
+        typer.echo("no improvement found within the budget; the worktree can be discarded.", err=True)
+    raise typer.Exit(code=0 if result.improved else 1)
+
+
 @my_office_app.command("sync")
 def my_office_sync(
     remote: Optional[str] = typer.Option(
