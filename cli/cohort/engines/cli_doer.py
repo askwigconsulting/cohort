@@ -66,6 +66,39 @@ class DoerResult:
     footprint_violations: list[str] = field(default_factory=list)
 
 
+def run_codex_in_worktree(
+    worktree: Path,
+    task: str,
+    *,
+    model: str | None = None,
+    timeout: float = _DOER_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess:
+    """Run Codex confined to an *existing* worktree under its ``workspace-write`` sandbox.
+
+    Does not create or clean up the worktree - the caller owns it. Shared by the one-shot
+    :func:`run_codex_doer` and the ratchet loop, which reuses one worktree across
+    iterations.
+
+    Raises:
+        DoerUnavailableError: the ``codex`` CLI is not installed.
+    """
+    if shutil.which("codex") is None:
+        raise DoerUnavailableError(
+            "the 'codex' CLI is not installed; install it and run 'codex login' to use "
+            "the Codex doer"
+        )
+    cmd = [
+        "codex", "exec",
+        "--sandbox", "workspace-write",  # writes/commands confined to the worktree (OS)
+        "-C", str(worktree),
+        "--skip-git-repo-check",
+    ]
+    if model:
+        cmd += ["-m", model]
+    cmd.append(task)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
 def _git(worktree: Path, *args: str) -> str:
     """Run a read-only-ish git query inside the worktree and return stdout."""
     return subprocess.run(
@@ -113,24 +146,9 @@ def run_codex_doer(
     gates.require_egress_allowed(project_context_text)
     gates.assert_no_secrets(task)
 
-    if shutil.which("codex") is None:
-        raise DoerUnavailableError(
-            "the 'codex' CLI is not installed; install it and run 'codex login' to use "
-            "the Codex worktree doer"
-        )
-
     worktree = patch_proposal._create_worktree(repo_root)
     try:
-        cmd = [
-            "codex", "exec",
-            "--sandbox", "workspace-write",  # writes/commands confined to the worktree
-            "-C", str(worktree),
-            "--skip-git-repo-check",
-        ]
-        if model:
-            cmd += ["-m", model]
-        cmd.append(task)
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        proc = run_codex_in_worktree(worktree, task, model=model, timeout=timeout)
 
         # Capture what the engine wrote as a reviewable diff.
         _git(worktree, "add", "-A")
