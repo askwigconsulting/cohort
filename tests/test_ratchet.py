@@ -15,8 +15,13 @@ import pytest
 
 from cohort.engines import gates, ratchet
 
+# Cross-platform evaluator (no Unix `cat`): a committed script prints metric.txt's number.
+_EVAL = "python read.py"
+_READ_PY = 'import os\nprint(open("metric.txt").read() if os.path.exists("metric.txt") else "")\n'
+
 
 def _init_git_repo(root: Path, files: dict[str, str]) -> None:
+    files = {**files, "read.py": _READ_PY}
     subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True)
     for rel, content in files.items():
         (root / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +52,7 @@ def test_ratchet_keeps_only_improvements_when_minimizing(
 
     result = ratchet.run_ratchet(
         "gpt", "lower the number", repo_root=tmp_path,
-        evaluator_cmd="cat metric.txt", goal="minimize", budget=3,
+        evaluator_cmd=_EVAL, goal="minimize", budget=3,
     )
 
     assert result.baseline == 10.0
@@ -63,7 +68,7 @@ def test_ratchet_maximizes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(ratchet, "_propose_into_worktree", _doer_writes([8, 3, 9]))
     result = ratchet.run_ratchet(
         "gpt", "raise it", repo_root=tmp_path,
-        evaluator_cmd="cat metric.txt", goal="maximize", budget=3,
+        evaluator_cmd=_EVAL, goal="maximize", budget=3,
     )
     assert result.best == 9.0
     assert [s.iteration for s in result.steps if s.kept] == [1, 3]  # 3 was worse, reverted
@@ -73,7 +78,7 @@ def test_ratchet_reverts_a_tie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     _init_git_repo(tmp_path, {"metric.txt": "10\n"})
     monkeypatch.setattr(ratchet, "_propose_into_worktree", _doer_writes([10]))  # no change
     result = ratchet.run_ratchet(
-        "gpt", "t", repo_root=tmp_path, evaluator_cmd="cat metric.txt", budget=1,
+        "gpt", "t", repo_root=tmp_path, evaluator_cmd=_EVAL, budget=1,
     )
     assert result.best == 10.0
     assert not any(s.kept for s in result.steps)  # a tie is not a gain
@@ -85,7 +90,7 @@ def test_ratchet_writes_the_staircase_ledger(
     _init_git_repo(tmp_path, {"metric.txt": "10\n"})
     monkeypatch.setattr(ratchet, "_propose_into_worktree", _doer_writes([9, 8]))
     result = ratchet.run_ratchet(
-        "gpt", "t", repo_root=tmp_path, evaluator_cmd="cat metric.txt", budget=2,
+        "gpt", "t", repo_root=tmp_path, evaluator_cmd=_EVAL, budget=2,
     )
     ledger = result.ledger_path.read_text(encoding="utf-8")
     assert "baseline" in ledger
@@ -106,7 +111,7 @@ def test_ratchet_a_failed_proposal_is_reverted_and_the_loop_continues(
 
     monkeypatch.setattr(ratchet, "_propose_into_worktree", flaky)
     result = ratchet.run_ratchet(
-        "gpt", "t", repo_root=tmp_path, evaluator_cmd="cat metric.txt", budget=2,
+        "gpt", "t", repo_root=tmp_path, evaluator_cmd=_EVAL, budget=2,
     )
     assert result.steps[0].kept is False and "failed" in result.steps[0].note
     assert result.best == 6.0  # the second iteration still improved
@@ -132,7 +137,7 @@ def test_ratchet_honors_egress_optout_before_any_doer_call(
     monkeypatch.setattr(ratchet, "_propose_into_worktree", must_not_run)
     with pytest.raises(gates.EgressBlockedError):
         ratchet.run_ratchet(
-            "gpt", "t", repo_root=tmp_path, evaluator_cmd="cat metric.txt", budget=1,
+            "gpt", "t", repo_root=tmp_path, evaluator_cmd=_EVAL, budget=1,
             project_context_text="## Egress\n\ncohort:egress=deny\n",
         )
     assert reached["doer"] is False
@@ -141,7 +146,7 @@ def test_ratchet_honors_egress_optout_before_any_doer_call(
 def test_ratchet_rejects_empty_task_and_evaluator(tmp_path: Path) -> None:
     _init_git_repo(tmp_path, {"metric.txt": "10\n"})
     with pytest.raises(ratchet.RatchetError):
-        ratchet.run_ratchet("gpt", "   ", repo_root=tmp_path, evaluator_cmd="cat metric.txt", budget=1)
+        ratchet.run_ratchet("gpt", "   ", repo_root=tmp_path, evaluator_cmd=_EVAL, budget=1)
     with pytest.raises(ratchet.RatchetError):
         ratchet.run_ratchet("gpt", "t", repo_root=tmp_path, evaluator_cmd="  ", budget=1)
 
@@ -156,7 +161,7 @@ def test_ratchet_metric_regex_extracts_the_right_number(
 
     monkeypatch.setattr(ratchet, "_propose_into_worktree", propose)
     result = ratchet.run_ratchet(
-        "gpt", "t", repo_root=tmp_path, evaluator_cmd="cat metric.txt",
+        "gpt", "t", repo_root=tmp_path, evaluator_cmd=_EVAL,
         metric_regex=r"val_bpb=([0-9.]+)", goal="minimize", budget=1,
     )
     assert result.baseline == 1.5 and result.best == 1.2  # not fooled by the token count

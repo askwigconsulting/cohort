@@ -226,7 +226,12 @@ def run_ratchet(
             )
         best = baseline
         steps: list[RatchetStep] = []
-        ledger = ledger_path or (worktree / "ratchet-results.tsv")
+        # The ledger lives OUTSIDE the git worktree (in its parent temp dir): a keep's
+        # `git add -A` must not track it, and a revert's `git reset --hard`/`git clean`
+        # must not touch it — the file is held open across the whole loop, and on Windows
+        # git cannot modify an open file. Keeping it out also leaves the reviewed worktree
+        # diff to the actual code change alone.
+        ledger = ledger_path or (worktree.parent / "ratchet-results.tsv")
         ledger.write_text("iteration\tmetric\tkept\tnote\n", encoding="utf-8")
         with ledger.open("a", encoding="utf-8") as fh:
             fh.write(f"0\t{baseline}\tbaseline\tbaseline\n")
