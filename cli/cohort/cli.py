@@ -233,6 +233,31 @@ def lint(
     raise typer.Exit(code=1 if findings else 0)
 
 
+@app.command()
+def reference(
+    source: Optional[str] = typer.Option(None, "--source", help="Cohort source root (default: auto-resolve)."),
+) -> None:
+    """Regenerate the quick-reference (docs/quick-reference.html + .pdf) from canonical.
+
+    Run this after adding or renaming a command or skill; a parity test fails CI when the
+    committed reference is missing one, so it stays current.
+    """
+    from . import reference as _ref
+
+    source_path = resolve_source(source)
+    html_path, pdf_path = _ref.write_reference(source_path, source_path / "docs")
+    typer.echo(f"wrote {html_path}")
+    if pdf_path is not None:
+        typer.echo(f"wrote {pdf_path}")
+    else:
+        typer.echo(
+            "note: no Chrome found — HTML written but PDF not rendered; install "
+            "chromium/google-chrome and re-run to refresh the PDF.",
+            err=True,
+        )
+    raise typer.Exit(code=0)
+
+
 # --- install / uninstall (Phase 1) -----------------------------------------
 
 
