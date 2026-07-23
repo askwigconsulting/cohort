@@ -39,6 +39,13 @@ tier here still appears there.
 | sonnet | Sonnet | well-scoped, conventional implementation |
 | haiku | Haiku | mechanical work — renames, boilerplate, config, docs |
 
+**In-flight cap:** a coordinator keeps at most **10** agents in flight at once, across
+all tiers. This is the single source for that number; `cohort lint` fails if any
+orchestration-canon file restates a *different* in-flight cap. It is a coordination
+discipline the coordinator maintains, not a runtime limit the system enforces (Cohort
+adds no scheduler — see DESIGN decision `[S]`); the lint only keeps the canon from
+saying two different numbers.
+
 **On a model-generation change:** edit the tables here and the renderer's `_MODEL_MAP`,
 then run `cohort lint` — it enumerates every canonical file whose tier names need the
 same sweep, so nothing is missed. (Fully abstracting the concrete names out of the

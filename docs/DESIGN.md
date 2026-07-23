@@ -121,7 +121,20 @@ structural and testable.
   advisors to *orchestrated doers* (producing worktree-isolated, coordinator-verified
   diffs) is deliberately gated behind **RFC 0004 (#171)** because it crosses the
   "advisory by default" invariant — an engine registry, not hardcoded vendors, is the
-  intended shape.
+  intended shape. These orchestration invariants — the ≤10-in-flight cap, worker
+  footprint-disjointness, honest signoff — are coordinator discipline plus the human PR
+  gate *by design*, not runtime-enforced, because each binds live execution (how many
+  agents are actually running, which files a worker really writes, whether signoff
+  re-ran the tests) and the only artifacts Cohort compiles are static. A declared
+  orchestration graph was evaluated and rejected: a static validator's cap check is
+  vacuous (nodes are protocol roles, not live instances), its footprint check is
+  impossible (a task's real writes are unknowable before it runs), and its signoff check
+  only duplicates an existing wording-lock — and a `PreToolUse` hook counter was rejected
+  too (install-global, so it throttles legitimate non-crew parallelism, and its state
+  goes stale into deadlock on a crashed subagent). Enforcing them at all would require
+  Cohort to become the scheduler it deliberately isn't. What *is* mechanically enforced
+  is the one thing that can be without a runtime: `cohort lint` single-sources the cap
+  *number* so the canon cannot drift on it (`docs/model-tiers.md`).
 
 ## Other load-bearing rules
 
