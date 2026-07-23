@@ -11,6 +11,17 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`cohort lint` single-sources the orchestration in-flight cap.** The "≤10 agents
+  in flight" cap is restated across five canonical files; the lint now declares the
+  number once in `docs/model-tiers.md` and fails if any canon file drifts to a
+  different one — anti-drift only, not runtime enforcement. A DESIGN `[S]` note records
+  that the orchestration invariants (the cap, footprint-disjointness, signoff) are
+  coordinator discipline plus the human PR gate *by design*: a declared orchestration
+  graph and a `PreToolUse` hook counter were both evaluated and rejected (static checks
+  are vacuous/impossible/duplicate; a hook counter is install-global and deadlocks on a
+  crashed subagent).
+
 ## [0.8.0] — 2026-07-23 · External engines & guardrails
 
 ### Added
