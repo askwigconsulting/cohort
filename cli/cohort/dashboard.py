@@ -21,9 +21,11 @@ Hardening (the server is loopback-only but shares the machine with browsers):
 
 from __future__ import annotations
 
+import datetime
 import hmac
 import json
 import os
+import re
 import secrets
 import threading
 import time
@@ -233,6 +235,32 @@ def cross_project_scorecards(home: Path) -> list[dict[str, Any]]:
     return agent_scorecards(entries)
 
 
+def claude_memory_summary(home: Path, repo_path: str) -> dict[str, Any]:
+    """Summarize a project's Claude Code agent-memory store — the files the model
+    writes at compaction under ``~/.claude/projects/<slug>/memory/`` — as a count
+    plus the newest-write timestamp.
+
+    This is a *different* tier from Cohort's own ``.cohort/canonical/memories/``
+    (which the inventory already surfaces): it is where per-project session memory
+    actually accumulates, and it was invisible on the dashboard until now. Read-only
+    and content-free — only the number of entries and the last-write time, never any
+    file's text (the same posture as the project-memory git_state chip). The slug is
+    the repo's absolute path with every non-alphanumeric character replaced by ``-``,
+    matching how Claude Code names the directory; ``MEMORY.md`` (the index) is
+    excluded from the count but still counts toward the freshness timestamp."""
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", repo_path)
+    memdir = home / ".claude" / "projects" / slug / "memory"
+    if not memdir.is_dir():
+        return {"count": 0, "updated": None}
+    files = list(memdir.glob("*.md"))
+    entries = [f for f in files if f.name != "MEMORY.md"]
+    updated = None
+    if files:
+        newest = max(f.stat().st_mtime for f in files)
+        updated = datetime.datetime.fromtimestamp(newest).isoformat(timespec="seconds")
+    return {"count": len(entries), "updated": updated}
+
+
 def collect_state(
     home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = None,
     project_index: Any = None,
@@ -245,6 +273,8 @@ def collect_state(
     focused = resolve_registered(home, project_index) if project_index is not None else None
     state = do_status(home, focused if focused is not None else cwd)
     state["projects"] = list_projects(home, include_private=False)
+    for proj in state["projects"]:
+        proj["claude_memory"] = claude_memory_summary(home, proj["path"])
     state["focused_project"] = state.get("project", {}).get("repo")
     state["version"] = __version__
     # Cross-project views (#145): office-wide, independent of the focused project —

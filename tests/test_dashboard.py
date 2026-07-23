@@ -14,7 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from cohort.dashboard import DashboardServer, collect_state, read_artifact
+from cohort.dashboard import (
+    DashboardServer,
+    claude_memory_summary,
+    collect_state,
+    read_artifact,
+)
 from cohort.project import list_projects
 
 COHORT_SRC = Path(__file__).resolve().parents[1]
@@ -155,6 +160,40 @@ def test_collect_state_merges_global_and_project(home, tmp_path, source):
     assert state["project"]["specialists"] == ["data-modeler"]
     assert state["project"]["signals"]["feedback_total"] == 1
     assert state["project"]["feedback"][0]["rating"] == "down"
+
+
+def _plant_claude_memory(home, repo, names):
+    """Create a fake Claude Code agent-memory store for ``repo`` under ``home``,
+    matching Claude Code's ``<slug>/memory/`` dir naming (non-alnum → '-')."""
+    import re
+
+    slug = re.sub(r"[^a-zA-Z0-9]", "-", str(repo))
+    memdir = home / ".claude" / "projects" / slug / "memory"
+    memdir.mkdir(parents=True)
+    for n in names:
+        (memdir / n).write_text("x", encoding="utf-8")
+    return memdir
+
+
+def test_claude_memory_summary_counts_entries_excluding_the_index(home, tmp_path, source):
+    repo = inited_repo(tmp_path, source, home)
+    _plant_claude_memory(home, repo, ["MEMORY.md", "decision-one.md", "decision-two.md"])
+    summary = claude_memory_summary(home, str(repo))
+    assert summary["count"] == 2  # MEMORY.md (the index) is excluded from the count
+    assert summary["updated"] is not None  # freshness derived from the newest write
+
+
+def test_claude_memory_summary_absent_store_is_zero(home, tmp_path, source):
+    repo = inited_repo(tmp_path, source, home)
+    assert claude_memory_summary(home, str(repo)) == {"count": 0, "updated": None}
+
+
+def test_collect_state_attaches_claude_memory_to_each_project(home, tmp_path, source):
+    repo = inited_repo(tmp_path, source, home)
+    _plant_claude_memory(home, repo, ["MEMORY.md", "note.md"])
+    state = collect_state(home, repo)
+    proj = next(p for p in state["projects"] if p["path"] == str(repo))
+    assert proj["claude_memory"]["count"] == 1
 
 
 def test_collect_state_outside_project_has_no_project_key(home, tmp_path):
