@@ -6,9 +6,34 @@ Commands map domain exceptions to the exit triad (0 success · 1 refused/failed 
 
 from __future__ import annotations
 
+import sys
+
+
+def _force_utf8_io() -> None:
+    """Force UTF-8 on stdout/stderr so Cohort's Unicode output (→, …, —) never
+    crashes on a legacy Windows console (whose default cp1252 can't encode it).
+
+    Must run before `typer`/`rich` are imported: Rich's Console inspects the
+    stream's encoding/terminal capabilities at construction time (which for
+    Typer's app-level Console happens at import time, not at command-run
+    time), so reconfiguring the stream later — even "early" in a command
+    callback or entry point — is too late to change what Rich already
+    decided. No-op where the stream can't be reconfigured (e.g. a
+    pytest-captured stream).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
+
+_force_utf8_io()
+
 import json as _json
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -98,21 +123,6 @@ app = typer.Typer(
 )
 
 
-def _force_utf8_io() -> None:
-    """Force UTF-8 on stdout/stderr so Cohort's Unicode output (→, …, —) never
-    crashes on a legacy Windows console (whose default cp1252 can't encode it).
-
-    No-op where the stream can't be reconfigured (e.g. a pytest-captured stream).
-    """
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is not None:
-            try:
-                reconfigure(encoding="utf-8", errors="backslashreplace")
-            except (ValueError, OSError):
-                pass
-
-
 def _version_callback(value: bool) -> None:
     if value:
         typer.echo(__version__)
@@ -143,7 +153,6 @@ def main(
     ),
 ) -> None:
     """Global options shared by every command."""
-    _force_utf8_io()
     ctx.obj = {"dry_run": dry_run}
 
 

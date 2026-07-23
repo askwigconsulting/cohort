@@ -220,6 +220,25 @@ def test_cli_output_survives_legacy_cp1252_console(home):
     assert "applied:" in proc.stdout  # human output completed past the '→' op lines
 
 
+def test_cli_help_survives_legacy_cp1252_console(home):
+    """--help (and --version) are handled by Click during argument parsing,
+    before the main callback runs — so the recompile test above, which only
+    exercises an actual command, does not cover this path. The `recompile`
+    command's own --help text contains '→'; on a legacy cp1252 console this
+    used to crash with UnicodeEncodeError before printing anything, because
+    _force_utf8_io() was only ever called from inside the callback (it's now
+    called at true module-import time instead, before typer/rich are even
+    imported — see the comment on _force_utf8_io() itself for why that
+    matters: Rich inspects terminal capabilities at Console-construction
+    time, which for Typer's rich-help-panel renderer happens at import time,
+    not at command-run time)."""
+    proc = run_cli(
+        "--help", home=home, env_extra={"PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"},
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "dashboard" in proc.stdout  # full command list rendered past the '→' in recompile's help
+
+
 # --- integration: round-trip + foreign-file --------------------------------
 
 
