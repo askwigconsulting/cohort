@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-23 · External engines & guardrails
+
 ### Added
 - **Grok as an agentic doer: `cohort engine propose --agentic`.** The external engine
   now EXPLORES the repository read-only (`list_dir`/`read_file`/`grep`/`find_files`, each
@@ -24,24 +26,6 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   the full protocol plus the cross-vendor doer rule: Claude subagents write directly,
   external engines only ever propose gated patches.
 
-### Fixed
-- **RFC 0004 gate hardening (pre-merge review).** Five defects found reviewing the
-  Grok engine before merge, each with a regression test that fails without the fix:
-  `cohort engine consult` ran **no gates at all** — the per-repo egress opt-out and the
-  secret scan existed only as prose in the compiled command, so an opted-out repo still
-  egressed; a proposed path could traverse a **symlink** to redirect an in-footprint
-  write to a sensitive location inside the worktree while the manifest reported the
-  lexical path, showing the reviewer a file that was not the one on disk; a footprint
-  entry sensitive in one class **laundered** paths sensitive in another (`authors/**`
-  granted `.git` writes, via prefix matching that also mis-classified innocuous names);
-  a Windows drive-qualified path (`C:\…`) passed the scope gate on every platform; the
-  proposal **worktree leaked** on any unanticipated exception or Ctrl-C, and is now
-  created only once the reply is parsed and gated; and `apply_patch` wrote **CRLF** on
-  Windows, violating the repo's `eol=lf` byte-stability invariant. Also: engine replies
-  are now escaped before reaching the terminal on the consult path, and non-`PatchError`
-  stdlib exceptions (`UnicodeDecodeError`, `OSError`) fold into `PatchApplyError`.
-
-### Added
 - **External engines (RFC 0004): Grok, API-direct.** `/consult-grok` brings xAI's
   Grok into the office as an advisory second opinion (a sibling of `/consult-gpt`), and
   `cohort engine propose` lets Grok act as a `patch_proposal` engine — Cohort, never the
@@ -71,23 +55,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   travels with it**, so Cohort surfaces the new `git_state` signal (tracked / untracked /
   uncommitted) at authoring time — tracked means changes are reviewable, untracked means no
   audit trail. It reports and never blocks: the choice is the user's (#182).
-
-### Fixed
-- **Dashboard: a project-scoped artifact in a *focused* project now loads.** The
-  detail pane rendered an agent's card from the focused project's inventory but then
-  reported `no agent '<name>' in project`, because `/api/artifact` dropped the
-  `project` param and resolved against the dashboard's launch directory instead of
-  the switched-to repo. It now carries the focused project through, resolved via the
-  registry index like `/api/state` and `run_action` already did (never a client path).
-
-### Added
 - **`docs/model-tiers.md` — the single tier→model mapping,** lint-guarded. One
   documented home for both the agent `model:` tiers and `/orchestrate`'s routing
   tiers; `cohort lint` fails if it drifts from the renderer's `_MODEL_MAP` or lists
   an orchestration tier the canon no longer uses, so a model-generation sweep is
   enumerable and can't miss a file.
-
-### Added
 - **`cohort lint` — documentation-parity check.** Guards the drift the golden
   locks don't: counts stated in human docs (an "N-agent roster" line) must match
   the real number of canonical artifacts, derived from the filesystem. Runs in CI.
@@ -96,6 +68,29 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   no force-push, secrets never move) compiled into the memory corpus. Complements
   the `advisory` invariant (which governs tools) by governing actions; a coordinator
   restates them per fanned-out worker.
+
+### Fixed
+- **RFC 0004 gate hardening (pre-merge review).** Five defects found reviewing the
+  Grok engine before merge, each with a regression test that fails without the fix:
+  `cohort engine consult` ran **no gates at all** — the per-repo egress opt-out and the
+  secret scan existed only as prose in the compiled command, so an opted-out repo still
+  egressed; a proposed path could traverse a **symlink** to redirect an in-footprint
+  write to a sensitive location inside the worktree while the manifest reported the
+  lexical path, showing the reviewer a file that was not the one on disk; a footprint
+  entry sensitive in one class **laundered** paths sensitive in another (`authors/**`
+  granted `.git` writes, via prefix matching that also mis-classified innocuous names);
+  a Windows drive-qualified path (`C:\…`) passed the scope gate on every platform; the
+  proposal **worktree leaked** on any unanticipated exception or Ctrl-C, and is now
+  created only once the reply is parsed and gated; and `apply_patch` wrote **CRLF** on
+  Windows, violating the repo's `eol=lf` byte-stability invariant. Also: engine replies
+  are now escaped before reaching the terminal on the consult path, and non-`PatchError`
+  stdlib exceptions (`UnicodeDecodeError`, `OSError`) fold into `PatchApplyError`.
+- **Dashboard: a project-scoped artifact in a *focused* project now loads.** The
+  detail pane rendered an agent's card from the focused project's inventory but then
+  reported `no agent '<name>' in project`, because `/api/artifact` dropped the
+  `project` param and resolved against the dashboard's launch directory instead of
+  the switched-to repo. It now carries the focused project through, resolved via the
+  registry index like `/api/state` and `run_action` already did (never a client path).
 
 ## [0.7.0] — 2026-07-16 · Remove the life feature
 
@@ -376,7 +371,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/askwigconsulting/cohort/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/askwigconsulting/cohort/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/askwigconsulting/cohort/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/askwigconsulting/cohort/compare/v0.4.0...v0.5.0
