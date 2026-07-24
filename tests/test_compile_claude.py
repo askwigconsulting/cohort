@@ -285,7 +285,7 @@ def test_field_handled_by_all_adapters_passes():
     universe = frozenset({"body", "widget"})
     contracts = {
         ide: FieldContract(handled=universe, declined=frozenset())
-        for ide in ("claude", "codex", "cursor")
+        for ide in ("claude", "codex", "cursor", "copilot")
     }
     assert_field_contract(universe=universe, contracts=contracts)  # no raise
 
@@ -298,6 +298,7 @@ def test_field_neither_handled_nor_declined_fails_loudly():
         "claude": FieldContract(handled=universe, declined=frozenset()),
         "codex": FieldContract(handled=frozenset({"body"}), declined=frozenset()),  # gap!
         "cursor": FieldContract(handled=universe, declined=frozenset()),
+        "copilot": FieldContract(handled=universe, declined=frozenset()),
     }
     with pytest.raises(CompileError) as exc:
         assert_field_contract(universe=universe, contracts=contracts)
@@ -312,7 +313,7 @@ def test_field_declared_both_handled_and_declined_fails():
     contracts = {
         ide: FieldContract(handled=frozenset({"body", "confused"}),
                            declined=frozenset({"confused"}))
-        for ide in ("claude", "codex", "cursor")
+        for ide in ("claude", "codex", "cursor", "copilot")
     }
     with pytest.raises(CompileError) as exc:
         assert_field_contract(universe=universe, contracts=contracts)

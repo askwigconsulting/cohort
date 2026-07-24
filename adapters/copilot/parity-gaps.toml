@@ -1,0 +1,7 @@
+# Declared, reviewed parity gaps for the Copilot adapter.
+# The parity check passes on these and fails on any *undeclared* gap, and also
+# fails if a declared gap is *stale* (the kind now renders).
+
+[[gaps]]
+kind = "command"
+reason = "Copilot CLI has no user-definable prompt-file / slash-command mechanism; custom prompt files (.prompt.md) are a VS Code-only feature. Re-evaluate if Copilot CLI ships first-class custom commands."

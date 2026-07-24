@@ -212,7 +212,7 @@ def test_slice_uninstall_removes_one_ide(home):
     assert (home / ".cursor" / "agents" / "counsel.md").exists()  # cursor intact
 
 
-def test_parity_green_for_all_three_real_canonical():
-    for ide in ("claude", "codex", "cursor"):
+def test_parity_green_for_all_four_real_canonical():
+    for ide in ("claude", "codex", "cursor", "copilot"):
         result = check_parity(COHORT_SRC, ide, RENDERERS)
         assert result.ok, result.to_dict()

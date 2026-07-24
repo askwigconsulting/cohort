@@ -228,6 +228,14 @@ structural and testable.
   (key-merge). Custom prompts are deprecated → `command` is a declared gap.
 - Cursor: per-file subagents `.cursor/agents/*.md` (`readonly`); `.cursor/rules/*.mdc`;
   `hooks.json` JSON.
+- Copilot CLI: personal custom agents `~/.copilot/agents/*.md` with a real `tools:`
+  alias allow-list (`read`/`search`/`web`/`edit`/`execute`) — advisory restricts to the
+  read-only aliases, mechanically, like Claude's tool-strip; skills under
+  `~/.copilot/skills/`; hooks are their own dedicated `~/.copilot/hooks/cohort-hooks.json`
+  (every `*.json` in that dir loads independently — no merge needed, unlike Codex/Cursor);
+  memory merges an `@import` into `~/.copilot/copilot-instructions.md`, the same shape as
+  Claude's `CLAUDE.md`. No user-definable prompt/slash-command mechanism → `command` is a
+  declared gap.
 
 ## Platform support (Windows)
 
@@ -276,6 +284,12 @@ not because anyone promised it wouldn't, but because a test fails if it tries.
    doc-cited-and-possibly-stale; a **real install** would only add byte-level
    belt-and-suspenders. Codex/Cursor stay experimental; shipped hooks/memories target
    `[claude]` only, so those paths are latent until a codex/cursor artifact is authored.
+3. **Copilot CLI renderer (2026-07-24).** Added as a fourth, likewise-experimental
+   target: agent/skill/hook/memory are doc-verified against the current official
+   Copilot CLI docs (docs.github.com/en/copilot); `command` is a declared gap (Copilot
+   CLI has no user-definable slash-command mechanism). Not yet locked against a live
+   install — same caveat as gap 2, and the same remedy: a real install would only add
+   byte-level belt-and-suspenders on top of the doc-cited mappings.
 
 The fitting first trip through Cohort's own loop is the proposal that closes gap (2).
 

@@ -101,4 +101,12 @@ FIELD_CONTRACTS: dict[str, FieldContract] = {
         handled=_COMMON_HANDLED,
         declined=_UNIVERSAL_DECLINED | frozenset({"model", "matcher", "args"}),
     ),
+    # Copilot: no custom prompt/slash-command mechanism (→ ``args`` declined); its
+    # `model:` key expects a concrete model id with no doc-verified tier mapping
+    # (``model`` declined); preToolUse/postToolUse hooks fire for all invocations,
+    # no matcher/pattern field is documented (``matcher`` declined).
+    "copilot": FieldContract(
+        handled=_COMMON_HANDLED,
+        declined=_UNIVERSAL_DECLINED | frozenset({"model", "matcher", "args"}),
+    ),
 }

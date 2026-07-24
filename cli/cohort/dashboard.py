@@ -368,9 +368,10 @@ def _require_source(home: Path) -> Path:
 def _recompile_claude(home: Path, source: Path, roster: Optional[list]) -> dict[str, Any]:
     """The same compile → stage → install path `cohort recompile --ide claude` runs.
 
-    Claude-only while codex/cursor are experimental; a codex/cursor install picks
-    the roster up on its next `cohort update`/`recompile`. Honors the manifest's
-    recorded install mode so a --copy install is never converted to symlinks."""
+    Claude-only while codex/cursor/copilot are experimental; a codex/cursor/copilot
+    install picks the roster up on its next `cohort update`/`recompile`. Honors the
+    manifest's recorded install mode so a --copy install is never converted to
+    symlinks."""
     gpaths = CohortPaths.for_global(home)
     manifest = load_manifest(gpaths.manifest)
     mode = (manifest.mode if manifest and manifest.mode else None) or resolve_mode(copy=False)

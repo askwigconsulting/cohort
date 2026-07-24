@@ -55,7 +55,7 @@ KIND_DIRS: dict[str, str] = {
     "context": "contexts",
 }
 
-TARGET_VALUES = ("claude", "codex", "cursor", "all")
+TARGET_VALUES = ("claude", "codex", "cursor", "copilot", "all")
 NAME_PATTERN = "^[a-z][a-z0-9-]*$"
 DESCRIPTION_MAX = 1024
 DEFAULT_VERSION = "0.1.0"
