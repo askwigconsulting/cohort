@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-23 · Project memory visibility
+
 ### Added
 - **`cohort lint` single-sources the orchestration in-flight cap.** The "≤10 agents
   in flight" cap is restated across five canonical files; the lint now declares the
@@ -390,7 +392,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/askwigconsulting/cohort/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/askwigconsulting/cohort/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/askwigconsulting/cohort/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/askwigconsulting/cohort/compare/v0.5.0...v0.6.0
