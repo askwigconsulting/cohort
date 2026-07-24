@@ -21,6 +21,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   graph and a `PreToolUse` hook counter were both evaluated and rejected (static checks
   are vacuous/impossible/duplicate; a hook counter is install-global and deadlocks on a
   crashed subagent).
+- **Dashboard surfaces each project's agent-memory store.** Project cards now show a
+  `🧠 N memories` chip for the Claude Code per-project memory store
+  (`~/.claude/projects/<slug>/memory/`) — where a project's session memory actually
+  accumulates at compaction — with the newest-write time in the tooltip. This is a
+  different tier from Cohort's own `.cohort/canonical/memories/`, and was previously
+  invisible, so an active project looked memory-less. Read-only and content-free (count
+  and freshness only, never file contents — the same posture as the project-memory
+  git-state chip).
 
 ## [0.8.0] — 2026-07-23 · External engines & guardrails
 
