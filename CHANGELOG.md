@@ -11,6 +11,21 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **GitHub Copilot CLI renderer (`--ide copilot`, experimental).** A fourth renderer
+  alongside Claude/Codex/Cursor, doc-verified 2026-07-24 against the official Copilot
+  CLI docs (docs.github.com/en/copilot). Agents compile to
+  `~/.copilot/agents/<name>.md` with a real `tools:` alias allow-list
+  (`read`/`search`/`web`/`edit`/`execute`); advisory is enforced mechanically by
+  restricting that list to the read-only aliases, the same invariant Claude/Codex/Cursor
+  apply via their own mechanisms. Skills compile to `~/.copilot/skills/<name>/SKILL.md`.
+  Hooks compile to their own dedicated `~/.copilot/hooks/cohort-hooks.json` — Copilot
+  loads every `*.json` under `hooks/` independently, so no merge op is needed there,
+  unlike Codex/Cursor. Memory merges an `@import` into
+  `~/.copilot/copilot-instructions.md`, mirroring Claude's `CLAUDE.md` shape. `command`
+  is a declared parity gap (Copilot CLI has no user-definable slash-command mechanism).
+  Same experimental, doc-cited-but-not-live-verified caveat Codex/Cursor already carry.
+
 ## [0.9.0] — 2026-07-23 · Project memory visibility
 
 ### Added

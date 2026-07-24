@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # The IDEs Cohort can install. "all" is sugar for the three.
-IDES = ("claude", "codex", "cursor")
+IDES = ("claude", "codex", "cursor", "copilot")
 IDE_VALUES = (*IDES, "all")
 GLOBAL_IDE = "global"
 

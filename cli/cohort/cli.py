@@ -300,7 +300,7 @@ def _print_uninstall_human(report: UninstallReport) -> None:
 @app.command()
 def install(
     ctx: typer.Context,
-    ide: Optional[str] = typer.Option(None, "--ide", help="claude,codex,cursor or all (codex/cursor experimental)."),
+    ide: Optional[str] = typer.Option(None, "--ide", help="claude,codex,cursor,copilot or all (codex/cursor/copilot experimental)."),
     copy: bool = typer.Option(False, "--copy", help="Materialize copies instead of symlinks."),
     force: bool = typer.Option(False, "--force", help="Back up and replace foreign files at a dest."),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
@@ -399,7 +399,7 @@ def _resolve_for_compile(ide: Optional[str], source: Optional[str]):
 @app.command()
 def compile(  # noqa: A001 - matches the user-facing command name
     ctx: typer.Context,
-    ide: Optional[str] = typer.Option(None, "--ide", help="claude,codex,cursor or all (codex/cursor experimental)."),
+    ide: Optional[str] = typer.Option(None, "--ide", help="claude,codex,cursor,copilot or all (codex/cursor/copilot experimental)."),
     agents: Optional[str] = typer.Option(None, "--agents", help="Agent subset (comma-separated) or 'all'."),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Render to memory; write no staging."),
@@ -459,7 +459,7 @@ def compile(  # noqa: A001 - matches the user-facing command name
 @app.command()
 def recompile(
     ctx: typer.Context,
-    ide: Optional[str] = typer.Option(None, "--ide", help="IDEs to recompile + install (codex/cursor experimental)."),
+    ide: Optional[str] = typer.Option(None, "--ide", help="IDEs to recompile + install (codex/cursor/copilot experimental)."),
     agents: Optional[str] = typer.Option(None, "--agents", help="Agent subset (comma-separated) or 'all'; persists."),
     copy: bool = typer.Option(False, "--copy", help="Materialize copies instead of symlinks."),
     force: bool = typer.Option(False, "--force", help="Back up and replace foreign files at a dest."),

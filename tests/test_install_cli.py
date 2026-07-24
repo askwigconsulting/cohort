@@ -74,10 +74,10 @@ def test_install_claude_on_clean(home):
         assert (home / ".cohort" / "canonical").is_symlink()
 
 
-def test_install_all_records_three(home):
+def test_install_all_records_four(home):
     proc = run_cli("install", "--ide", "all", "--source", str(REPO_ROOT), home=home)
     assert proc.returncode == 0
-    assert read_manifest(home)["ides"] == ["claude", "codex", "cursor"]
+    assert read_manifest(home)["ides"] == ["claude", "codex", "cursor", "copilot"]
 
 
 def test_install_unknown_ide_is_usage_error(home):
@@ -282,9 +282,9 @@ def test_resolve_mode_defaults_to_copy_on_windows(monkeypatch):
 
 
 def test_parse_ide_expands_all_and_dedups():
-    assert parse_ide("all") == ["claude", "codex", "cursor"]
+    assert parse_ide("all") == ["claude", "codex", "cursor", "copilot"]
     assert parse_ide("claude,claude,cursor") == ["claude", "cursor"]
-    assert parse_ide("all,claude") == ["claude", "codex", "cursor"]
+    assert parse_ide("all,claude") == ["claude", "codex", "cursor", "copilot"]
 
 
 def test_parse_ide_rejects_unknown():

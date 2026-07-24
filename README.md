@@ -6,16 +6,16 @@ A portable, self-improving, multi-IDE **agentic office** — a virtual organizat
 company-function specialist agents (HR, Legal, Compliance, Security, Finance, IT, Comms,
 Procurement, Privacy, Program, cloud architects, Engineering reviewers, and a Chief-of-Staff that triages requests to the
 right specialist) you drop into any repository. Authored once in an IDE-agnostic **canonical** form, then compiled into **Claude, Codex,
-and Cursor** layouts at install time. Claude Code is the reference target; **Codex/Cursor support is
-experimental** — the renderers are complete but doc-cited, not yet locked against live installs
-(pass `--ide codex,cursor` to opt in).
+Cursor, and Copilot CLI** layouts at install time. Claude Code is the reference target; **Codex/Cursor/Copilot
+support is experimental** — the renderers are complete but doc-cited, not yet locked against live installs
+(pass `--ide codex,cursor,copilot` to opt in).
 
 - **Canonical is law.** Every agent/skill/command/hook/memory/context is authored once and
   schema-validated; per-IDE adapters compile it into each IDE's native files. Never hand-edit a
   compiled output — edit canonical and recompile.
 - **Advisory by default.** Office agents are read-only advisors: they recommend; a human decides.
   The renderer enforces this (Claude tool-strip, Codex `sandbox_mode = "read-only"`, Cursor
-  `readonly: true`). The one exception is a **project-scoped doer**: an agent authored in a repo
+  `readonly: true`, Copilot's `tools:` restricted to its read-only aliases). The one exception is a **project-scoped doer**: an agent authored in a repo
   (reviewed via PR, travelling with the repo — no sync boundary crossed) may set `advisory: false`
   to keep write/exec tools. Every **synced** tier — the shared office and your my-office — stays
   advisory-only, so a synced agent can never carry write access.

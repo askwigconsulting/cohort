@@ -1,11 +1,11 @@
-"""Codex/Cursor/Claude golden-lock — activates the deferred Phase-7 sub-gate.
+"""Codex/Cursor/Claude/Copilot golden-lock — activates the deferred Phase-7 sub-gate.
 
 Until now CI ran only coverage/structure/byte-stability for Codex/Cursor; the
 concrete bytes were intentionally not locked. This locks the full staged tree of
 every non-trivial IDE renderer against its current output, so any drift in
-Codex/Cursor/Claude rendering is caught as a byte diff.
+Codex/Cursor/Claude/Copilot rendering is caught as a byte diff.
 
-NOTE: the Codex/Cursor bytes are **doc-cited**, not validated against a live
+NOTE: the Codex/Cursor/Copilot bytes are **doc-cited**, not validated against a live
 install — the field-level items (hook-event names, Cursor frontmatter/skills
 dir) remain doc-cited. The lock is a regression guard on current output; when a
 real install confirms the mappings, the renderer and these goldens move together.
@@ -32,7 +32,7 @@ REPO = Path(__file__).resolve().parents[1]
 # so its commands/skills/merge surfaces are guarded too — previously only Claude's
 # agents/ were locked (test_roster_compile), leaving commands like update.md
 # unguarded while Cursor's equivalent was locked.
-LOCKED_IDES = ["codex", "cursor", "claude"]
+LOCKED_IDES = ["codex", "cursor", "claude", "copilot"]
 
 
 def _regen(golden_base: Path, produced: dict[str, bytes]) -> None:
