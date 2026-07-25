@@ -15,6 +15,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "cohort session-recall"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
             "command": "cohort staleness-check"
           }
         ]

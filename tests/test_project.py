@@ -348,36 +348,59 @@ def test_staleness_hook_invokes_cli_not_a_script():
     assert entry["hooks"][0]["command"] == "cohort staleness-check"  # CLI, not a script
 
 
-# === session capture (opt-in session_end observation) =======================
+# === session capture (default-on session_end observation, opt-out) ==========
 
 
-def _opt_in(repo: Path) -> None:
-    # the real user flow: flip the scaffolded default in cohort.toml
+def _opt_out(repo: Path) -> None:
+    # flip the default-on capture off for this repo
     paths = CohortPaths.for_project(repo)
     toml = paths.cohort_home / "cohort.toml"
     toml.write_text(
-        toml.read_text(encoding="utf-8").replace("auto_capture = false", "auto_capture = true"),
+        toml.read_text(encoding="utf-8").replace("auto_capture = true", "auto_capture = false"),
         encoding="utf-8",
     )
 
 
-def test_session_capture_is_silent_noop_without_opt_in(repo, home):
+def test_session_capture_writes_by_default(repo, home):
     init(repo, home)
+    written = project.session_capture(repo)  # no opt-in step — default is on now
+    assert written is not None and written.startswith("sessions/")
+    text = (CohortPaths.for_project(repo).cohort_home / written).read_text(encoding="utf-8")
+    assert "captured: auto" in text  # machine-generated, distinguishable from snapshots
+    assert "## Changed" in text
+    assert "_What was decided and why._" not in text  # no human-fill placeholders
+
+
+def test_session_capture_respects_opt_out(repo, home):
+    init(repo, home)
+    _opt_out(repo)
     assert project.session_capture(repo) is None
     sessions = CohortPaths.for_project(repo).cohort_home / "sessions"
     assert not list(sessions.glob("*-auto.md")) if sessions.exists() else True
 
 
-def test_session_capture_writes_auto_record_when_opted_in(repo, home):
+# === session recall (the exit -> next-session bridge) ========================
+
+
+def test_session_recall_surfaces_a_fresh_record_once(repo, home):
     init(repo, home)
-    _opt_in(repo)
-    written = project.session_capture(repo)
-    assert written is not None and written.startswith("sessions/")
-    record = CohortPaths.for_project(repo).cohort_home / written
-    text = record.read_text(encoding="utf-8")
-    assert "captured: auto" in text  # machine-generated, distinguishable from snapshots
-    assert "## Changed" in text
-    assert "_What was decided and why._" not in text  # no human-fill placeholders
+    project.session_capture(repo)  # a record exists (default-on)
+    first = project.session_recall(repo, source="startup")
+    assert first is not None and "durable memory" in first
+    # idempotent: the same record is never surfaced twice
+    assert project.session_recall(repo, source="startup") is None
+
+
+def test_session_recall_is_silent_on_the_compact_source(repo, home):
+    init(repo, home)
+    project.session_capture(repo)
+    # compact-recall owns the post-compaction path; recall must stay quiet here
+    assert project.session_recall(repo, source="compact") is None
+
+
+def test_session_recall_none_when_no_records(repo, home):
+    init(repo, home)
+    assert project.session_recall(repo, source="startup") is None
 
 
 def test_session_capture_noop_outside_cohort_repo(tmp_path):
@@ -389,8 +412,7 @@ def test_session_capture_noop_outside_cohort_repo(tmp_path):
 def test_session_capture_cli_always_exits_zero(repo, home):
     proc = run_cli("session-capture", repo=repo, home=home)  # not even a Cohort project
     assert proc.returncode == 0
-    init(repo, home)
-    _opt_in(repo)
+    init(repo, home)  # capture is default-on, so no opt-in step needed
     proc = run_cli("session-capture", repo=repo, home=home)
     assert proc.returncode == 0
     assert "session captured" in proc.stderr
