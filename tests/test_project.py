@@ -403,6 +403,52 @@ def test_session_recall_none_when_no_records(repo, home):
     assert project.session_recall(repo, source="startup") is None
 
 
+# === working memory (mid-session scratch, consolidated at boundaries) ========
+
+
+def test_working_note_stages_a_note_by_default(repo, home):
+    init(repo, home)
+    written = project.working_note(repo, "Chose X over Y because Z.")
+    assert written is not None and written.startswith("state/working-memory/")
+    text = (CohortPaths.for_project(repo).cohort_home / written).read_text(encoding="utf-8")
+    assert "Chose X over Y" in text and "kind: note" in text
+
+
+def test_working_note_respects_opt_out(repo, home):
+    init(repo, home)
+    _opt_out(repo)
+    assert project.working_note(repo, "a note") is None
+
+
+def test_working_note_ignores_empty_text(repo, home):
+    init(repo, home)
+    assert project.working_note(repo, "   ") is None
+
+
+def test_working_capture_stages_only_when_the_tree_changed(repo, home):
+    init(repo, home)
+    (repo / "new_file.txt").write_text("x", encoding="utf-8")  # an untracked change
+    first = project.working_capture(repo)
+    assert first is not None and first.startswith("state/working-memory/")
+    # dedupe: the same tree state must not stage a second, duplicate record
+    assert project.working_capture(repo) is None
+
+
+def test_working_memory_review_surfaces_pending_notes(repo, home):
+    init(repo, home)
+    assert project.working_memory_review(repo) == ""  # nothing staged yet
+    project.working_note(repo, "a durable decision")
+    review = project.working_memory_review(repo)
+    assert "working-memory" in review and "durable" in review.lower()
+
+
+def test_working_capture_hook_targets_stop_and_cli():
+    r = load_artifact(COHORT_SRC / "canonical" / "hooks" / "working-capture.md")
+    event, entry = render_hook_entry(build_ir(r.frontmatter, r.body))
+    assert event == "Stop"
+    assert entry["hooks"][0]["command"] == "cohort working-capture"  # CLI, not a script
+
+
 def test_session_capture_noop_outside_cohort_repo(tmp_path):
     plain = tmp_path / "plain"
     plain.mkdir()

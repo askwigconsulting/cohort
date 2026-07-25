@@ -16,7 +16,8 @@
         "post_command",
         "pre_compact",
         "post_compact",
-        "on_stale"
+        "on_stale",
+        "stop"
       ]
     },
     "matcher": {

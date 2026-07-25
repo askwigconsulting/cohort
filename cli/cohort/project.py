@@ -9,6 +9,7 @@ Cohort-owned and reversed on deinit.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import tempfile
 import uuid
@@ -724,4 +725,106 @@ def session_recall(cwd: Path, source: str) -> Optional[str]:
     when = meta.get("timestamp", "recently")
     return SESSION_RECALL_TEMPLATE.format(
         path=f"sessions/{newest.name}", where=where, when=when
+    )
+
+
+# --- working memory (mid-session scratch, consolidated at boundaries) ---------
+#
+# The exit-capture record (above) is deterministic but mechanical — it can't hold the
+# *reasoning*, because at exit there is no model turn. Working memory closes that: the
+# model stages semantic notes *during* the session (`working_note`, at task milestones)
+# and a Stop-hook stages a mechanical record when a turn changed the tree
+# (`working_capture`). Both land in a git-ignored, disposable staging dir. At the next
+# compaction or session start the recall hooks surface the staged notes so the durable
+# ones are promoted into memory and the rest cleared. Cheap continuous capture, curated
+# at the boundary — so an abrupt exit no longer loses the "why".
+
+_WORKING_DIRNAME = "working-memory"
+_WORKING_CAPTURE_MARKER = ".last-capture"
+
+
+def _working_dir(paths: CohortPaths) -> Path:
+    return paths.cohort_home / "state" / _WORKING_DIRNAME
+
+
+def pending_working_notes(cwd: Path) -> list[Path]:
+    """The working-memory notes staged for this repo (empty if none/opted out)."""
+    paths = CohortPaths.for_project(find_repo_root(cwd))
+    d = _working_dir(paths)
+    return sorted(d.glob("*.md")) if d.is_dir() else []
+
+
+def working_note(cwd: Path, text: str) -> Optional[str]:
+    """Stage a model-authored working note mid-session (semantic scratch).
+
+    Called by the model at task milestones when a task produced durable context.
+    Governed by the same ``auto_capture`` opt-out as session capture; disposable and
+    git-ignored. Returns the relative path written, else None."""
+    text = text.strip()
+    if not text:
+        return None
+    repo = find_repo_root(cwd)
+    paths = CohortPaths.for_project(repo)
+    if not paths.cohort_home.exists() or not _read_auto_capture(paths):
+        return None
+    d = _working_dir(paths)
+    d.mkdir(parents=True, exist_ok=True)
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "unknown"
+    fm = dump_frontmatter(
+        [("timestamp", now_iso()), ("branch", branch), ("kind", "note")]
+    ).rstrip("\n")
+    filename = f"{_utc_compact()}-{_short_id()}-note.md"
+    (d / filename).write_text(f"{fm}\n{text}\n", encoding="utf-8")
+    return f"state/{_WORKING_DIRNAME}/{filename}"
+
+
+def working_capture(cwd: Path) -> Optional[str]:
+    """Stage a mechanical working record for the current turn — the deterministic Stop
+    backstop — but only when the turn actually changed the tree, and not twice for the
+    same unchanged state (a hash marker dedupes). Governed by ``auto_capture``. Returns
+    the relative path written, else None."""
+    repo = find_repo_root(cwd)
+    paths = CohortPaths.for_project(repo)
+    if not paths.cohort_home.exists() or not _read_auto_capture(paths):
+        return None
+    changed = _git(repo, "diff", "--stat") or _git(repo, "status", "--short")
+    if not changed:
+        return None  # a turn that touched nothing on disk is not worth staging
+    d = _working_dir(paths)
+    d.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(changed.encode("utf-8")).hexdigest()
+    marker = d / _WORKING_CAPTURE_MARKER
+    if marker.exists():
+        try:
+            if marker.read_text(encoding="utf-8").strip() == digest:
+                return None  # tree unchanged since the last capture — skip the duplicate
+        except OSError:
+            pass
+    marker.write_text(digest, encoding="utf-8")
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "unknown"
+    fm = dump_frontmatter(
+        [("timestamp", now_iso()), ("branch", branch), ("kind", "auto")]
+    ).rstrip("\n")
+    filename = f"{_utc_compact()}-{_short_id()}-auto.md"
+    (d / filename).write_text(f"{fm}\n## Changed\n```\n{changed}\n```\n", encoding="utf-8")
+    return f"state/{_WORKING_DIRNAME}/{filename}"
+
+
+def working_memory_review(cwd: Path) -> str:
+    """A consolidation directive if working notes are staged for this repo, else ''.
+
+    Appended to the recall injections so that, at the next compaction/start, the model
+    promotes the durable staged notes into memory and clears the scratch."""
+    try:
+        notes = pending_working_notes(cwd)
+    except Exception:  # noqa: BLE001 - recall must never break on a stat error
+        return ""
+    if not notes:
+        return ""
+    return (
+        f"\n\nWorking memory: {len(notes)} staged note(s) in "
+        f"`.cohort/state/{_WORKING_DIRNAME}/` from earlier in this work — semantic notes "
+        "and mechanical per-turn records that survived even an abrupt exit. Read them, "
+        "promote anything durable into your persistent memory directory, then delete "
+        "them. They are disposable scratch, not the record of truth."
     )

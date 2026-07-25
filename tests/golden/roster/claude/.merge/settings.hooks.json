@@ -59,6 +59,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cohort working-capture"
+          }
+        ]
+      }
     ]
   }
 }
