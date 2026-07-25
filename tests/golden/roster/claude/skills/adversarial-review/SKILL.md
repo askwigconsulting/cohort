@@ -19,7 +19,7 @@ quick — security-sensitive code, an architecture bet, a pre-merge audit. Revie
    Claude tiers (Fable → Opus → Sonnet → Haiku) read the repo directly; **ChatGPT** joins
    via `/consult-gpt` (read-only Codex); **Grok** via `cohort engine review` (an agentic
    read-only loop that explores through gated tools) or `cohort engine consult` for a
-   bounded, bundled question. Keep **≤10 reviewers in flight**.
+   bounded, bundled question. Keep **≤20 reviewers in flight**.
 3. **Round 1 finds; Round 2 refutes.** The improvement between rounds is the value: feed
    Round 1's synthesis back with a mandate to *break* each finding. Survives → CONFIRMED;
    fails → struck with the reason; overstated → REFINED. Then deepen and hunt what was

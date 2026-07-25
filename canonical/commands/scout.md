@@ -28,7 +28,7 @@ and coverage is legible: e.g. security/trust, correctness, architecture, product
 Assign the **hardest, most ambiguous** areas to the strongest models and the mechanical
 ones to the cheapest — that is the token-optimization the panel exists for.
 
-## 2. Round 1 — fan out across vendors (≤10 in flight)
+## 2. Round 1 — fan out across vendors (≤20 in flight)
 
 Each reviewer gets its area, all three lenses (defects weighted highest), and the
 operational gates (scope, evidence, adversarial self-check, verify, calibrate). Route by

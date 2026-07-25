@@ -13,6 +13,7 @@ from pathlib import Path
 
 from cohort.adapters.claude import _MODEL_MAP
 from cohort.lint import (
+    _declared_manager_cap,
     _declared_orch_cap,
     _model_tier_findings,
     _orchestration_cap_findings,
@@ -82,13 +83,30 @@ def test_lint_flags_model_tier_doc_drift_from_code(tmp_path):
 
 
 def test_orchestration_cap_is_declared_and_canon_agrees():
-    # The ≤10 cap is restated across the orchestration canon; docs/model-tiers.md
-    # is its single source, and every canon restatement must match it. The repo is
-    # clean on this check right now (all say 10), so a future edit that changes one
+    # The global ≤20 cap and the federated ≤5-per-manager cap are restated across the
+    # orchestration canon; docs/model-tiers.md is their single source, and every canon
+    # restatement must match. The repo is clean now, so a future edit that changes one
     # file's cap without the others fails CI.
     doc = (REPO / "docs" / "model-tiers.md").read_text(encoding="utf-8")
-    assert _declared_orch_cap(doc) == 10
+    assert _declared_orch_cap(doc) == 20
+    assert _declared_manager_cap(doc) == 5
     assert _orchestration_cap_findings(REPO) == []
+
+
+def test_lint_flags_a_per_manager_cap_that_drifts(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "model-tiers.md").write_text(
+        "**In-flight cap:** at most **20** agents in flight.\n"
+        "**Per-manager cap:** at most **5** agents per manager at a time.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "canonical" / "commands").mkdir(parents=True)
+    (tmp_path / "canonical" / "commands" / "crew.md").write_text(
+        "each manager runs at most 4 agents per manager.\n", encoding="utf-8"
+    )
+    findings = _orchestration_cap_findings(tmp_path)
+    assert len(findings) == 1
+    assert '"4 ... agents per manager"' in findings[0].message and "cap is 5" in findings[0].message
 
 
 def test_lint_flags_a_canon_cap_that_drifts_from_the_registry(tmp_path):

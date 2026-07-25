@@ -115,12 +115,25 @@ of shipping an uncertain attempt. Routing is the coordinator's call from above; 
 kickback is the worker's check from below, so a mismatch is caught before the attempt,
 not only at signoff.
 
-## 4. Fan out — coordinator keeps ≤10 agents in flight
+## 4. Fan out — coordinator keeps ≤20 agents in flight
 
 Launch independent tasks concurrently, dependent tasks in dependency order. The
-**coordinator keeps no more than 10 agents in flight at once, across all tiers**
+**coordinator keeps no more than 20 agents in flight at once, across all tiers**
 — queue the rest. This is a coordination discipline the coordinator maintains,
 not a runtime limit the system enforces.
+
+**Federated (three-tier) fan-out, when the work is large.** For roughly 20+ cleanly
+separable task-groups on disjoint subtrees, the Director may delegate each group to an
+ephemeral **manager** — a coordinator-tier (Fable/Opus) sub-session that runs this same
+protocol over its group and returns a result. Each manager coordinates **at most 5 agents
+per manager at a time**; the Director keeps the total (managers + their live agents) within
+the 20 global cap. Managers verify their own group's acceptance criteria; the Director
+re-verifies each manager's group contract and **every** foreign-engine diff (that scrutiny
+is never delegated). This is a runtime recursion of the coordinator→worker pattern — no
+declared graph, no persisted status, no scheduler (that would be the rejected design; see
+DESIGN `[S]`). It requires the platform to permit nested agents
+(`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2`, or Agent Teams for the top tier); where nesting
+is unavailable, stay flat and queue. See `docs/orchestration-patterns.md`.
 
 **Concurrent writers require per-task git worktrees** — a shared `.git/index.lock`
 is not isolated by disjoint file footprints. The coordinator:

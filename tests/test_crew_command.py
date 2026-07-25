@@ -6,7 +6,7 @@ tiers *and vendors*, and signs off. Claude subagents write directly; external
 engines only ever propose gated patches. Several guards in its body are
 load-bearing and must never silently regress, in the style of test_goal_command:
 
-- the **concurrency cap** — never more than 10 agents in flight at once;
+- the **concurrency cap** — never more than 20 agents in flight at once;
 - the **coordinator signoff** — worker output is a claim, verified by the
   coordinator re-running tests, never rubber-stamped;
 - the **isolation rule** — parallel writers need per-task worktrees and never
@@ -37,9 +37,12 @@ def _compiled_crew_body() -> str:
     return staged[rel].decode("utf-8")
 
 
-def test_crew_locks_the_ten_agent_cap():
+def test_crew_locks_the_global_agent_cap():
     body = _compiled_crew_body()
-    assert "no more than 10 agents in flight at once, across all tiers" in body
+    assert "no more than 20 agents in flight at once, across all tiers" in body
+    # the federated per-manager cap (phrase wraps across a line, so match a fragment)
+    assert "per manager at a time" in body
+    assert "Federated (three-tier)" in body
 
 
 def test_crew_locks_coordinator_signoff():

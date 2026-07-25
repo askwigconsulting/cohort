@@ -59,6 +59,18 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   end writes its minimal record (branch, change summary, timestamp) to
   `.cohort/sessions/` unless a repo sets `auto_capture = false`. This is what feeds the
   new `session-recall` bridge — exit context is no longer lost silently.
+- **Orchestration cap raised to 20, with an optional federated three-tier mode.** The
+  global in-flight cap moves from 10 to 20, and `/crew` gains a Director→Manager→Agent
+  mode for large work: the Director delegates task-groups to **ephemeral** manager
+  sub-coordinators (≤5 agents per manager, ≤20 global), each verifying its own group while
+  the Director re-verifies group contracts and **every** foreign-engine diff. It stays
+  coordination discipline — no declared graph, no persisted status, no durable-session
+  scheduler (that's the design a prior panel rejected). Requires the platform to permit
+  nested agents (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2`, or Agent Teams for the top
+  tier); flat single-coordinator is the fallback. Both cap numbers are single-sourced in
+  `docs/model-tiers.md` and lint-checked for drift. New `docs/orchestration-patterns.md`
+  documents when federation pays off (and when it's over-engineering); `ship.md`'s stale
+  "subagents cannot spawn subagents" is corrected to "not by default."
 
 ## [0.9.0] — 2026-07-23 · Project memory visibility
 
