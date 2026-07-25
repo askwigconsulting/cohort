@@ -33,6 +33,15 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   marker (so each record surfaces at most once) and stays silent on the `compact`
   source, where `post-compact-memory` already owns the recall. The exit-time analog of
   the `pre-compact-capture`/`post-compact-memory` pair.
+- **Grok can write code natively, sandboxed by bubblewrap.** `cohort engine work grok`
+  now dispatches grok-cli as a write doer that edits a throwaway worktree directly — the
+  Codex-equivalent "native filesystem" path, so Grok can implement and review with real
+  file access, not only propose a gated patch. Because grok-cli has no sandbox of its
+  own, Cohort imposes one with bubblewrap: every write is kernel-confined to the
+  worktree, the user's real home (SSH keys, other repos) is not mounted, and only the
+  network for the xAI API is left up. The API key rides the environment, never argv.
+  Requires `bwrap` (Linux); where it's absent the doer refuses rather than run grok
+  unconfined, and `engine propose grok --agentic` remains the gated fallback.
 
 ### Changed
 - **Session capture is on by default now (opt-out, was opt-in).** `auto_capture`

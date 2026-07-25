@@ -1405,7 +1405,7 @@ def engine_propose(
 
 @engine_app.command("work")
 def engine_work(
-    engine: str = typer.Argument(..., help="Engine with a sandboxed CLI doer (e.g. 'gpt'). Grok has none — use 'engine propose --agentic'."),
+    engine: str = typer.Argument(..., help="Engine with a sandboxed CLI doer ('gpt' via its own sandbox, 'grok' via a bubblewrap jail)."),
     task_file: Optional[Path] = typer.Option(
         None, "--task-file", help="Path to the task. Omit to read from stdin.",
     ),
@@ -1423,8 +1423,9 @@ def engine_work(
     is pinned to a fresh detached worktree — never this repo's working tree. The task is
     read from ``--task-file`` or stdin (never a shell argument) and egress-gated first.
     Nothing is committed or merged: review the diff in the worktree and integrate it, or
-    discard the worktree. Codex (ChatGPT) is sandboxed; Grok is refused with a pointer to
-    ``engine propose --agentic``.
+    discard the worktree. Codex (ChatGPT) is confined by its own sandbox; Grok is confined
+    by a Cohort-imposed bubblewrap jail (requires ``bwrap``; without it grok is refused
+    with a pointer to ``engine propose --agentic`` rather than run unsandboxed).
     """
     from .engines import cli_doer
 
