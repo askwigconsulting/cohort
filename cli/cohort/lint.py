@@ -140,9 +140,10 @@ def _model_tier_findings(repo_root: Path) -> list[LintFinding]:
     return findings
 
 
-# A "≤N agents in flight" orchestration cap, wherever it is restated in prose.
+# A "≤N agents in flight" orchestration cap, wherever it is restated in prose. Allows
+# an optional hyphen ("in-flight") so a canon file's adjectival form is still caught.
 _ORCH_CAP_RE = re.compile(
-    r"(\d+)\s+(?:agents?\s+|reviewers?\s+)?in\s+flight", re.IGNORECASE
+    r"(\d+)\s+(?:agents?\s+|reviewers?\s+)?in[\s-]+flight", re.IGNORECASE
 )
 
 

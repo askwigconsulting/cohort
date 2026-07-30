@@ -82,8 +82,21 @@ class Op:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Op":
+        op_type = data["op"]
+        preserve = data.get("preserve")
+        if preserve is None and op_type == OpType.SCAFFOLD.value:
+            # SCAFFOLD ops are, by construction, team-owned content (see
+            # ``OpType.SCAFFOLD``'s docstring: "create a team-owned file from a
+            # template"). A manifest whose op dict has no ``preserve`` key at all —
+            # e.g. one recorded by a Cohort version that predates this field — must
+            # not silently read as "not preserved" and let a non-purge deinit delete
+            # a team file. Fail safe toward keeping it; only ``--purge`` removes it.
+            # Other op types (mkdir/merge/...) genuinely mix preserved and
+            # non-preserved instances by design, so they keep the plain ``None``
+            # (falsy) default.
+            preserve = True
         return cls(
-            op=data["op"],
+            op=op_type,
             ide=data.get("ide", GLOBAL_IDE),
             dest=data["dest"],
             src=data.get("src"),
@@ -93,7 +106,7 @@ class Op:
             strategy=data.get("strategy"),
             block_hash=data.get("block_hash"),
             tags=data.get("tags"),
-            preserve=data.get("preserve"),
+            preserve=preserve,
         )
 
 

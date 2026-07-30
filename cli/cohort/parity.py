@@ -10,7 +10,6 @@ renders). Claude is the reference coverage set, never a byte comparator.
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,12 +29,54 @@ def adapters_dir() -> Path:
     return Path(override) if override else Path(__file__).resolve().parents[2] / "adapters"
 
 
+def _parse_gaps_toml_minimal(text: str) -> list[dict[str, str]]:
+    """A minimal ``[[gaps]]`` array-of-tables reader for Python 3.10 (no
+    ``tomllib``). Understands exactly the repeated ``[[gaps]]`` block +
+    quoted ``key = "value"`` shape ``parity-gaps.toml`` files use. Never a
+    general TOML parser — the caller treats any surprise as fail-safe (no
+    declared gaps), and this is deliberately a *different* minimal parser
+    from ``project.py``'s (that one only handles flat ``[table]`` sections,
+    not repeated ``[[array]]`` tables, and would silently misparse this
+    file's shape)."""
+    gaps: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        if line == "[[gaps]]":
+            current = {}
+            gaps.append(current)
+            continue
+        if current is None:
+            continue
+        key, sep, value = line.partition("=")
+        if not sep:
+            continue
+        value = value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1]
+        current[key.strip()] = value
+    return gaps
+
+
 def load_gaps(ide: str) -> dict[str, str]:
-    """Declared {kind: reason} gaps for an IDE (empty if no file)."""
+    """Declared {kind: reason} gaps for an IDE (empty if no file). Uses
+    ``tomllib`` where available (3.11+); on 3.10 a minimal fallback parser
+    reads the ``[[gaps]]`` array-of-tables shape these files use."""
     path = adapters_dir() / ide / "parity-gaps.toml"
     if not path.exists():
         return {}
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        try:
+            gaps = _parse_gaps_toml_minimal(text)
+        except Exception:  # noqa: BLE001 - malformed file, fail safe to no gaps
+            gaps = []
+        return {g["kind"]: g.get("reason", "") for g in gaps if "kind" in g}
+    data = tomllib.loads(text)
     return {g["kind"]: g.get("reason", "") for g in data.get("gaps", [])}
 
 

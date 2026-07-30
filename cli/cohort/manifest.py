@@ -9,11 +9,13 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
+from .filelock import file_lock
 from .install_model import Op
 
 
@@ -96,3 +98,25 @@ def load_manifest(path: Path) -> Optional[Manifest]:
     if not path.exists():
         return None
     return Manifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+
+@contextmanager
+def manifest_lock(manifest_path: Path) -> Iterator[None]:
+    """Serialize a ``load_manifest`` → mutate → :meth:`Manifest.persist` cycle on
+    the manifest at ``manifest_path`` across concurrent ``cohort`` processes.
+
+    ``persist`` writes atomically (tmp + ``os.replace``), so a concurrent write
+    can never *corrupt* the file — but two processes that each load, mutate, and
+    persist can still lose one update (last writer wins). This lock closes that
+    window. It wraps the *whole* cycle, so ``persist`` itself must not also
+    acquire it (the lock is not reentrant); callers hold this around the read and
+    the write together.
+
+    The manifest's parent (``state/``) must already exist, so this guards
+    *post-install* read-modify-writes (recompile, context refresh) — where
+    concurrent writers actually meet. The initial ``cohort init`` creates
+    ``state/`` mid-apply and is a single bootstrap step, so it is not wrapped
+    here; the registry write it performs is serialized by its own lock.
+    """
+    with file_lock(manifest_path):
+        yield

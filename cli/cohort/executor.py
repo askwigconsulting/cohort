@@ -459,11 +459,15 @@ def _reverse_place_ops(ops: list[Op], result: ReverseResult, purge: bool = False
                 result.outcomes.append(OpOutcome(op=op, status="removed"))
             continue
         if op.op == OpType.LINK.value:
-            # Remove our link if it still points at our target, or if it dangles
-            # (the source moved) — a dangling link we recorded is ours to clean up,
-            # never left to leak. A link re-pointed by the user to a live target is
-            # treated as foreign and skipped.
-            if _symlink_points_to(dest, op.src or "") or (dest.is_symlink() and not dest.exists()):
+            # Remove our link only if it still points at our recorded target — live
+            # or dangling (e.g. the source moved). ``_symlink_points_to`` compares
+            # the readlink target string, not whether it resolves, so a dangling
+            # link we recorded is ours to clean up, never left to leak. A link the
+            # user re-pointed elsewhere is foreign and must be skipped even while
+            # dangling — its *current* target being temporarily unavailable is not
+            # our target going away, and deleting it would destroy the user's own
+            # re-point, not ours.
+            if _symlink_points_to(dest, op.src or ""):
                 dest.unlink()
                 result.outcomes.append(OpOutcome(op=op, status="removed"))
             else:

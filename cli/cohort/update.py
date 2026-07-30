@@ -169,7 +169,17 @@ def _commit_is_signed(source: Path, sha: str) -> bool:
 
     ``sha`` must be an already-resolved object id (never a config-derived ref), so
     it can never be read as a git flag, and the object verified is exactly the one
-    the caller will merge — closing the verify-vs-apply TOCTOU window."""
+    the caller will merge — closing the verify-vs-apply TOCTOU window.
+
+    Scope — only the TIP commit is verified, deliberately (#9). ``do_update`` applies
+    updates as a fast-forward *only*, so every incoming commit (``HEAD..tip``) is an
+    ancestor of the tip. A commit's signature is over the commit object, which
+    includes its parent hashes, so a good signature on the tip cryptographically
+    commits to the entire reachable ancestry — nobody can alter, insert, or reorder
+    any commit in ``HEAD..tip`` without changing the tip's hash and breaking that
+    signature. What tip-only verification does NOT assert is that each intermediate
+    commit was *itself independently* signed; that is out of scope, and it is not a
+    tampering gap, because the signed tip already fixes the whole range."""
     if not sha:
         return False
     rc, _ = _git(source, "verify-commit", sha)
@@ -238,7 +248,14 @@ def _commit_signer_allowed(source: Path, sha: str, pins: list[str]) -> bool:
     signing key), extracts the key fingerprint from that output, and requires a
     *whole-token* match — not a substring, which a signer-controlled user-id could
     otherwise spoof. Fail-closed: no pins, empty sha, non-zero exit, no
-    identifiable key, or any error → False."""
+    identifiable key, or any error → False.
+
+    Scope — as with ``_commit_is_signed``, only the TIP is verified (#9). The
+    fast-forward-only apply makes every incoming commit an ancestor of the tip, and
+    the tip's signature (over its parent-hash chain) commits to that whole ancestry,
+    so pinning the tip's signing key gates the entire ``HEAD..tip`` range. Only the
+    tip's key is required to match a pin; intermediate commits are not independently
+    checked, which is sound because the signed tip already fixes the range."""
     if not sha or not pins:
         return False
     try:
@@ -693,7 +710,9 @@ def do_update(
     #     a pinned fingerprint (and implies require_signed); the strong assurance.
     #   * require_signed — the tip must be a verifiably signed commit (any key git
     #     trusts). Weaker without a pinned allowed-signers store, but a real gate.
-    # Fail-closed throughout.
+    # Fail-closed throughout. Only the TIP is verified: the apply is fast-forward
+    # only, so the tip's signature (over its parent-hash chain) commits to the whole
+    # incoming HEAD..tip range — see _commit_is_signed / _commit_signer_allowed (#9).
     pins = _signed_by(home)
     if pins:
         if not _commit_signer_allowed(source, tip, pins):
@@ -722,6 +741,20 @@ def do_update(
             target=target, commits=commits, changed_files=changed_files,
         )
 
+    # F3/#6: establish the office trust baseline from the PRE-pull tree, before the
+    # fast-forward below changes it. The pre-pull tree is the install-time shipped
+    # set the user already had; seeding from it means the pull is measured as a
+    # delta, so an auto-activating hook/memory/skill/agent the pull *introduces* is
+    # quarantined by record_office_delta (below) rather than trusted unreviewed. A
+    # no-op once a baseline exists. A corrupt baseline must not break the update —
+    # the compile-time office gate reads the pending store independently and fails
+    # closed, so it stays the real backstop.
+    from . import quarantine
+    try:
+        quarantine.seed_office_baseline_if_absent(CohortPaths(home).state, source)
+    except quarantine.QuarantineStateError:
+        pass
+
     # Capture the pre-merge HEAD so the update is reversible (cohort rollback).
     _, pre_sha = _git(source, "rev-parse", "HEAD")
 
@@ -745,11 +778,11 @@ def do_update(
     # F3: record the gated-office artifacts this pull introduced into the office
     # quarantine store BEFORE recompiling, so the recompile below withholds any
     # auto-activating hook/memory/skill/agent an update pull brought in on a shared
-    # office remote — until it is reviewed (`cohort office review`/`approve`). First
-    # call (no baseline) just trusts the shipped office and quarantines nothing.
-    # A corrupt baseline must not break the update: the compile-time office gate reads
-    # the pending store independently and fails closed, so it stays the real backstop.
-    from . import quarantine
+    # office remote — until it is reviewed (`cohort office review`/`approve`). The
+    # baseline was seeded from the PRE-pull tree above (#6), so this now measures a
+    # true delta rather than trusting the just-pulled set. A corrupt baseline must
+    # not break the update: the compile-time office gate reads the pending store
+    # independently and fails closed, so it stays the real backstop.
     try:
         quarantine.record_office_delta(CohortPaths(home).state, source)
     except quarantine.QuarantineStateError:

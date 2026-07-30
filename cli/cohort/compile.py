@@ -250,9 +250,9 @@ def compile_ide(
     — the project tier passes none): the state dir is where the office pending set
     lives. On a first install the store is empty ⇒ the shipped office is NOT withheld.
     The recorder that *populates* the store from the pull delta is
-    ``quarantine.record_office_delta``; wiring it into ``cohort update`` is the
-    residual gap noted there — until wired, the store stays empty and this gate is a
-    safe no-op.
+    ``quarantine.record_office_delta``; ``cohort update`` wires it in (see
+    ``update.py``, after a source pull), so this gate is live, not a no-op — a
+    subsequent compile withholds whatever the pull just introduced until reviewed.
 
     ``only_agents`` restricts *office-layer* agent artifacts to the named subset
     (a tailored roster); my-layer agents always compile — the subset exists to

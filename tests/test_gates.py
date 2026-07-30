@@ -48,6 +48,20 @@ def test_egress_marker_is_case_insensitive_and_whitespace_tolerant() -> None:
     assert egress_opted_out(text) is True
 
 
+def test_egress_deny_marker_indented_four_or_more_spaces_still_trips() -> None:
+    # Regression: the marker regex used to allow only 0-3 leading spaces, so a
+    # deny marker indented under a list item / fenced block (4+ spaces) silently
+    # failed to match -- and since the default is allow, that fails OPEN on an
+    # explicit deny. Any amount of leading indentation must still trip it.
+    text = "# Project Context\n\n- Policy:\n    cohort:egress=deny\n"
+    assert egress_opted_out(text) is True
+
+
+def test_egress_allow_marker_indented_four_or_more_spaces_still_trips() -> None:
+    text = "## Egress\n\nPermitted.\n\n    cohort:egress=allow\n"
+    assert egress_opted_out(text) is False
+
+
 def test_egress_marker_embedded_in_a_sentence_does_not_count() -> None:
     # EGRESS-PROSE regression: the marker text is no longer matched as a whole-file
     # substring -- it must be the entire line, or a sentence that merely *contains*
@@ -358,6 +372,25 @@ def test_sensitive_class_blocked_even_when_nominally_in_footprint(
     # Even with a repo-wide footprint, a sensitive path is blocked with its class.
     violations = check_changed_paths([path], allowed_footprint=["**", "."])
     assert violations == [f"{path}: sensitive:{expected_class}"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".git./config",  # trailing dot
+        ".git /config",  # trailing space
+        ".git.. /HEAD",  # mixed trailing dots and space
+        "nested/.git./config",
+    ],
+)
+def test_git_segment_with_trailing_dot_or_space_is_still_sensitive(path: str) -> None:
+    # Regression: Windows silently strips trailing dots/spaces from a path segment
+    # when opening it, so a segment written as ".git." or ".git " opens the very
+    # same directory as ".git" on that OS. An exact-match `seg == ".git"` check
+    # missed this and misclassified the path as non-sensitive -- dodgeable by
+    # anyone who knows the Windows trailing-dot quirk.
+    violations = check_changed_paths([path], allowed_footprint=["**", "."])
+    assert violations == [f"{path}: sensitive:git-internal"]
 
 
 @pytest.mark.parametrize(
