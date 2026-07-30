@@ -592,6 +592,46 @@ def assert_payload_within(text: str, *, max_bytes: int = 200_000) -> None:
         )
 
 
+def assert_total_wire_bytes(
+    *,
+    instruction_text: str,
+    file_bytes: int,
+    max_bytes: int = 5_000_000,
+) -> None:
+    """Bound the **total** bytes a doer dispatch would expose to an external engine.
+
+    :func:`assert_payload_within` caps a single prompt string, but a *doer* dispatch
+    egresses far more than the task text: the vendor CLI reads the worktree's committed
+    files and sends them to the vendor alongside the task. This bounds the whole exposed
+    payload — the UTF-8 byte length of ``instruction_text`` plus ``file_bytes`` (the
+    summed byte length of every tracked worktree file the CLI could read) — so a runaway
+    worktree (a checked-in data blob, a vendored binary tree) cannot be silently shipped
+    off-machine with no ceiling.
+
+    This is a fail-closed backstop, so the caller must compute ``file_bytes``
+    fail-closed: a tracked file whose size cannot be measured must abort the dispatch
+    upstream rather than be dropped from the sum, or an unmeasured file could push the
+    real payload past the cap while this check reads under it.
+
+    Args:
+        instruction_text: The task/instruction string sent alongside the files.
+        file_bytes: The summed byte length of every tracked worktree file the CLI could
+            read and egress. Must be counted fail-closed by the caller.
+        max_bytes: The maximum permitted total exposed bytes.
+
+    Raises:
+        PayloadTooLargeError: if ``len(instruction_text) + file_bytes`` (UTF-8) exceeds
+            ``max_bytes``.
+    """
+    total = len(instruction_text.encode("utf-8")) + file_bytes
+    if total > max_bytes:
+        raise PayloadTooLargeError(
+            f"doer dispatch would expose {total} bytes "
+            f"(task text + {file_bytes} bytes of tracked worktree files), "
+            f"exceeds the {max_bytes}-byte wire cap"
+        )
+
+
 # --------------------------------------------------------------------------- #
 # 5. Convenience preflight
 # --------------------------------------------------------------------------- #

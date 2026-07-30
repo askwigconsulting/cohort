@@ -84,8 +84,8 @@ Two-phase fix. Coordinator verified every diff and re-ran the suite as the integ
 - #3 CLI-doer egresses committed files unscanned → `_assert_worktree_files_have_no_secrets()` (git ls-files → binary-safe read → `scan_for_secrets`, fail-closed on unreadable). **Fixed.** (consult-gpt caught my first cut was fail-OPEN.)
 - #10 advisory-strip test gap → killing tests for codex/cursor in `test_phase7.py`. **Fixed.**
 
-**Phase 2 — MED + LOW (PR TBD, `fix/audit-rest`):**
-- #4 no cross-process state lock → new `filelock.py` (portable `O_EXCL` lock-file + token + 15s stale-steal + 30s `LockTimeout`); wraps RMW in `quarantine.py` (registry+office), `project.py` (registry), `manifest.py` (`refresh_*`). **Fixed for those callers.** *Residual: `executor.apply`/`install.py`/`adopt.py` global-scope manifest writes are still unlocked — out of footprint (follow-up).*
+**Phase 2 — MED + LOW (PR #214, `fix/audit-rest`, merged):**
+- #4 no cross-process state lock → new `filelock.py` (portable `O_EXCL` lock-file + token + 15s stale-steal + 30s `LockTimeout`); wraps RMW in `quarantine.py` (registry+office), `project.py` (registry), `manifest.py` (`refresh_*`). **Fixed for those callers**; the remaining manifest writers closed in round 3 below.
 - #5 `--force` hook restore duplicates → `merge_hooks` force path now replaces (bounded to `len(diverged)`). **Fixed.**
 - #6 office-quarantine trusts just-pulled state → `seed_office_baseline_if_absent` records the pre-pull tree as baseline before the FF. **Fixed.**
 - #7 `tomllib` breaks 3.10 floor → guarded import + minimal `[[gaps]]` fallback parser; CI matrix adds 3.10. **Fixed.**
@@ -93,7 +93,10 @@ Two-phase fix. Coordinator verified every diff and re-ran the suite as the integ
 - #9 signed-update tip-only → docstring clarified: FF-only means the signed tip's hash chain commits to `HEAD..tip`, so tip verification is sound (doc fix, not a vuln). **Fixed.**
 - LOW: egress fail-open on ≥4-space indent (`^[ \t]*`), stale `compile.py`/`quarantine.py` "no-op" docstrings, dangling-symlink uninstall (readlink-string match only), `.git` Windows trailing-dot dodge (`rstrip(". ")`), `session_recall` mislabel + `working_capture` marker-before-record, `preserve`-absent SCAFFOLD → `True`, lint hyphenated `in-flight`. **Fixed.**
 
-**Tracked follow-ups (filed as issues, not in either PR):**
-- **#215** — `executor.apply`/`install.py`/`adopt.py` global-manifest lock (completes #4 for the main manifest writer).
-- **#216** — deferred consult-gpt egress items: codex reads outside its worktree; a *user-local* grok binary path isn't bwrap-jailed; no wire-byte cap on egress payload.
-- **#217** — supply-chain: pin floating deps (`PyYAML`/`pytest`), add a lockfile, un-skip the bwrap-confinement CI test (audit #11).
+**Round 3 — the tracked follow-ups (`fix/audit-followups`, `/crew` 3-worker fan-out + a completion pass):**
+- **#215 — DONE.** Locked the racy main manifest writers (`do_install` conditional bootstrap guard, `do_install_project`, `do_uninstall` slice, `adopt` ×2); `reverse_full` deliberately unlocked (it sweeps `state/`). Neutralize-the-lock bite proof passes.
+- **#4 FULLY CLOSED.** The #215 worker surfaced 4 further unlocked RMW sites the issue hadn't enumerated (`office_setup.persist_roster`, `roster.do_add_agent` office-extend, `specialists.do_remove_specialist`, `project.do_init` bootstrap-conditional). All locked in a completion pass — finding #4 now holds across **every** manifest RMW call site.
+- **#216 — verify-then-fix.** (c) wire-byte cap → `gates.assert_total_wire_bytes` + fail-closed worktree byte accounting before both doers (**FIXED**, default 5 MB, configurable). (a) codex reads outside worktree → **CONFIRMED but infeasible** (no read-scoping flag; Landlock backend can't; a version-specific fix fails open) → documented residual, not a placebo. (b) user-local grok not bwrap-jailed → **REFUTED** (grok is always bwrap-wrapped; no direct-exec path).
+- **#217 — DONE.** Pinned floating deps (`PyYAML<7`, `pytest<10`, `jsonschema<5`); added `requirements.lock` (runtime closure); installed `bubblewrap` in Linux CI so the confinement test (audit #11) runs instead of skip-gating.
+
+**Still open (new discovery, tracked):** none from this round — the 4 extra manifest sites were folded into the #4 closure rather than deferred.

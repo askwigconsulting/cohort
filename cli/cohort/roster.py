@@ -20,7 +20,7 @@ from .gitutil import git_state
 from .install import do_install
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact, load_artifact_text
-from .manifest import load_manifest
+from .manifest import load_manifest, manifest_lock
 from .schema import KIND_DIRS, NAME_PATTERN, validate_frontmatter
 
 # The canonical read-only tool set. The string form preserves the historical
@@ -199,12 +199,17 @@ def do_add_agent(
         prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
     )
     if to == "office" and subset is not None:
-        # Reload: do_install persisted its own manifest instance, so extend the
-        # roster on the current file rather than overwriting with a stale copy.
-        fresh = load_manifest(paths.manifest)
-        if fresh is not None:
-            fresh.roster = subset
-            fresh.persist(paths.manifest)
+        # #4: re-read and persist the roster under the lock so this RMW can't lose
+        # (or be lost against) a concurrent writer. Reload anyway — do_install
+        # persisted its own manifest instance, so extend the roster on the current
+        # file rather than overwriting with a stale copy. Unconditional racy (b):
+        # do_install just ran (creating ``state/``) and released its own lock before
+        # returning, so this is a fresh, non-nested acquisition.
+        with manifest_lock(paths.manifest):
+            fresh = load_manifest(paths.manifest)
+            if fresh is not None:
+                fresh.roster = subset
+                fresh.persist(paths.manifest)
     return {
         "action": "add-agent", "dry_run": False, "name": name, "path": str(dest),
         "layer": to, "first_my_write": first_my,
