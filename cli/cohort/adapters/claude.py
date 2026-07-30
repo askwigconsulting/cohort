@@ -71,6 +71,9 @@ HOOK_EVENT_MAP = {
     "pre_compact": ("PreCompact", ""),
     "post_compact": ("SessionStart", "compact"),
     "on_stale": ("SessionStart", ""),
+    # Stop fires after each assistant turn — the deterministic per-task backstop
+    # that stages a working-memory record when the turn changed the tree.
+    "stop": ("Stop", ""),
 }
 
 

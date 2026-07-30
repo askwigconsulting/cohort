@@ -12,6 +12,17 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Working memory: continuous mid-session capture, consolidated at boundaries.**
+  Context is now staged *as you work*, not only at a boundary. A new global
+  `working-memory` memory prompts the model to stage durable context at task milestones
+  (`cohort working-note "…"`), and a deterministic `Stop` hook (`cohort working-capture`)
+  records what changed each turn as a backstop — both into a git-ignored, disposable
+  `.cohort/state/working-memory/`. At the next compaction or session start,
+  `compact-recall`/`session-recall` surface the staged notes so the durable ones are
+  promoted into memory and the rest cleared. This captures the *reasoning* an exit can't
+  (there's no model turn at exit) because it's written during turns. Adds a canonical
+  `stop` hook event, mapped across all three adapters. Governed by the same `auto_capture`
+  opt-out.
 - **`session-recall` — the exit→next-session memory bridge.** At `SessionEnd` the
   model gets no turn and its context is already gone, so nothing model-authored can be
   saved *at* exit — which is how a closed session lost its context. A new global

@@ -55,6 +55,9 @@ from .project import (
     list_projects,
     session_capture,
     session_recall,
+    working_capture,
+    working_memory_review,
+    working_note,
     staleness_check,
 )
 from .reports import do_report
@@ -2960,7 +2963,11 @@ def compact_recall_cmd() -> None:
     """Internal: the post_compact hook target. Prints the memory-commit instruction
     to stdout, which the IDE injects into the model's context right after
     compaction. Print-only — writes nothing. Always exits 0."""
-    typer.echo(COMPACT_RECALL_TEXT)
+    try:
+        review = working_memory_review(Path.cwd())
+    except Exception:  # noqa: BLE001 - recall must never break
+        review = ""
+    typer.echo(COMPACT_RECALL_TEXT + review)
     raise typer.Exit(code=0)
 
 
@@ -2978,10 +2985,38 @@ def session_recall_cmd() -> None:
                 source = str(_json.loads(raw).get("source", ""))
             except (ValueError, TypeError):
                 source = ""
-        text = session_recall(Path.cwd(), source)
-        if text:
-            typer.echo(text)
+        text = session_recall(Path.cwd(), source) or ""
+        # compact-recall owns the compact source (record + working-memory review both).
+        review = "" if source == "compact" else working_memory_review(Path.cwd())
+        out = (text + review).strip()
+        if out:
+            typer.echo(out)
     except Exception:  # noqa: BLE001 - recall must never break session start
+        pass
+    raise typer.Exit(code=0)
+
+
+@app.command("working-note", hidden=True)
+def working_note_cmd(text: str = typer.Argument(..., help="the note to stage")) -> None:
+    """Stage a disposable working-memory note mid-session (model-invoked at a task
+    milestone). Consolidated into durable memory at the next compaction/start. Always
+    exits 0."""
+    try:
+        written = working_note(Path.cwd(), text)
+        if written:
+            typer.echo(f"cohort: working note staged → {written}", err=True)
+    except Exception:  # noqa: BLE001 - a note must never break the turn
+        pass
+    raise typer.Exit(code=0)
+
+
+@app.command("working-capture", hidden=True)
+def working_capture_cmd() -> None:
+    """Internal: the Stop hook backstop. Stages a mechanical working-memory record when
+    the turn changed the tree (deduped, opt-out via auto_capture). Always exits 0."""
+    try:
+        working_capture(Path.cwd())
+    except Exception:  # noqa: BLE001 - the backstop must never break the turn
         pass
     raise typer.Exit(code=0)
 

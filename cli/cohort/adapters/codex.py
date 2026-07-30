@@ -65,6 +65,7 @@ HOOK_EVENT_MAP = {
     "pre_compact": "PreCompact",
     "post_compact": "PostCompact",
     "on_stale": "SessionStart",
+    "stop": "Stop",  # Codex's terminal turn event (same target session_end approximates to)
 }
 
 

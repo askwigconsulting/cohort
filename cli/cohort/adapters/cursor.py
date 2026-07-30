@@ -55,6 +55,7 @@ HOOK_EVENT_MAP = {
     "pre_compact": "preCompact",
     "post_compact": "sessionStart",
     "on_stale": "sessionStart",
+    "stop": "stop",  # Cursor's own per-turn stop event
 }
 
 
