@@ -28,9 +28,10 @@ GITIGNORE_CONTENT = "# Cohort machine-local bookkeeping (do not commit)\nstate/\
 COHORT_TOML_CONTENT = (
     "# Cohort project config (git-tracked, shared)\n"
     "staleness_hours = 24\n"
-    "# Opt-in: write a minimal session record at session end (fuels weekly-report\n"
-    "# and propose-improvement). Off by default; observation stays explicit.\n"
-    "auto_capture = false\n"
+    "# Write a minimal session record at session end (fuels weekly-report,\n"
+    "# propose-improvement, and the next session's recall). On by default so exit\n"
+    "# context is never lost silently; set false to opt this repo out.\n"
+    "auto_capture = true\n"
     "\n"
     "# Opt-in: let /plan add filed issues to a GitHub Projects (v2) board once\n"
     "# it has created them. project_number must be an integer; project_owner\n"
@@ -616,11 +617,12 @@ def staleness_check(cwd: Path) -> Optional[str]:
     )
 
 
-# --- session capture (opt-in observation) ------------------------------------
+# --- session capture (default-on observation, opt-out per repo) --------------
 
 
 def _read_auto_capture(paths: CohortPaths) -> bool:
-    return bool(read_project_config(paths).get("auto_capture", False))
+    # Default-on (opt-out): exit context is captured unless the repo sets false.
+    return bool(read_project_config(paths).get("auto_capture", True))
 
 
 def render_auto_capture_entry(repo: Path) -> str:
@@ -637,11 +639,11 @@ def render_auto_capture_entry(repo: Path) -> str:
 
 
 def session_capture(cwd: Path) -> Optional[str]:
-    """Write an automatic session record if this repo opted in; else do nothing.
+    """Write an automatic session record unless this repo opted out; else do nothing.
 
-    The compiled ``session_end`` hook calls this on every session end; the
-    ``auto_capture = true`` gate in ``.cohort/cohort.toml`` is what keeps
-    observation explicit per repo. Returns the relative path written, else None.
+    The compiled ``session_end`` hook calls this on every session end. Default-on
+    (``auto_capture`` absent or true); a repo that sets ``auto_capture = false`` in
+    ``.cohort/cohort.toml`` opts out. Returns the relative path written, else None.
     """
     repo = find_repo_root(cwd)
     paths = CohortPaths.for_project(repo)
@@ -652,3 +654,74 @@ def session_capture(cwd: Path) -> Optional[str]:
     filename = f"{_utc_compact()}-{_short_id()}-auto.md"
     (sessions_dir / filename).write_text(render_auto_capture_entry(repo), encoding="utf-8")
     return f"sessions/{filename}"
+
+
+_RECALL_MARKER = "session-recall.marker"
+
+SESSION_RECALL_TEMPLATE = (
+    "A prior session in this repo was auto-captured to {path} ({where}, {when}) but "
+    "its context was never carried into durable memory. If you are continuing that "
+    "work, read that record now and promote the key decisions, in-flight state, and "
+    "open questions into your persistent memory directory before proceeding — the "
+    "record is a mechanical change summary, not the reasoning, so reconstruct what "
+    "still matters. If this is unrelated work, ignore it. (Surfaced once per record.)"
+)
+
+
+def _record_meta(path: Path) -> dict[str, str]:
+    """Best-effort ``branch``/``timestamp`` from a session record's frontmatter."""
+    meta: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return meta
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 2:
+            for line in parts[1].splitlines():
+                key, sep, val = line.partition(":")
+                if sep:
+                    meta[key.strip()] = val.strip().strip("'\"")
+    return meta
+
+
+def session_recall(cwd: Path, source: str) -> Optional[str]:
+    """Return a one-time recall nudge if a fresh, not-yet-surfaced auto session
+    record exists for this repo; else None.
+
+    The exit→next-session bridge: ``session_capture`` writes a record at session
+    end, and this surfaces it at the *next* start (the only moment a model turn
+    exists) so its context can be promoted into durable memory. Silent on the
+    ``compact`` source — ``compact-recall`` owns the post-compaction path, and a
+    compaction also writes an auto record that would otherwise double-surface here.
+
+    Idempotent via a machine-local marker under ``state/`` (git-ignored): each
+    record is surfaced at most once, so ordinary session starts stay quiet."""
+    if source == "compact":
+        return None
+    repo = find_repo_root(cwd)
+    paths = CohortPaths.for_project(repo)
+    sessions_dir = paths.cohort_home / "sessions"
+    if not paths.cohort_home.exists() or not sessions_dir.is_dir():
+        return None
+    records = list(sessions_dir.glob("*.md"))
+    if not records:
+        return None
+    newest = max(records, key=lambda p: p.stat().st_mtime)
+    marker = paths.cohort_home / "state" / _RECALL_MARKER
+    already = ""
+    if marker.exists():
+        try:
+            already = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            already = ""
+    if newest.name == already:
+        return None  # this record was already surfaced once
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(newest.name, encoding="utf-8")
+    meta = _record_meta(newest)
+    where = f"branch {meta['branch']}" if meta.get("branch") else "an earlier session"
+    when = meta.get("timestamp", "recently")
+    return SESSION_RECALL_TEMPLATE.format(
+        path=f"sessions/{newest.name}", where=where, when=when
+    )

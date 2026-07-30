@@ -54,6 +54,7 @@ from .project import (
     find_repo_root,
     list_projects,
     session_capture,
+    session_recall,
     staleness_check,
 )
 from .reports import do_report
@@ -2960,6 +2961,28 @@ def compact_recall_cmd() -> None:
     to stdout, which the IDE injects into the model's context right after
     compaction. Print-only — writes nothing. Always exits 0."""
     typer.echo(COMPACT_RECALL_TEXT)
+    raise typer.Exit(code=0)
+
+
+@app.command("session-recall", hidden=True)
+def session_recall_cmd() -> None:
+    """Internal: the session_start hook target (non-compact sources). If a fresh
+    auto session record hasn't been surfaced yet, prints a one-time recall nudge
+    into the new session's context to promote its context into durable memory.
+    Print-only aside from a machine-local marker. Always exits 0."""
+    try:
+        source = ""
+        raw = "" if sys.stdin.isatty() else sys.stdin.read()
+        if raw.strip():
+            try:
+                source = str(_json.loads(raw).get("source", ""))
+            except (ValueError, TypeError):
+                source = ""
+        text = session_recall(Path.cwd(), source)
+        if text:
+            typer.echo(text)
+    except Exception:  # noqa: BLE001 - recall must never break session start
+        pass
     raise typer.Exit(code=0)
 
 

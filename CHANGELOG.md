@@ -11,6 +11,25 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`session-recall` — the exit→next-session memory bridge.** At `SessionEnd` the
+  model gets no turn and its context is already gone, so nothing model-authored can be
+  saved *at* exit — which is how a closed session lost its context. A new global
+  `session-recall` hook closes the gap from the next session's side: on a
+  non-compaction `session_start` it surfaces the prior session's auto-captured record
+  **once** and injects a nudge to promote its key decisions, in-flight state, and open
+  questions into durable memory before resuming. It writes nothing but a git-ignored
+  marker (so each record surfaces at most once) and stays silent on the `compact`
+  source, where `post-compact-memory` already owns the recall. The exit-time analog of
+  the `pre-compact-capture`/`post-compact-memory` pair.
+
+### Changed
+- **Session capture is on by default now (opt-out, was opt-in).** `auto_capture`
+  flips from `false` to `true` in the scaffold and in the read default, so a session
+  end writes its minimal record (branch, change summary, timestamp) to
+  `.cohort/sessions/` unless a repo sets `auto_capture = false`. This is what feeds the
+  new `session-recall` bridge — exit context is no longer lost silently.
+
 ## [0.9.0] — 2026-07-23 · Project memory visibility
 
 ### Added
