@@ -1,5 +1,5 @@
 ---
-description: Recurring deep adversarial audit of the whole application — rotates dimensions and subsystems, keeps a coverage ledger, and sweeps the project's critical path every run
+description: Recurring deep adversarial audit of the application and the business that ships it — rotates dimensions and subsystems, keeps a coverage ledger, and sweeps the critical path and go-to-market every run
 argument-hint: '[dimension]'
 ---
 
@@ -14,7 +14,7 @@ Run it from a coordinator tier (Fable preferred, Opus acceptable). Reviewers are
 
 A whole-codebase audit every week is either shallow or unaffordable. So `/audit` **rotates**:
 each run takes a slice of dimensions × subsystems, records what it covered, and picks the
-staler half next time. Two rules make that sound:
+staler half next time. Three rules make that sound:
 
 1. **The critical path is swept every run**, never rotated out. Each project declares its
    critical path in the ledger — the highest-stakes, hardest-to-reverse path: whatever can
@@ -22,15 +22,53 @@ staler half next time. Two rules make that sound:
    irreversible or outward action**. If a project hasn't named its critical path yet, naming
    it is the first run's job. (For a trading app it's the order path; for a CMS, the
    publish/permission path; for a harness like Cohort, the install/merge/egress path.)
-2. **Nothing else goes more than ~4 runs without a look.** The ledger is what enforces
+2. **Go-to-market is reviewed every run**, on top-tier models, and never rotated out. It is
+   the one dimension where being *right and late* still loses. See the business track below.
+3. **Nothing else goes more than ~4 runs without a look.** The ledger is what enforces
    this; without it a rotation silently becomes "the same three areas forever".
+
+## Two tracks, two evidence standards
+
+The audit reviews the **application** and the **business that ships it**. Those need
+different proof, so they are budgeted separately — a business dimension never displaces a
+code dimension from the slice, and vice versa.
+
+| | Code track | Business track |
+|---|---|---|
+| Dimensions | critical-path … ops (14) | go-to-market, business-ops |
+| Evidence | `file:line` in the deployed branch | a named artifact, or the **documented absence** of one |
+| A finding is | a defect with a trigger | an unmet obligation, an untested assumption, or a missing artifact with a deadline |
+| Always-on | critical-path | go-to-market |
+
+**"Absence" is the business track's core finding shape.** "No DPA template exists" and "no
+one owns the state filing" are the real defects, and they have no line number. A business
+reviewer must state what it searched (repo, `docs/`, the ledger, the issue tracker) and
+found nothing — an absence claimed without a search is as bad as an invented citation.
 
 ## 1. Read the ledger first
 
 Read `docs/audit/ledger.md` (create it on the first run). It records, per dimension ×
 subsystem: last audited, findings raised, findings that turned out false, and the project's
 declared critical path. Pick this run's slice from the stalest entries — plus the critical
-path, always. If the caller named a dimension, audit that and still sweep the critical path.
+path and go-to-market, always. If the caller named a dimension, audit that and still sweep
+both always-on dimensions.
+
+The ledger also declares the **business context**, without which the business track is
+guesswork. Naming it is the first run's job, same as the critical path:
+
+- **Stage** — pre-launch, private beta, paid GA. Determines which obligations are live now
+  versus scheduled.
+- **Jurisdictions** — where users are, where the entity is. Drives which privacy regimes
+  and filings apply.
+- **Entity and filings** — legal form, registered agent, and the recurring calendar
+  (annual report, franchise tax, registrations) with **who owns each**.
+- **Personal data held** — the actual categories, per store. This is the input to the
+  privacy dimension, and writing it down is usually when someone discovers a category
+  nobody knew was retained.
+- **Regulatory posture** — the claim the product does *not* make (e.g. "not a
+  broker-dealer", "not custodial", "not investment advice") and what in the code or terms
+  keeps that true. A posture with nothing enforcing it is the highest-value business finding
+  there is.
 
 ## 2. The dimensions
 
@@ -42,6 +80,7 @@ this domain), add it to the ledger as a new dimension.
 |---|---|---|
 | **critical-path** | Anything that can reach, trigger, size, or gate a high-stakes action — a payment, a production write, an access grant, a deploy, an irreversible/outward call. Caps, gates, approvals, kill switches, idempotency, the clients that talk to money/prod/third parties | A bound that holds by convention rather than construction |
 | **security** | Authz gaps, tenant isolation, secret handling and rotation, SSRF, injection, path traversal, credential custody, dependency CVEs | A check that runs on declared input rather than verified state |
+| **privacy** | Whether the **rights the law grants are actually executable in code**: access/export, deletion/erasure, correction, portability, do-not-sell/share, marketing and contact opt-out, consent capture and withdrawal. Plus retention limits, minimization, sub-processor egress, and children's/sensitive-category data | A right the terms promise that no endpoint, job or runbook can perform end to end |
 | **correctness** | Numeric/Decimal discipline, rounding direction, off-by-one, migration safety, NULL-vs-zero semantics, time/timezone/DST boundaries, encoding | A fabricated default standing in for absent data |
 | **concurrency** | Races, deadlocks, lock ordering, TOCTOU, non-atomic read-modify-write, lost updates, ordering assumptions across async or distributed work | A read-modify-write with no lock or transaction around it |
 | **resilience** | Missing timeouts, retries without backoff or idempotency, unhandled partial failure, no graceful degradation, resource exhaustion under load or error | An external call with no timeout on a path a user waits on |
@@ -58,6 +97,52 @@ this domain), add it to the ledger as a new dimension.
 **Weight actual defects highest**, then risks, then improvements. "Consider scalability" is
 worthless output; name the failure and the input that triggers it.
 
+### The privacy dimension has a trap worth naming
+
+**Deletion and retention are frequently in direct conflict**, and the conflict is the
+finding. A regulated product can be *required* to retain transaction records for years while
+a user has an absolute-sounding right to erasure. The correct answer is a documented
+lawful-basis exemption with a defined scope — not a delete that quietly skips tables, and
+not a refusal to delete anything. So the reviewer's job is to determine which of three
+states the product is in:
+
+1. Deletion is complete and the retention exemption is documented and scoped. ✅
+2. Deletion runs but silently leaves personal data behind, while the terms promise erasure.
+   **This is the defect** — it is a false promise, and it is the common case.
+3. There is no deletion path at all, and the terms promise one.
+
+State 2 hides behind a `DELETE` that looks like it works. The test is to enumerate every
+store holding personal data (from the ledger's declared categories) and ask which the
+deletion path provably reaches — including backups, logs, analytics, caches, external
+sub-processors, and any append-only or immutable ledger. **An immutable audit trail
+containing personal data is the single most common unsolved case.**
+
+The same enumeration applies to do-not-market: a suppression flag is worthless if any
+sender can read the address without consulting it. The tell is a send path that queries
+users directly rather than a view that has suppression built in.
+
+## 2b. The business track
+
+| Dimension | What it hunts | The tell |
+|---|---|---|
+| **go-to-market** | The path from "it works" to "someone pays for it": positioning and who it is *for*, the wedge, pricing and packaging against the cost to serve, activation and the first-run funnel, the top acquisition channel, competitive shifts since last run, and the **stated assumption that has never been tested against a real prospect**. Reviewed **every run, top tier.** | A strategy whose success depends on an assumption no one has tried to falsify |
+| **business-ops** | Legal, compliance, filings, purchasing. Entity standing and the filing calendar with owners; contracts (terms, privacy notice, DPAs, sub-processor list) and whether they match what the code does; regulatory posture and licensing exposure; insurance; IP assignment; vendor spend, renewal dates, auto-renew traps, single-vendor dependency, and per-seat/per-token cost growth against revenue | An obligation with a deadline and no owner |
+
+Business-track findings still need a **concrete consequence**, not a vibe: which obligation,
+which deadline, what happens on breach, and what it would cost to fix now versus later.
+"Improve positioning" is as worthless as "consider scalability".
+
+**The hard boundary on legal and regulatory work:** reviewers **identify and frame**
+questions, gather what the codebase and public sources actually say, and flag exposure. They
+**never issue a legal conclusion, a licensing determination, or a compliance sign-off** —
+and never imply the audit constitutes one. Every such finding is tagged
+**REQUIRES PROFESSIONAL OPINION**, states the specific question to put to counsel, and says
+what it would cost to be wrong. Confident-sounding fabricated regulatory advice is the one
+output of this track that could do real damage, and it is strictly worse than silence.
+`counsel`, `compliance`, `privacy-officer`, `procurement` and `finance-analyst` specialists
+are the right reviewers here — all advisory by construction — routed via `chief-of-staff`
+when a finding spans functions.
+
 ## 3. Fan out (≤20 in flight)
 
 One reviewer per dimension in the slice, disjoint so coverage is legible. Route by fit:
@@ -67,9 +152,19 @@ concurrency), Opus for the analytical ones, Sonnet or Haiku for the mechanical s
 `/consult-grok`, or `cohort engine review grok`) — cross-vendor convergence is the
 highest-confidence signal a panel produces, and a single-vendor panel shares its blind spots.
 
+**The business track routes top tier, always.** Go-to-market and business-ops are judgment
+under ambiguity with no compiler to catch a wrong answer, so they get Fable and the flagship
+external models — never a cheap tier, even when the rest of the slice is mechanical. Run
+go-to-market on **at least two vendors every run**: strategy is exactly where a single
+vendor's priors go unchallenged, and disagreement between two flagships is more informative
+than either one's confident answer. Give business-track reviewers **web search** — a
+competitive or regulatory review against a stale training cutoff is worse than none, and
+`privacy` and `business-ops` both turn on what is true *now*.
+
 Every reviewer gets: its dimension, the operational gates (scope, evidence-before-reasoning,
-adversarial self-check, verify, calibrate), and an instruction to cite `file:line` for every
-claim. **Verify against the deployed branch**, not a stale checkout.
+adversarial self-check, verify, calibrate), and its track's evidence standard — `file:line`
+for the code track, a named artifact or a **searched-and-documented absence** for the
+business track. **Verify against the deployed branch**, not a stale checkout.
 
 ## 4. Cross-examine (round two)
 
@@ -99,12 +194,27 @@ struck/downgraded section showing what the review actually contested.
    findings is being reviewed at the wrong altitude or by the wrong tier; adjust routing.
 4. Report separately anything **already actionable without a decision** — those should not
    wait for triage.
+5. **Business-track output is routed, not just filed.** A go-to-market finding is a decision
+   for the owner, and a business-ops finding with a deadline needs a named owner and that
+   date — a ticket with neither is how a filing gets missed. Anything tagged REQUIRES
+   PROFESSIONAL OPINION is listed separately as a question for counsel, never as a task an
+   engineer can close.
+6. **Keep the business context current.** Stage, jurisdictions, data categories and the
+   filing calendar all drift; re-confirm them each run, because every business finding is
+   derived from them and a stale premise invalidates the lot.
 
 ## Guardrails
 
 - **Read-only, advisory, always.** No reviewer writes. Producing changes is `/crew`'s job.
 - **Never fabricate.** A reviewer without the tools to verify says so and hands back;
-  invented `file:line` citations are the one failure that poisons the whole practice.
+  invented `file:line` citations are the one failure that poisons the whole practice. On the
+  business track the equivalent failure is an unsearched absence or an invented citation of
+  law, filing deadline, or vendor term.
+- **No legal or compliance conclusions.** The audit frames questions and flags exposure; it
+  never determines that something is compliant, lawful, or licensed. Tag every such finding
+  **REQUIRES PROFESSIONAL OPINION** with the specific question for counsel.
+- **Never touch personal data to test a privacy claim.** Prove deletion and export by
+  reading the code and schema, not by running them against real records.
 - **Egress is gated.** External engines honour the repo's opt-out and never receive secrets.
 - **Don't re-litigate the ledger.** A finding recorded as struck stays struck unless new
   evidence is cited.
