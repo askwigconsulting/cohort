@@ -42,6 +42,16 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   network for the xAI API is left up. The API key rides the environment, never argv.
   Requires `bwrap` (Linux); where it's absent the doer refuses rather than run grok
   unconfined, and `engine propose grok --agentic` remains the gated fallback.
+- **Supervision dial: `cohort autonomy` (paired → autopilot).** Choose how often Cohort
+  stops to ask, from confirm-every-step to run-up-to-the-PR. It tunes discretionary
+  friction over *cheaply-reversible* actions only, on a fixed safety floor no level can
+  lower: the human PR-merge gate, the code egress/secret/footprint gates, verification of
+  every foreign diff, and the operational hard-limits — and confirm-for-irreversible stays
+  stop-and-ask at every level. "Full autopilot, no checks" is deliberately **not** offered
+  (merge is human by construction; the honest ceiling is *autopilot up-to-PR*). The level
+  is machine-local (stored under `state/`, never synced) and fail-closed, so a pulled
+  config can never *raise* a machine's autonomy. A new `autonomy-levels` memory + a
+  session-start hook make the current level ambient to the coordinator.
 
 ### Changed
 - **Session capture is on by default now (opt-out, was opt-in).** `auto_capture`

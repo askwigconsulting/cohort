@@ -3031,6 +3031,52 @@ def working_capture_cmd() -> None:
     raise typer.Exit(code=0)
 
 
+@app.command("autonomy")
+def autonomy_cmd(
+    level: Optional[str] = typer.Argument(
+        None, help="Set the level (paired | guided | supervised | autopilot). Omit to show."
+    ),
+) -> None:
+    """Show or set the machine-local supervision level — how often Cohort stops to ask.
+
+    The level tunes discretionary friction only; it never lowers the fixed safety floor
+    (human merge, the code gates, foreign-diff verification, the hard-limits). Stored
+    per-machine (never synced), so a pulled config cannot raise it. Fail-closed."""
+    from . import autonomy
+
+    home = Path.home()
+    if level is None:
+        current = autonomy.read_autonomy_level(home)
+        typer.echo(f"autonomy: {current} — {autonomy.describe(current)}")
+        raise typer.Exit(code=0)
+    try:
+        normalized = autonomy.set_autonomy_level(home, level)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    typer.echo(f"autonomy set to {normalized} — {autonomy.describe(normalized)}")
+    raise typer.Exit(code=0)
+
+
+@app.command("autonomy-recall", hidden=True)
+def autonomy_recall_cmd() -> None:
+    """Internal: the session_start hook target. Prints the current supervision level
+    into the session so the coordinator honors it, with a reminder that the safety floor
+    is not on the dial. Print-only. Always exits 0."""
+    from . import autonomy
+
+    level = autonomy.read_autonomy_level(Path.home())
+    typer.echo(
+        f"Supervision level: {level} — {autonomy.describe(level)}. This tunes how often to "
+        "stop and ask, over cheaply-reversible steps only. It does NOT lower the fixed "
+        "floor: the human PR-merge gate, the code egress/secret/footprint gates, "
+        "verification of every foreign diff, and the operational hard-limits hold at every "
+        "level — and confirm-for-irreversible/outward/destructive stays stop-and-ask "
+        "regardless. Even 'autopilot' means run up to the PR, then stop for human merge."
+    )
+    raise typer.Exit(code=0)
+
+
 @app.command("update-check", hidden=True)
 def update_check_cmd() -> None:
     """Internal: the session_start update-advisory hook target. Always exits 0."""
