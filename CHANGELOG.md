@@ -11,6 +11,20 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`/brainstorm` — the generative sibling of `/audit`.** A recurring, rotating,
+  ledger-backed command for generating *and pursuing* new opportunities and ideas. Where
+  `/audit` finds what's wrong with what exists, `/brainstorm` finds what could exist,
+  running the same machinery (cross-vendor, coordinator-synthesized, read-only/advisory)
+  inverted for creativity: **diverge** wide across ten creative lenses (jobs-to-be-done,
+  cross-industry analogy, inversion, first-principles, constraint-shift, tech-leverage,
+  moat/network-effect, adjacent-expansion, persona, timing) with judgment deferred and
+  cross-vendor used for *divergence* not convergence; **converge** via cluster/score/
+  red-team; then **pursue** — each survivor becomes a pursuit plan (riskiest assumption →
+  cheapest validating experiment → hand-off to `/scout`, a spike, or `/crew`). Keeps
+  `docs/brainstorm/ledger.md` so it compounds run over run and never re-generates a killed
+  idea. Read-only and advisory — it points at what to build or learn next, never builds.
+
 ## [0.10.0] — 2026-07-30 · Recurring audit & the supervision dial
 
 ### Added
