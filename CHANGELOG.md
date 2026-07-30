@@ -52,6 +52,18 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   is machine-local (stored under `state/`, never synced) and fail-closed, so a pulled
   config can never *raise* a machine's autonomy. A new `autonomy-levels` memory + a
   session-start hook make the current level ambient to the coordinator.
+- **`/audit` — recurring, rotating whole-application adversarial audit.** The recurring
+  sibling of `/scout`: rather than reviewing a target you name, it audits the app you
+  *didn't*, on a staleness rotation with a coverage ledger (`docs/audit/ledger.md`) so no
+  dimension goes more than ~4 runs unlooked-at — and it sweeps the project's declared
+  **critical path** (whatever can move money, write prod data, grant access, deploy, or
+  act irreversibly) every run. Fourteen distinct dimensions, each with a diagnostic
+  "tell" (critical-path, security, correctness, concurrency, resilience, dead-ends,
+  honesty, performance, naming, docs, tests, supply-chain, accessibility, ops),
+  cross-vendor fan-out, round-two refutation, and a close-the-loop step (file tickets,
+  update the ledger, record per-dimension false-positive rate). Read-only and advisory,
+  coordinator-verified — same posture as `/scout`. Generalized from a project-specific
+  audit command so it fits any application, not one domain.
 
 ### Changed
 - **Session capture is on by default now (opt-out, was opt-in).** `auto_capture`
