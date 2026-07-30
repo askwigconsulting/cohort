@@ -146,7 +146,14 @@ def test_secret_in_task_is_refused(tmp_path: Path, _codex_installed) -> None:
         )
 
 
-def test_grok_is_refused_with_a_pointer_to_agentic_propose(tmp_path: Path) -> None:
+def test_grok_falls_back_to_agentic_propose_when_bwrap_is_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # grok now has a sandboxed CLI doer; only when bwrap is missing does it refuse and
+    # point at the gated agentic-propose path (never runs grok unconfined).
+    monkeypatch.setattr(cli_doer.shutil, "which",
+                        lambda name: "/usr/bin/grok" if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: None)
     with pytest.raises(cli_doer.DoerUnavailableError, match="propose grok --agentic"):
         cli_doer.run_doer("grok", "t", repo_root=tmp_path)
 
@@ -158,3 +165,62 @@ def test_missing_codex_cli_raises_unavailable(
     monkeypatch.setattr("cohort.engines.cli_doer.shutil.which", lambda _n: None)
     with pytest.raises(cli_doer.DoerUnavailableError, match="not installed"):
         cli_doer.run_doer("gpt", "t", repo_root=tmp_path)
+
+
+# === grok doer: bubblewrap-imposed confinement ==============================
+
+
+def test_grok_sandbox_argv_confines_to_the_worktree(tmp_path):
+    """The sandbox argv makes the worktree the only writable bind, keeps system dirs
+    read-only, isolates namespaces while keeping the network, and never puts a key on
+    argv or bind-mounts the real home read-write."""
+    wt = tmp_path / "wt"
+    argv = cli_doer._grok_sandbox_argv(wt, tmp_path / "home", ["grok", "-p", "x"])
+    joined = " ".join(argv)
+    assert f"--bind {wt} {wt}" in joined            # worktree is writable
+    assert "--ro-bind /usr /usr" in joined          # system is read-only
+    assert "--unshare-all" in joined and "--share-net" in joined  # isolated but networked
+    assert f"--bind {Path.home()} " not in joined   # the real home is never writable
+    assert "GROK_API_KEY" not in joined             # the key rides the env, not argv
+
+
+@pytest.mark.skipif(cli_doer._bwrap() is None, reason="bwrap not installed")
+def test_grok_sandbox_actually_blocks_writes_outside_the_worktree(tmp_path):
+    """Live kernel-level check: a command in the sandbox can write the worktree but not
+    /etc or the real home."""
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    inner = [
+        "sh", "-c",
+        f"touch {wt}/inside.txt; touch /etc/COHORT_HACK 2>/dev/null; "
+        f"touch {Path.home()}/COHORT_HACK 2>/dev/null; true",
+    ]
+    argv = cli_doer._grok_sandbox_argv(wt, tmp_path / "home", inner)
+    subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    assert (wt / "inside.txt").exists()               # inside the worktree: allowed
+    assert not Path("/etc/COHORT_HACK").exists()      # system dir: blocked
+    assert not (Path.home() / "COHORT_HACK").exists() # real home: blocked
+
+
+def test_grok_doer_refuses_without_bwrap(tmp_path, monkeypatch):
+    """With grok present but bwrap missing, the doer refuses rather than run grok
+    unconfined."""
+    monkeypatch.setattr(cli_doer.shutil, "which",
+                        lambda name: "/usr/bin/grok" if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: None)
+    with pytest.raises(cli_doer.DoerUnavailableError, match="bubblewrap"):
+        cli_doer.run_grok_in_worktree(tmp_path, "do a thing")
+
+
+def test_run_doer_routes_grok_to_the_grok_doer(monkeypatch):
+    """run_doer dispatches 'grok'/'xai' to the grok doer instead of refusing."""
+    called = {}
+
+    def _fake(task, **kw):
+        called["task"] = task
+        return "ok"
+
+    monkeypatch.setattr(cli_doer, "run_grok_doer", _fake)
+    assert cli_doer.run_doer("grok", "t", repo_root=Path(".")) == "ok"
+    assert cli_doer.run_doer("xai", "t", repo_root=Path(".")) == "ok"
+    assert called["task"] == "t"
