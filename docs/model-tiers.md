@@ -39,12 +39,22 @@ tier here still appears there.
 | sonnet | Sonnet | well-scoped, conventional implementation |
 | haiku | Haiku | mechanical work — renames, boilerplate, config, docs |
 
-**In-flight cap:** a coordinator keeps at most **10** agents in flight at once, across
+**In-flight cap:** a coordinator keeps at most **20** agents in flight at once, across
 all tiers. This is the single source for that number; `cohort lint` fails if any
 orchestration-canon file restates a *different* in-flight cap. It is a coordination
 discipline the coordinator maintains, not a runtime limit the system enforces (Cohort
 adds no scheduler — see DESIGN decision `[S]`); the lint only keeps the canon from
 saying two different numbers.
+
+**Per-manager cap:** in the federated (three-tier) mode, each **manager** — an ephemeral
+sub-coordinator the Director delegates a task-group to — coordinates at most **5** agents
+per manager at a time, so a Director with four managers stays within the 20 global cap.
+This is likewise the single source for that number and lint-checked for drift. The
+three-tier mode requires the platform to permit nested agents
+(`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2`, or Agent Teams for the top tier) — see
+[`orchestration-patterns.md`](orchestration-patterns.md).
+Where nesting is unavailable, the flat single-coordinator model (global cap only) is the
+fallback, and the per-manager number simply doesn't apply.
 
 **On a model-generation change:** edit the tables here and the renderer's `_MODEL_MAP`,
 then run `cohort lint` — it enumerates every canonical file whose tier names need the

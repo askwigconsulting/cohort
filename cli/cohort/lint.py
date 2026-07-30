@@ -147,8 +147,18 @@ _ORCH_CAP_RE = re.compile(
 
 
 def _declared_orch_cap(text: str) -> int | None:
-    """The in-flight cap declared in the model-tiers registry (source of truth)."""
+    """The global in-flight cap declared in the model-tiers registry (source of truth)."""
     m = re.search(r"in-flight cap[^0-9]*?(\d+)", text, re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+# A "≤N agents per manager" federated per-manager cap, wherever it is restated.
+_ORCH_MANAGER_RE = re.compile(r"(\d+)\s+agents?\s+per\s+manager", re.IGNORECASE)
+
+
+def _declared_manager_cap(text: str) -> int | None:
+    """The per-manager cap declared in the model-tiers registry (source of truth)."""
+    m = re.search(r"per-manager cap[^0-9]*?(\d+)", text, re.IGNORECASE)
     return int(m.group(1)) if m else None
 
 
@@ -166,7 +176,8 @@ def _orchestration_cap_findings(repo_root: Path) -> list[LintFinding]:
     doc = repo_root / _MODEL_TIERS_DOC
     if not doc.is_file():
         return []  # a missing registry is already reported by _model_tier_findings
-    cap = _declared_orch_cap(doc.read_text(encoding="utf-8"))
+    text = doc.read_text(encoding="utf-8")
+    cap = _declared_orch_cap(text)
     if cap is None:
         return [
             LintFinding(
@@ -175,21 +186,28 @@ def _orchestration_cap_findings(repo_root: Path) -> list[LintFinding]:
                 "no in-flight cap is declared (expected an 'in-flight cap ... N' line)",
             )
         ]
+    # The per-manager cap is optional (only the federated mode uses it); check it only
+    # when the registry declares one.
+    manager_cap = _declared_manager_cap(text)
     findings: list[LintFinding] = []
+    checks = [(_ORCH_CAP_RE, cap, "in flight", "orchestration")]
+    if manager_cap is not None:
+        checks.append((_ORCH_MANAGER_RE, manager_cap, "agents per manager", "per-manager"))
     for path in sorted((repo_root / "canonical").rglob("*.md")):
         rel = path.relative_to(repo_root).as_posix()
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-            for m in _ORCH_CAP_RE.finditer(line):
-                stated = int(m.group(1))
-                if stated != cap:
-                    findings.append(
-                        LintFinding(
-                            rel,
-                            lineno,
-                            f'states "{stated} ... in flight" but the orchestration '
-                            f"cap is {cap} (docs/model-tiers.md)",
+            for pattern, expected, phrase, label in checks:
+                for m in pattern.finditer(line):
+                    stated = int(m.group(1))
+                    if stated != expected:
+                        findings.append(
+                            LintFinding(
+                                rel,
+                                lineno,
+                                f'states "{stated} ... {phrase}" but the {label} '
+                                f"cap is {expected} (docs/model-tiers.md)",
+                            )
                         )
-                    )
     return findings
 
 

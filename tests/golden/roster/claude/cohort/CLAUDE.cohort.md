@@ -87,7 +87,10 @@ refactors) is the `/crew` protocol: a **coordinator-tier session — Fable
 decomposes the work and routes each task to the cheapest capable model tier (**fable**
 for architecture-critical or ambiguous work, **opus** for complex implementation,
 **sonnet** for well-scoped implementation, **haiku** for mechanical work), with **never
-more than 10 agents in flight at once**. A native **Opus** session orchestrates in its
+more than 20 agents in flight at once** (and, in the federated three-tier mode, **≤5 agents
+per manager** — an ephemeral sub-coordinator the Director delegates a task-group to; the
+manager verifies its group, the Director re-verifies group contracts and every foreign
+diff). A native **Opus** session orchestrates in its
 own right — not a degraded fallback — operating in Fable mode and handling fable-tier work
 itself (routed to opus); but if it judges a specific task genuinely better suited to Fable,
 it raises that to the user (task it to Fable now, save it as future work, or skip) rather

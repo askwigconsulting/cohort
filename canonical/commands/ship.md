@@ -25,9 +25,11 @@ In Claude Code, each call passes `subagent_type` matching the persona's `name` f
 In other harnesses without an Agent tool, invoke each persona's system prompt sequentially and treat their outputs as if returned in parallel — the merge phase still works.
 
 Constraints (from Claude Code's subagent model):
-- Subagents cannot spawn other subagents — do not let one persona delegate to another.
+- Subagents don't spawn other subagents **by default** (enable nesting with
+  `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=2`+). For `/ship`, keep the review flat regardless —
+  don't let one persona delegate to another; each returns its own report.
 - Each subagent gets its own context window and returns only its report to this main session.
-- If you need teammates that talk to each other instead of just reporting back, use Claude Code Agent Teams and reference these personas as teammate types (see `references/orchestration-patterns.md`).
+- If you need teammates that talk to each other instead of just reporting back, use Claude Code Agent Teams and reference these personas as teammate types (see `docs/orchestration-patterns.md`). Nested/federated `/crew` coordination is documented there.
 
 **Persona resolution.** If you've defined your own `code-reviewer`, `security-engineer`, or `test-engineer` in `.claude/agents/` or `~/.claude/agents/`, those take precedence over this plugin's versions — `/ship` picks up your customizations automatically. This is intentional: plugin subagents sit at the bottom of Claude Code's scope priority table, so user-level definitions win by design.
 
