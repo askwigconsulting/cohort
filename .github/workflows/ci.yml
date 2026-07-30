@@ -48,7 +48,11 @@ jobs:
       - name: shellcheck (CI-required; locally skip-when-absent)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          # bubblewrap is installed alongside shellcheck so the Linux job has
+          # `bwrap` available: tests/test_cli_doer.py skip-gates its grok
+          # bubblewrap-confinement test on `bwrap` being present, so without
+          # this it silently skips and confinement regressions stay green.
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck bubblewrap
           shellcheck installer/bootstrap.sh
       - name: Schema lint (zero-tolerance)
         run: cohort validate ./canonical

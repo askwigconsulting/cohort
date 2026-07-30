@@ -1,0 +1,33 @@
+# Reproducible-install pin for cohort's RUNTIME dependency closure.
+#
+# pyproject.toml holds the human-authored version ranges (the contract);
+# this file pins the exact resolved versions so `pip install -r
+# requirements.lock` reproduces the same environment on every machine and
+# every CI run, instead of "whatever satisfies the range today."
+#
+# Scope: runtime dependencies only (typer, click, PyYAML) plus their
+# transitive closure, as installed in .venv. Dev-only tooling (pytest,
+# jsonschema, coverage, etc.) is intentionally excluded — it's not part of
+# the shipped `cohort` CLI.
+#
+# Regenerate after a deliberate upgrade:
+#   pip install -e . --upgrade
+#   pip freeze | grep -v '^-e ' > requirements.lock.new
+#   # then hand-trim to the runtime closure below and diff against this file
+#
+# Direct runtime dependencies (from pyproject.toml [project.dependencies]):
+typer==0.26.7
+click==8.4.1
+PyYAML==6.0.3
+
+# Transitive dependencies of typer:
+annotated-doc==0.0.4
+rich==15.0.0
+shellingham==1.5.4
+
+# Transitive dependencies of rich:
+markdown-it-py==4.2.0
+Pygments==2.20.0
+
+# Transitive dependency of markdown-it-py:
+mdurl==0.1.2
