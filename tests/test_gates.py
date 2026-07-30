@@ -19,6 +19,7 @@ from cohort.engines.gates import (
     assert_no_secrets,
     assert_paths_allowed,
     assert_payload_within,
+    assert_total_wire_bytes,
     check_changed_paths,
     egress_opted_out,
     preflight,
@@ -526,6 +527,32 @@ def test_payload_cap_counts_utf8_bytes_not_chars() -> None:
     # A 3-char string of 3-byte code points is 9 bytes, over an 8-byte cap.
     with pytest.raises(PayloadTooLargeError):
         assert_payload_within("一一一", max_bytes=8)
+
+
+def test_total_wire_bytes_under_cap_is_allowed() -> None:
+    # task "abc" (3 bytes) + 90 file bytes = 93, under a 100-byte cap.
+    assert_total_wire_bytes(instruction_text="abc", file_bytes=90, max_bytes=100)
+
+
+def test_total_wire_bytes_over_cap_is_rejected() -> None:
+    # task "abc" (3 bytes) + 98 file bytes = 101, just over a 100-byte cap.
+    with pytest.raises(PayloadTooLargeError):
+        assert_total_wire_bytes(instruction_text="abc", file_bytes=98, max_bytes=100)
+
+
+def test_total_wire_bytes_counts_task_utf8_bytes_plus_file_bytes() -> None:
+    # "一" is 3 UTF-8 bytes; 3 + 6 file bytes = 9, over an 8-byte cap. Proves the task
+    # text is counted in bytes (not chars) and summed with the file bytes.
+    with pytest.raises(PayloadTooLargeError):
+        assert_total_wire_bytes(instruction_text="一", file_bytes=6, max_bytes=8)
+
+
+def test_total_wire_bytes_message_omits_secrets_reports_counts() -> None:
+    # The refusal names only byte counts — never file contents.
+    with pytest.raises(PayloadTooLargeError) as excinfo:
+        assert_total_wire_bytes(instruction_text="t", file_bytes=1_000, max_bytes=10)
+    message = str(excinfo.value)
+    assert "1000" in message and "10-byte" in message
 
 
 # --------------------------------------------------------------------------- #

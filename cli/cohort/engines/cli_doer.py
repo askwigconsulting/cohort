@@ -9,11 +9,32 @@ worktree, never on trusting the engine:
 * **Codex (ChatGPT)** runs under its own sandbox — ``codex exec --sandbox
   workspace-write -C <worktree>`` — so every model-generated write and shell command is
   confined to the worktree by the OS (Landlock/seccomp on Linux, Seatbelt on macOS).
+
+  **Known residual read-exposure (codex).** ``workspace-write`` confines *writes* to the
+  worktree, but it does **not** confine *reads*: codex's own read tools can read files
+  anywhere on the host filesystem and include their contents in the transcript it sends
+  to OpenAI. codex's stable ``codex exec`` interface offers no read-scoping — its
+  ``--sandbox`` choices are only ``read-only`` (which would disable the doer's whole
+  purpose), ``workspace-write`` (full-disk read), and ``danger-full-access``; ``--add-dir``
+  widens *writable* roots, not readable ones. The newer permissions-profile model can
+  express restricted read roots, but the legacy Landlock backend that ``workspace-write``
+  uses explicitly rejects it ("Restricted read-only access is not supported by the legacy
+  Linux Landlock filesystem backend"), and there is no version-stable, cross-platform
+  (Landlock/Seatbelt) way to reach a read-scoped-write mode from ``codex exec``. Pinning a
+  fix to one codex build's internal config would fail *open* — silently no-op — on any
+  other build, which is worse than a documented limitation. So the read-exposure is not
+  closed here; it is *reduced*: the child gets a scrubbed, minimal environment
+  (:func:`_scrubbed_env`), so no host secret rides the process environment, and the
+  worktree it edits holds only committed, secret-scanned files. A repo that must keep
+  files off a vendor should use the egress opt-out or the gated ``patch_proposal`` path.
 * The worktree is a **detached checkout off HEAD** — committed files only, so no
   untracked secret (a git-ignored ``.env``) is ever exposed — and it is discarded if the
   run is rejected.
 * The task **egresses to the vendor**, so the repo's egress opt-out and a secret scan on
-  the task text gate the dispatch *before* the CLI is invoked.
+  the task text gate the dispatch *before* the CLI is invoked. The CLI also reads and
+  sends the worktree's committed files, so a hard **total wire-byte cap** bounds the whole
+  exposed payload (task text + tracked file bytes) fail-closed before dispatch, alongside
+  a secret scan of those same files.
 * Nothing is committed or merged here. The coordinator reviews the diff and integrates;
   the human PR-reviews. A change that lands outside a declared footprint is surfaced.
 
@@ -47,6 +68,14 @@ from cohort.engines import patch_proposal
 # A hard wall-clock cap on an external doer run — an agentic CLI that has not finished
 # in this long is stuck or looping; kill it (the worktree is cleaned up on timeout).
 _DOER_TIMEOUT_SECONDS: float = 900.0
+
+# A hard ceiling on the TOTAL bytes a doer dispatch may expose to the vendor — the task
+# text plus every tracked worktree file the CLI reads and sends. gates.assert_payload_within
+# bounds only the prompt; this bounds the whole egress so a runaway worktree (a checked-in
+# data blob or vendored binary tree) can never be silently shipped off-machine. Generous
+# enough for an ordinary source worktree, tight enough to refuse a bulk data dump; a large
+# repo should scope the doer to a subtree or raise this deliberately.
+_DEFAULT_MAX_WIRE_BYTES: int = 5_000_000
 
 # Engine names that resolve to the Codex-sandboxed doer.
 _CODEX_ENGINE_ALIASES = frozenset({"gpt", "chatgpt", "codex", "openai"})
@@ -99,6 +128,57 @@ def _scrubbed_env(*, home: Path, passthrough: tuple[str, ...]) -> dict[str, str]
     return env
 
 
+def _tracked_worktree_files(worktree: Path) -> list[str]:
+    """List the worktree's tracked (committed) files — the exact set a vendor CLI can
+    read and egress. Shared by the secret scan and the wire-byte cap so both gate the
+    same set of files. NUL-delimited so a path with an embedded newline is not split."""
+    return [rel for rel in _git(worktree, "ls-files", "-z").split("\0") if rel]
+
+
+def _worktree_exposed_byte_count(worktree: Path) -> int:
+    """Sum the byte length of every tracked file the vendor CLI could read and send.
+
+    Fail CLOSED: a tracked file whose size cannot be measured is one whose exposure we
+    cannot bound, so raise (refuse the dispatch) rather than silently drop it from the
+    sum — an undercounted payload could slip past the wire cap. ``stat().st_size`` is the
+    on-disk byte length of the committed file in the detached checkout.
+
+    Raises:
+        gates.PayloadTooLargeError: a tracked file could not be measured; the dispatch is
+            refused because its exposed byte count cannot be bounded.
+    """
+    total = 0
+    for rel in _tracked_worktree_files(worktree):
+        try:
+            total += (worktree / rel).stat().st_size
+        except OSError as exc:
+            raise gates.PayloadTooLargeError(
+                f"worktree file {rel!r} could not be measured for the wire-byte cap "
+                f"({type(exc).__name__}); refusing to dispatch"
+            ) from exc
+    return total
+
+
+def _assert_worktree_within_wire_budget(
+    worktree: Path, task: str, *, max_wire_bytes: int
+) -> None:
+    """Refuse the dispatch if task text + tracked worktree bytes exceed the wire cap.
+
+    The vendor CLI reads and sends the worktree's committed files, so the total egress is
+    the task text plus those file bytes, not just the prompt. Counts the file bytes
+    fail-closed (an unmeasurable file refuses) and delegates the ceiling check to
+    :func:`gates.assert_total_wire_bytes`.
+
+    Raises:
+        gates.PayloadTooLargeError: the total exposed payload exceeds ``max_wire_bytes``,
+            or a tracked file could not be measured.
+    """
+    file_bytes = _worktree_exposed_byte_count(worktree)
+    gates.assert_total_wire_bytes(
+        instruction_text=task, file_bytes=file_bytes, max_bytes=max_wire_bytes
+    )
+
+
 def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
     """Secret-scan the committed files the worktree will expose to the vendor CLI.
 
@@ -113,7 +193,7 @@ def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
         gates.SecretFoundError: a tracked file carries credential-shaped content. The
             message lists only non-secret finding labels, never a matched value.
     """
-    tracked = [rel for rel in _git(worktree, "ls-files", "-z").split("\0") if rel]
+    tracked = _tracked_worktree_files(worktree)
     labels: set[str] = set()
     for rel in tracked:
         try:
@@ -326,6 +406,7 @@ def run_grok_doer(
     model: str | None = None,
     footprint: list[str] | None = None,
     timeout: float = _DOER_TIMEOUT_SECONDS,
+    max_wire_bytes: int = _DEFAULT_MAX_WIRE_BYTES,
     project_context_text: str = "",
 ) -> DoerResult:
     """Dispatch grok-cli as a write doer, natively editing a fresh worktree under a
@@ -343,6 +424,9 @@ def run_grok_doer(
         EgressBlockedError / SecretFoundError: the repo opted out of egress, or the task
             (or a committed worktree file grok would send to xAI) carries
             credential-shaped content (gated before grok runs).
+        PayloadTooLargeError: the total exposed payload (task + tracked worktree files)
+            exceeds ``max_wire_bytes``, or a tracked file could not be measured
+            fail-closed (both gated before grok runs).
     """
     if not task.strip():
         raise DoerError("task is empty")
@@ -354,7 +438,9 @@ def run_grok_doer(
     worktree = patch_proposal._create_worktree(repo_root)
     try:
         # The vendor CLI reads the worktree's committed files and sends them to xAI, so
-        # scan those contents (not just the task string) and refuse before dispatch.
+        # gate those files (not just the task string) before dispatch: bound the TOTAL
+        # exposed bytes (task + tracked files) first, then secret-scan those same files.
+        _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
         _assert_worktree_files_have_no_secrets(worktree)
         proc = run_grok_in_worktree(worktree, task, model=model, timeout=timeout)
         _git(worktree, "add", "-A")
@@ -381,6 +467,7 @@ def run_codex_doer(
     model: str | None = None,
     footprint: list[str] | None = None,
     timeout: float = _DOER_TIMEOUT_SECONDS,
+    max_wire_bytes: int = _DEFAULT_MAX_WIRE_BYTES,
     project_context_text: str = "",
 ) -> DoerResult:
     """Dispatch Codex (ChatGPT) as a write doer confined to a fresh worktree.
@@ -391,6 +478,9 @@ def run_codex_doer(
         EgressBlockedError / SecretFoundError: the repo opted out of egress, or the task
             (or a committed worktree file the CLI would send to the vendor) contains
             credential-shaped content (gated before the CLI is invoked).
+        PayloadTooLargeError: the total exposed payload (task + tracked worktree files)
+            exceeds ``max_wire_bytes``, or a tracked file could not be measured
+            fail-closed (both gated before the CLI is invoked).
     """
     if not task.strip():
         raise DoerError("task is empty")
@@ -404,7 +494,9 @@ def run_codex_doer(
     worktree = patch_proposal._create_worktree(repo_root)
     try:
         # The CLI reads the worktree's committed files and sends them to the vendor, so
-        # scan those contents (not just the task string) and refuse before dispatch.
+        # gate those files (not just the task string) before dispatch: bound the TOTAL
+        # exposed bytes (task + tracked files) first, then secret-scan those same files.
+        _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
         _assert_worktree_files_have_no_secrets(worktree)
         proc = run_codex_in_worktree(worktree, task, model=model, timeout=timeout)
 

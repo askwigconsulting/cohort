@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from cohort.engines import cli_doer, gates
+from cohort.engines import cli_doer, gates, patch_proposal
 
 
 def _init_git_repo(root: Path, files: dict[str, str]) -> None:
@@ -317,6 +317,76 @@ def test_grok_doer_refuses_without_bwrap(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_doer, "_bwrap", lambda: None)
     with pytest.raises(cli_doer.DoerUnavailableError, match="bubblewrap"):
         cli_doer.run_grok_in_worktree(tmp_path, "do a thing")
+
+
+# === doer total wire-byte cap (bounds task + tracked worktree files) =========
+
+
+def test_doer_refuses_when_total_wire_bytes_exceeds_cap(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """A worktree whose task + committed files exceed the wire cap is refused BEFORE the
+    vendor CLI is spawned (it would otherwise read and egress those files), and the
+    throwaway worktree is cleaned up. 100 file bytes + 1 task byte = 101 > 100."""
+    _init_git_repo(tmp_path, {"data.txt": "x" * 100})
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+        return real_run(cmd, **kwargs)  # git falls through to the real run
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    with pytest.raises(gates.PayloadTooLargeError):
+        cli_doer.run_doer("gpt", "t", repo_root=tmp_path, max_wire_bytes=100)
+
+    assert spawned["called"] is False        # CLI never spawned over the cap
+    assert _worktree_count(tmp_path) == 1     # worktree cleaned up on refusal
+
+
+def test_doer_allows_when_total_wire_bytes_within_cap(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """The boundary is inclusive: 100 file bytes + 1 task byte = 101 exactly at a
+    101-byte cap runs. Paired with the over-cap test, one byte of cap decides it."""
+    _init_git_repo(tmp_path, {"data.txt": "x" * 100})
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer.subprocess.run", _fake_codex({"data.txt": "y\n"})
+    )
+    result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, max_wire_bytes=101)
+    assert result.returncode == 0
+    assert result.changed_files == ["data.txt"]
+
+
+def test_assert_worktree_within_wire_budget_bites_at_the_boundary(tmp_path):
+    """Direct check that the cap refuses just over and passes exactly at the ceiling —
+    exercises the same helper both doers call."""
+    _init_git_repo(tmp_path, {"data.txt": "x" * 100})
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        with pytest.raises(gates.PayloadTooLargeError):
+            cli_doer._assert_worktree_within_wire_budget(
+                worktree, "t", max_wire_bytes=100  # 101 > 100
+            )
+        cli_doer._assert_worktree_within_wire_budget(
+            worktree, "t", max_wire_bytes=101  # 101 == 101, allowed
+        )
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+def test_worktree_byte_count_fails_closed_on_unmeasurable_file(tmp_path):
+    """A tracked file whose size cannot be measured refuses the dispatch (fail closed)
+    rather than dropping it from the sum and undercounting the exposed payload."""
+    _init_git_repo(tmp_path, {"a.txt": "hello", "b.txt": "world"})
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        (worktree / "a.txt").unlink()  # still tracked by git, but unstattable now
+        with pytest.raises(gates.PayloadTooLargeError, match="could not be measured"):
+            cli_doer._worktree_exposed_byte_count(worktree)
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
 
 
 def test_run_doer_routes_grok_to_the_grok_doer(monkeypatch):
