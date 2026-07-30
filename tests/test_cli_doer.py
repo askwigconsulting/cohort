@@ -184,6 +184,113 @@ def test_grok_sandbox_argv_confines_to_the_worktree(tmp_path):
     assert "GROK_API_KEY" not in joined             # the key rides the env, not argv
 
 
+def test_grok_sandbox_argv_ro_binds_etc_and_never_writable_home(tmp_path):
+    """/etc is read-only bound, and NO writable (--bind) target is the real home or an
+    ancestor of it — the only persistent writable path is the worktree. Pure argv check,
+    runs without bwrap installed."""
+    wt = tmp_path / "wt"
+    argv = cli_doer._grok_sandbox_argv(wt, tmp_path / "home", ["grok", "-p", "x"])
+    joined = " ".join(argv)
+    assert "--ro-bind /etc /etc" in joined  # system config is read-only
+
+    # Every writable bind must be the worktree, and never the real home or an ancestor.
+    writable_targets = [
+        argv[i + 2] for i, tok in enumerate(argv) if tok == "--bind"
+    ]
+    assert writable_targets == [str(wt)]  # the worktree is the sole writable bind
+    home = Path.home()
+    for dst in writable_targets:
+        assert Path(dst) != home                       # not the real home
+        assert not home.is_relative_to(Path(dst))      # not an ancestor of the real home
+
+
+def test_grok_env_is_scrubbed_of_host_secrets(monkeypatch, tmp_path):
+    """The grok child gets PATH/HOME and only the grok allow-list vars; a planted host
+    secret (FAKE_SECRET, AWS_SECRET_ACCESS_KEY) is dropped. Pure logic, no bwrap."""
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("GROK_API_KEY", "xai-secret-value")
+    monkeypatch.setenv("FAKE_SECRET", "leak-me")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "also-leak-me")
+
+    env = cli_doer._scrubbed_env(
+        home=tmp_path / "home", passthrough=cli_doer._GROK_ENV_PASSTHROUGH
+    )
+
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["HOME"] == str(tmp_path / "home")
+    assert env["GROK_API_KEY"] == "xai-secret-value"  # the key rides the env
+    assert "FAKE_SECRET" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+def test_codex_env_is_scrubbed_of_host_secrets(monkeypatch, tmp_path):
+    """The codex child gets PATH/HOME and only the codex allow-list vars; a planted host
+    secret is dropped."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-codex-value")
+    monkeypatch.setenv("FAKE_SECRET", "leak-me")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_should_not_ride_along")
+
+    env = cli_doer._scrubbed_env(
+        home=tmp_path / "home", passthrough=cli_doer._CODEX_ENV_PASSTHROUGH
+    )
+
+    assert env["OPENAI_API_KEY"] == "sk-codex-value"
+    assert "FAKE_SECRET" not in env
+    assert "GITHUB_TOKEN" not in env
+
+
+def test_run_grok_in_worktree_hands_grok_a_scrubbed_env_not_the_host(
+    tmp_path, monkeypatch
+):
+    """run_grok_in_worktree passes subprocess.run an explicit env= that carries
+    GROK_API_KEY but drops a planted host secret, and never puts the key on argv. Runs
+    without bwrap installed (both grok and bwrap are monkeypatched)."""
+    monkeypatch.setattr(cli_doer.shutil, "which",
+                        lambda name: "/usr/bin/grok" if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    monkeypatch.setenv("GROK_API_KEY", "xai-secret-value")
+    monkeypatch.setenv("FAKE_SECRET", "leak-me")
+
+    seen = {}
+
+    def capture(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["env"] = kwargs.get("env")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    cli_doer.run_grok_in_worktree(tmp_path / "wt", "do a thing")
+
+    env = seen["env"]
+    assert env is not None                              # explicit env, not inherited
+    assert env["GROK_API_KEY"] == "xai-secret-value"    # key rides the (scrubbed) env
+    assert "FAKE_SECRET" not in env                     # host secret dropped
+    assert "xai-secret-value" not in " ".join(seen["cmd"])  # and never on argv
+
+
+def test_worktree_secret_scan_refuses_committed_secret_before_dispatch(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """A committed file carrying a credential is refused (SecretFoundError) BEFORE the
+    vendor CLI is spawned — the CLI would otherwise read and egress it — and the
+    throwaway worktree is cleaned up."""
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+        return real_run(cmd, **kwargs)  # git ls-files/etc fall through to the real run
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    with pytest.raises(gates.SecretFoundError):
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+
+    assert spawned["called"] is False          # CLI never saw the secret
+    assert _worktree_count(tmp_path) == 1       # worktree cleaned up on refusal
+
+
 @pytest.mark.skipif(cli_doer._bwrap() is None, reason="bwrap not installed")
 def test_grok_sandbox_actually_blocks_writes_outside_the_worktree(tmp_path):
     """Live kernel-level check: a command in the sandbox can write the worktree but not

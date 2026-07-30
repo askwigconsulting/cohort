@@ -508,6 +508,57 @@ def test_agentic_proposal_honors_the_egress_optout_before_exploring(
     assert explored["called"] is False
 
 
+def test_agentic_proposal_scans_the_outbound_instruction_for_secrets_before_exploring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The assembled agentic instruction embeds the task (and project_context) and is the
+    # actual outbound payload. A secret in it must be caught by the SAME pre-egress
+    # secret scan the one-shot path runs — BEFORE any network I/O — never POSTed to the
+    # engine. Mirrors the egress-opt-out test: exploration must not start.
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    explored = {"called": False}
+
+    def _must_not_run(*_a, **_k):
+        explored["called"] = True
+        raise AssertionError("exploration must not start when a secret is present")
+
+    monkeypatch.setattr(patch_proposal.xai_agentic, "run_agentic", _must_not_run)
+
+    with pytest.raises(gates.SecretFoundError):
+        patch_proposal.propose_patch_agentic(
+            "grok",
+            "please wire up the client with API_KEY = 'abcdef123456'",
+            repo_root=tmp_path,
+            allowed_footprint=["src"],
+        )
+    assert explored["called"] is False
+
+
+def test_agentic_proposal_scans_project_context_for_secrets_before_exploring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The project_context is embedded into the outbound instruction too, so a secret
+    # there is equally caught before egress — not just one in the task.
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    explored = {"called": False}
+
+    def _must_not_run(*_a, **_k):
+        explored["called"] = True
+        raise AssertionError("exploration must not start when a secret is present")
+
+    monkeypatch.setattr(patch_proposal.xai_agentic, "run_agentic", _must_not_run)
+
+    with pytest.raises(gates.SecretFoundError):
+        patch_proposal.propose_patch_agentic(
+            "grok",
+            "improve the config",
+            repo_root=tmp_path,
+            allowed_footprint=["src"],
+            project_context_text="Conventions:\nSECRET = 'abcdef123456'\n",
+        )
+    assert explored["called"] is False
+
+
 def test_agentic_proposal_gate_rejects_out_of_footprint_and_cleans_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -88,6 +88,62 @@ def test_cursor_agent_advisory_readonly():
     assert "readonly: true" in agent.content.decode()
 
 
+# === is_doer backstop: codex/cursor must key the strip off is_doer, never ===
+# === off `advisory` alone (a mis-scoped scope:global agent must still be   ===
+# === forced read-only — the Claude/Copilot renderers already have this    ===
+# === killing test; codex/cursor did not).                                 ===
+
+
+def _doer_agent_fm(*, scope: str, advisory: bool, name: str = "deployer"):
+    return {
+        "name": name, "kind": "agent", "scope": scope, "description": "A doer.",
+        "targets": ["all"], "department": "Ops", "topology": "specialist",
+        "advisory": advisory, "tools": ["read", "edit", "bash"],
+    }
+
+
+def test_codex_forces_readonly_for_a_non_project_agent_even_if_non_advisory():
+    from cohort.adapters.codex import render_agent as codex_render_agent
+    from cohort.ir import build_ir
+
+    # A mis-scoped global agent that somehow carries advisory:false must still
+    # render read-only — the renderer keys off is_doer, not advisory alone.
+    ir = build_ir(_doer_agent_fm(scope="global", advisory=False), "b")
+    text = codex_render_agent(ir).content.decode()
+    assert 'sandbox_mode = "read-only"' in text
+
+
+def test_codex_project_doer_omits_sandbox_readonly():
+    from cohort.adapters.codex import render_agent as codex_render_agent
+    from cohort.ir import build_ir
+
+    # A real scope:project doer keeps write access: no read-only sandbox.
+    ir = build_ir(_doer_agent_fm(scope="project", advisory=False), "b")
+    text = codex_render_agent(ir).content.decode()
+    assert 'sandbox_mode = "read-only"' not in text
+
+
+def test_cursor_forces_readonly_for_a_non_project_agent_even_if_non_advisory():
+    from cohort.adapters.cursor import render_agent as cursor_render_agent
+    from cohort.ir import build_ir
+
+    # Same backstop as Claude/Codex: a mis-scoped global agent with
+    # advisory:false must still render readonly:true, not readonly:false.
+    ir = build_ir(_doer_agent_fm(scope="global", advisory=False), "b")
+    text = cursor_render_agent(ir).content.decode()
+    assert "readonly: true" in text
+
+
+def test_cursor_project_doer_renders_readonly_false():
+    from cohort.adapters.cursor import render_agent as cursor_render_agent
+    from cohort.ir import build_ir
+
+    # A real scope:project doer renders readonly:false (write retained).
+    ir = build_ir(_doer_agent_fm(scope="project", advisory=False), "b")
+    text = cursor_render_agent(ir).content.decode()
+    assert "readonly: false" in text
+
+
 # === model tier (#143): Codex/Cursor omit it gracefully, no compile break ===
 
 
