@@ -93,8 +93,7 @@ Two-phase fix. Coordinator verified every diff and re-ran the suite as the integ
 - #9 signed-update tip-only → docstring clarified: FF-only means the signed tip's hash chain commits to `HEAD..tip`, so tip verification is sound (doc fix, not a vuln). **Fixed.**
 - LOW: egress fail-open on ≥4-space indent (`^[ \t]*`), stale `compile.py`/`quarantine.py` "no-op" docstrings, dangling-symlink uninstall (readlink-string match only), `.git` Windows trailing-dot dodge (`rstrip(". ")`), `session_recall` mislabel + `working_capture` marker-before-record, `preserve`-absent SCAFFOLD → `True`, lint hyphenated `in-flight`. **Fixed.**
 
-**Tracked follow-ups (filed, not in either PR):**
-- `executor.apply` global-manifest lock (completes #4 for the main manifest writer).
-- #11 bwrap-confinement test is CI-skip-gated where `bwrap` absent.
-- Deferred consult-gpt items: codex reads outside its worktree; a *user-local* grok binary path isn't bwrap-jailed; no wire-byte cap on egress payload.
-- Floating deps remain (`PyYAML`/`pytest` unbounded; no lockfile) — supply-chain, next rotation.
+**Tracked follow-ups (filed as issues, not in either PR):**
+- **#215** — `executor.apply`/`install.py`/`adopt.py` global-manifest lock (completes #4 for the main manifest writer).
+- **#216** — deferred consult-gpt egress items: codex reads outside its worktree; a *user-local* grok binary path isn't bwrap-jailed; no wire-byte cap on egress payload.
+- **#217** — supply-chain: pin floating deps (`PyYAML`/`pytest`), add a lockfile, un-skip the bwrap-confinement CI test (audit #11).
