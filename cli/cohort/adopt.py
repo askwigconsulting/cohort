@@ -18,7 +18,7 @@ from typing import Any, Optional
 from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths, resolve_mode
 from .loader import load_artifact
-from .manifest import load_manifest
+from .manifest import load_manifest, manifest_lock
 from .project import _short_id, _utc_compact
 from .roster import READONLY_TOOLS_LIST, reject_control_chars
 from .schema import NAME_PATTERN, validate_frontmatter
@@ -250,12 +250,16 @@ def _rollback_failed_adopt(
         )
     except Exception:  # noqa: BLE001 - staging rebuild is best-effort during rollback
         pass
-    manifest = load_manifest(gpaths.manifest)
-    if manifest is not None:
-        kept = [op for op in manifest.ops if op.dest != str(path)]
-        if len(kept) != len(manifest.ops):
-            manifest.ops = kept
-            manifest.persist(gpaths.manifest)
+    # #215: re-read and drop the ghost op under the lock so a concurrent recompile
+    # can't lose this removal (or have its own ops lost to a stale-read overwrite).
+    # ``state/`` exists — adopt runs against an already-installed global office.
+    with manifest_lock(gpaths.manifest):
+        manifest = load_manifest(gpaths.manifest)
+        if manifest is not None:
+            kept = [op for op in manifest.ops if op.dest != str(path)]
+            if len(kept) != len(manifest.ops):
+                manifest.ops = kept
+                manifest.persist(gpaths.manifest)
     if path.is_symlink():
         path.unlink()  # the link this attempt placed
     if not path.exists():
@@ -283,10 +287,15 @@ def _recompile_global_claude(home: Path, source: Path, gpaths: CohortPaths, kind
         prune_stale=True, fresh_dests=planned_dests(gpaths, [result]), fresh_ides={"claude"},
     )
     if subset is not None:
-        fresh = load_manifest(gpaths.manifest)
-        if fresh is not None:
-            fresh.roster = subset
-            fresh.persist(gpaths.manifest)
+        # #215: re-read and persist the roster under the lock so this RMW can't lose
+        # (or be lost against) a concurrent writer. ``do_install`` above released its
+        # own lock before returning, so this is a fresh, non-nested acquisition;
+        # ``state/`` exists (the install just wrote the manifest).
+        with manifest_lock(gpaths.manifest):
+            fresh = load_manifest(gpaths.manifest)
+            if fresh is not None:
+                fresh.roster = subset
+                fresh.persist(gpaths.manifest)
     return report
 
 

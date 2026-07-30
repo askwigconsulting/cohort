@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, TextIO
@@ -36,7 +37,7 @@ from .install_model import (
     OpType,
     resolve_mode,
 )
-from .manifest import Manifest, load_manifest, new_install_id, now_iso
+from .manifest import Manifest, load_manifest, manifest_lock, new_install_id, now_iso
 
 
 class UsageError(Exception):
@@ -285,6 +286,35 @@ def do_install(
     output, so a compile that yields nothing for an IDE never wipes it.
     """
     paths = CohortPaths(home)
+    # #215: the load→apply→persist cycle below must be one atomic unit against a
+    # concurrent ``cohort`` writer — a stale read would drop the other process's op
+    # records, leaving a placed file with no reversal entry (the reversibility
+    # invariant breaks). Hold the manifest lock across the whole cycle, but only
+    # once ``state/`` exists: a fresh ``cohort init`` creates ``state/`` mid-apply,
+    # so ``<manifest>.lock`` has no parent dir to be created in yet, and init is a
+    # single bootstrap process where the race can't arise (the deliberate
+    # (a)-bootstrap gap ``manifest_lock`` documents). ``state/`` present ⇒ racy (b).
+    guard = manifest_lock(paths.manifest) if paths.manifest.parent.exists() else nullcontext()
+    with guard:
+        return _do_install(
+            paths, selection, mode, force, source, dry_run, prune_stale, fresh_dests, fresh_ides
+        )
+
+
+def _do_install(
+    paths: CohortPaths,
+    selection: list[str],
+    mode: str,
+    force: bool,
+    source: Path,
+    dry_run: bool,
+    prune_stale: bool,
+    fresh_dests: Optional[set[str]],
+    fresh_ides: Optional[set[str]],
+) -> InstallReport:
+    """The ``do_install`` cycle body. The caller owns the manifest lock (see
+    ``do_install``), so this must never re-acquire it — ``manifest_lock`` is not
+    reentrant, and a second acquisition on the same path would self-deadlock."""
     existing = load_manifest(paths.manifest)
     # The shared global home's mode is fixed by the first install; a later --copy
     # applies to new per-IDE ops and never re-flips the shared canonical (decision
@@ -427,16 +457,22 @@ def do_install_project(repo: Path, mode: Optional[str] = None) -> dict[str, Any]
     result = compile_ide(ppaths.cohort_home, ide, scope="project", project_tier=True)
     write_staging(ppaths, result)
     plan = scan_staging_ops(ppaths, ide, mode)
-    manifest = load_manifest(ppaths.manifest)
-    pf = preflight(plan, manifest, force=False)
-    if pf.clobbers:
-        raise ClobberRefused(pf.clobbers)
-    stale = _stale_placed_ops(
-        manifest, planned_dests(ppaths, [result]), {ide} if result.staged else set(), ppaths
-    )
-    outcomes = apply(plan, ppaths, manifest, force=False)
-    stale_outcomes = _remove_stale_placed(stale, manifest, ppaths)
-    manifest.persist(ppaths.manifest)
+    # #215: guard the load→apply→persist cycle so a concurrent project recompile
+    # can't lose op records (a placed file with no reversal entry). ``state/`` exists
+    # here (the ``manifest.exists()`` check above raised otherwise), so this is
+    # always the racy (b) path. The lock is released before the ``refresh_*`` calls
+    # below, which each take it themselves — it is not reentrant.
+    with manifest_lock(ppaths.manifest):
+        manifest = load_manifest(ppaths.manifest)
+        pf = preflight(plan, manifest, force=False)
+        if pf.clobbers:
+            raise ClobberRefused(pf.clobbers)
+        stale = _stale_placed_ops(
+            manifest, planned_dests(ppaths, [result]), {ide} if result.staged else set(), ppaths
+        )
+        outcomes = apply(plan, ppaths, manifest, force=False)
+        stale_outcomes = _remove_stale_placed(stale, manifest, ppaths)
+        manifest.persist(ppaths.manifest)
     # Keep the project-context specialist roster in step with what's placed (#24),
     # so ChiefOfStaff — which reads the always-@imported project context — routes
     # to the current set.
@@ -576,9 +612,19 @@ def do_uninstall(
         )
 
     if selection:
-        outcomes: list[OpOutcome] = []
-        for ide in selection:
-            outcomes += reverse_slice(manifest, paths, ide).outcomes
+        # #215: guard the slice reverse's load→mutate→persist cycle so a concurrent
+        # recompile can't lose the ops removed here (or vice-versa). Re-read the
+        # manifest under the lock so the mutation starts from the current state. The
+        # full-uninstall path below is deliberately NOT locked: ``reverse_full`` tears
+        # down ``state/`` itself, and the in-``state/`` ``<manifest>.lock`` would keep
+        # that dir from being swept clean.
+        with manifest_lock(paths.manifest):
+            manifest = load_manifest(paths.manifest)
+            if manifest is None:  # torn down under us between the load above and here
+                return UninstallReport(ides=selection, records=[], dry_run=False, nothing=True)
+            outcomes: list[OpOutcome] = []
+            for ide in selection:
+                outcomes += reverse_slice(manifest, paths, ide).outcomes
         return UninstallReport(
             ides=selection, records=_outcomes_to_records(outcomes), dry_run=False
         )
