@@ -1,0 +1,12 @@
+# Code owners for cohort.
+#
+# @askwigconsulting (jonathan@askwig.com) owns everything. With
+# "Require review from Code Owners" enabled on the master branch protection,
+# this makes their approval the required sign-off for any pull request that
+# needs a review — the human gate that governs what lands.
+#
+# Note: only the owner account has write access to this repo, so only the owner
+# (and agents acting under that account) can approve or merge. This file makes
+# that ownership explicit and enforceable via branch protection.
+
+* @askwigconsulting
