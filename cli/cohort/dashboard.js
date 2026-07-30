@@ -349,6 +349,13 @@ function renderProjectsOverview(s) {
     const wire = document.createElement("span");
     wire.className = "meta" + (p.wiring === "present" ? "" : " warn");
     wire.textContent = p.wiring === "present" ? "wired" : ("wiring " + p.wiring); foot.appendChild(wire);
+    const cm = p.claude_memory || { count: 0, updated: null };
+    const mem = document.createElement("span"); mem.className = "meta";
+    mem.textContent = "🧠 " + cm.count + " memor" + (cm.count === 1 ? "y" : "ies");
+    mem.title = cm.updated
+      ? "Claude Code agent memory (written by the model at compaction) — newest write " + cm.updated.replace("T", " ")
+      : "Claude Code agent memory (written by the model at compaction) — none yet";
+    foot.appendChild(mem);
     el.appendChild(foot);
 
     const focus = () => { if (!focused) { FOCUS = String(p.index); refresh(); } };

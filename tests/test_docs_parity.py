@@ -12,7 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from cohort.adapters.claude import _MODEL_MAP
-from cohort.lint import _model_tier_findings, _parse_tier_table, canonical_counts, run_lint
+from cohort.lint import (
+    _declared_orch_cap,
+    _model_tier_findings,
+    _orchestration_cap_findings,
+    _parse_tier_table,
+    canonical_counts,
+    run_lint,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -72,6 +79,41 @@ def test_lint_flags_model_tier_doc_drift_from_code(tmp_path):
     )
     findings = _model_tier_findings(tmp_path)
     assert any("disagrees with renderer" in f.message for f in findings)
+
+
+def test_orchestration_cap_is_declared_and_canon_agrees():
+    # The ≤10 cap is restated across the orchestration canon; docs/model-tiers.md
+    # is its single source, and every canon restatement must match it. The repo is
+    # clean on this check right now (all say 10), so a future edit that changes one
+    # file's cap without the others fails CI.
+    doc = (REPO / "docs" / "model-tiers.md").read_text(encoding="utf-8")
+    assert _declared_orch_cap(doc) == 10
+    assert _orchestration_cap_findings(REPO) == []
+
+
+def test_lint_flags_a_canon_cap_that_drifts_from_the_registry(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "model-tiers.md").write_text(
+        "## Agent model tier\n\n**In-flight cap:** at most **10** agents in flight.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "canonical" / "commands").mkdir(parents=True)
+    # One canon file drifts to a different cap than the registry declares.
+    (tmp_path / "canonical" / "commands" / "crew.md").write_text(
+        "coordinator keeps no more than 8 agents in flight at once.\n", encoding="utf-8"
+    )
+    findings = _orchestration_cap_findings(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].file == "canonical/commands/crew.md"
+    assert '"8 ... in flight"' in findings[0].message and "cap is 10" in findings[0].message
+
+
+def test_orchestration_cap_missing_declaration_is_flagged(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "model-tiers.md").write_text("no cap here\n", encoding="utf-8")
+    (tmp_path / "canonical").mkdir()
+    findings = _orchestration_cap_findings(tmp_path)
+    assert len(findings) == 1 and "no in-flight cap is declared" in findings[0].message
 
 
 def test_lint_ignores_spaced_non_count_phrases(tmp_path):
