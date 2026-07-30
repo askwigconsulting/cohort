@@ -14,7 +14,7 @@ import os
 import subprocess
 import tempfile
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -551,8 +551,8 @@ def do_init(
     repo: Path, source: Path, dry_run: bool, force: bool = False, home: Optional[Path] = None,
 ) -> dict[str, Any]:
     paths = CohortPaths.for_project(repo)
-    existing = load_manifest(paths.manifest)
     if dry_run:
+        existing = load_manifest(paths.manifest)
         with tempfile.TemporaryDirectory() as tmp:
             plan = _build_init_plan(paths, repo, source, Path(tmp))
             pf = preflight(plan, existing, force=force)
@@ -564,9 +564,18 @@ def do_init(
             "summary": {"applied": statuses.count("applied"), "skipped": statuses.count("skipped")},
         }
     plan = _build_init_plan(paths, repo, source, paths.compiled / "project")
-    manifest = existing or _new_manifest()
-    outcomes = apply(plan, paths, manifest, force=force)
-    manifest.persist(paths.manifest)
+    # #4: guard the load→apply→persist cycle so a concurrent writer can't lose op
+    # records (a placed file with no reversal entry). Conditional (bootstrap-(a)):
+    # a fresh ``cohort init`` creates ``state/`` mid-apply via the plan's
+    # ``MKDIR state/`` op, so ``<manifest>.lock`` has no parent dir yet and
+    # ``file_lock``'s ``os.open`` would raise; re-init of an existing project is the
+    # racy (b) case and takes the real lock. Re-read ``existing`` INSIDE the guard so
+    # the mutation starts from the current on-disk manifest, not a stale copy.
+    guard = manifest_lock(paths.manifest) if paths.manifest.parent.exists() else nullcontext()
+    with guard:
+        manifest = load_manifest(paths.manifest) or _new_manifest()
+        outcomes = apply(plan, paths, manifest, force=force)
+        manifest.persist(paths.manifest)
     _register_project(home if home is not None else Path.home(), repo)  # multi-project registry
     return {
         "action": "init", "dry_run": False,

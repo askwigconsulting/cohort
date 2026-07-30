@@ -19,7 +19,7 @@ from typing import Any, Optional
 from .compile import CompileError, compile_ide, planned_dests, write_staging
 from .install import do_install, parse_ide, prompt_ide_selection
 from .install_model import IDES, CohortPaths, resolve_mode
-from .manifest import load_manifest
+from .manifest import load_manifest, manifest_lock
 from .update import _git
 
 COMPANY_REMOTE = "company"
@@ -75,11 +75,17 @@ def effective_roster(home: Path, flag_value: Optional[str], source: Path) -> Opt
 def persist_roster(home: Path, roster: Optional[list[str]]) -> None:
     """Record the tailored subset on the manifest so update-recompiles honor it."""
     paths = CohortPaths(home)
-    manifest = load_manifest(paths.manifest)
-    if manifest is None:
-        return  # nothing installed yet; the install that follows will persist
-    manifest.roster = list(roster) if roster else None
-    manifest.persist(paths.manifest)
+    # #4: guard the load→set-roster→persist cycle so a concurrent recompile can't
+    # lose this roster update (nor have its own ops lost to our stale-read
+    # overwrite); the load is INSIDE the lock. Unconditional — this is always the
+    # racy (b) path: both callers run only after a non-dry ``do_install``, so
+    # ``state/`` exists, and if nothing is installed we return before persisting.
+    with manifest_lock(paths.manifest):
+        manifest = load_manifest(paths.manifest)
+        if manifest is None:
+            return  # nothing installed yet; the install that follows will persist
+        manifest.roster = list(roster) if roster else None
+        manifest.persist(paths.manifest)
 
 
 # --- company office wiring ------------------------------------------------------

@@ -23,7 +23,7 @@ from .executor import ClobberRefused, ReverseResult, _reverse_place_ops
 from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths
 from .loader import load_artifact, load_artifact_text
-from .manifest import load_manifest, now_iso
+from .manifest import load_manifest, manifest_lock, now_iso
 from .roster import READONLY_TOOLS_LIST, reject_control_chars
 from .schema import KIND_DIRS, NAME_PATTERN, validate_frontmatter
 
@@ -341,8 +341,18 @@ def do_remove_specialist(repo: Path, home: Path, name: str, dry_run: bool) -> di
     for leftover in (staged, scaffold_stage):
         if leftover.exists():
             leftover.unlink()  # derived staging is a non-op artifact
-    manifest.ops = [op for op in manifest.ops if op.dest not in targets]
-    manifest.persist(paths.manifest)
+    # #4: re-read and persist the op-removal under the lock so a concurrent
+    # recompile/refresh can't lose this removal (nor have its own ops lost to our
+    # stale-read overwrite). Unconditional racy (b): ``state/`` exists — the
+    # ``manifest is None`` guard above returned otherwise. ``targets`` is derived
+    # from ``name`` (not the earlier stale manifest), so re-filtering the freshly
+    # read ops is correct. Released before ``refresh_project_context`` below, which
+    # takes the lock itself — it is not reentrant.
+    with manifest_lock(paths.manifest):
+        fresh = load_manifest(paths.manifest)
+        if fresh is not None:  # torn down (deinit) between the load above and here
+            fresh.ops = [op for op in fresh.ops if op.dest not in targets]
+            fresh.persist(paths.manifest)
     # Drop the removed name from the project-context specialist roster (#24) —
     # remove-specialist doesn't route through do_install_project, so refresh here.
     from .project import refresh_project_context  # lazy: avoid import cycle
