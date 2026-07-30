@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-30 · Recurring audit & the supervision dial
+
 ### Added
 - **Working memory: continuous mid-session capture, consolidated at boundaries.**
   Context is now staged *as you work*, not only at a boundary. A new global
@@ -77,6 +79,18 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   `~/.copilot/copilot-instructions.md`, mirroring Claude's `CLAUDE.md` shape. `command`
   is a declared parity gap (Copilot CLI has no user-definable slash-command mechanism).
   Same experimental, doc-cited-but-not-live-verified caveat Codex/Cursor already carry.
+- **`/audit` gains a business track (go-to-market, business-ops, privacy).** The audit now
+  reviews the **business that ships the app**, not only the code, as a second track with
+  its own evidence standard — a named artifact or a *searched-and-documented absence*
+  rather than `file:line` — budgeted separately so a business dimension never displaces a
+  code one. Adds a **privacy** code dimension (are the rights the law grants actually
+  executable in code — deletion, export, opt-out — with the deletion-vs-retention trap
+  named), **go-to-market** and **business-ops** business dimensions, a business-context
+  declaration in the ledger (stage, jurisdictions, entity/filings, data categories,
+  regulatory posture), top-tier + web-search + two-vendor routing for the business track,
+  and a hard **"no legal/compliance conclusions"** guardrail — reviewers frame questions
+  and tag anything needing counsel `REQUIRES PROFESSIONAL OPINION`, and never touch personal
+  data to test a privacy claim. Go-to-market joins critical-path as always-on.
 
 ### Changed
 - **Session capture is on by default now (opt-out, was opt-in).** `auto_capture`
@@ -96,6 +110,46 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   `docs/model-tiers.md` and lint-checked for drift. New `docs/orchestration-patterns.md`
   documents when federation pays off (and when it's over-engineering); `ship.md`'s stale
   "subagents cannot spawn subagents" is corrected to "not by default."
+- **Supply-chain hardened.** Floating dependency ranges are bounded (`PyYAML<7`,
+  `pytest<10`, `jsonschema<5`) so a build can't silently pull a new major; a new
+  `requirements.lock` pins the exact runtime dependency closure for reproducible installs
+  (`pyproject.toml` keeps the human-authored ranges); `jsonschema` moved to dev-only (it
+  was an unused runtime dependency); and CI installs `bubblewrap` so the grok
+  confinement test runs instead of silently skip-gating.
+
+### Fixed
+- **Concurrent-writer races on all JSON state, closed with a portable file lock.** A new
+  stdlib `filelock.py` (an `O_CREAT|O_EXCL` lock-file — the one primitive identical on
+  POSIX and Windows — plus a stale-steal and an acquire timeout) serializes every
+  read-modify-write on the project registry, the install manifest, and the sync
+  quarantine. Two concurrent `cohort` processes could previously lose a manifest op record
+  (a placed file with no reversal entry, breaking uninstall) or drop a quarantine record
+  (a gate bypass). The manifest guard covers **every** RMW call site, with the fresh-`init`
+  bootstrap and the full-uninstall `state/` teardown correctly left unlocked.
+- **Sync quarantine no longer trusts a just-pulled artifact.** `cohort update` seeds the
+  trusted-office baseline from the *pre-pull* tree, so an artifact a pull introduces is
+  measured as a delta and withheld for review instead of folded into "trusted" on the
+  first update.
+- **Python 3.10 floor restored.** The `tomllib` import (3.11+) is guarded with a minimal
+  fallback parser, so `cohort` no longer crashes at import on the declared 3.10 floor; CI
+  now tests 3.10 alongside 3.12.
+- Assorted audit LOW fixes: the egress opt-out fails *closed* on any indentation and a
+  `.git` path can't be smuggled past the gate via a Windows trailing-dot segment;
+  dangling-symlink uninstall only removes a link still pointing at our recorded target;
+  `SCAFFOLD` ops default to preserved on pre-migration manifests; `--force` hook restore
+  replaces a diverged entry instead of duplicating it (it would otherwise fire twice).
+
+### Security
+- **External-engine egress hardened (audit-driven).** Closed several ways an external
+  engine could over-expose data. The grok bubblewrap doer no longer inherits the full host
+  environment or unrestricted network — `_scrubbed_env` passes only a minimal per-engine
+  allow-list, and base-URL userinfo credentials are stripped. The agentic patch-proposer
+  now runs the code-enforced secret scan like every other egress path. A doer's committed
+  worktree files are secret-scanned (fail-closed) and bounded by a total **wire-byte cap**
+  before dispatch, so a runaway worktree can't be shipped off-machine unbounded. Verified
+  in the same pass: a *user-local* grok binary is still bubblewrap-jailed (the wrap is on
+  the command, not the binary path), and codex's inability to restrict *reads* under
+  `workspace-write` is documented as a known residual rather than papered over.
 
 ## [0.9.0] — 2026-07-23 · Project memory visibility
 
@@ -478,7 +532,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/askwigconsulting/cohort/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/askwigconsulting/cohort/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/askwigconsulting/cohort/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/askwigconsulting/cohort/compare/v0.6.0...v0.7.0
