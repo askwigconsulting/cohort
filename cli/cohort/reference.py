@@ -48,7 +48,7 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
     ("Manage Cohort · cohort …", [
         ("cli", "dashboard", "Local web UI (mission control) at 127.0.0.1:8787."),
         ("cmd", "update"),
-        ("cli", "recompile --ide X", "Recompile the office into an IDE (claude/codex/cursor)."),
+        ("cli", "recompile --ide X", "Recompile the office into an IDE (claude/codex/cursor/copilot)."),
         ("cli", "status", "Read-only view of the install."),
         ("cli", "my-office sync", "Sync your personal layer to/from a git remote."),
         ("cli", "my-office review·approve", "Review & approve quarantined pulled artifacts."),

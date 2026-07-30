@@ -18,6 +18,7 @@ from typing import Optional
 from .adapters.base import FIELD_CONTRACTS, FieldContract
 from .adapters.claude import MERGE_SUBDIR, ClaudeRenderer, MarkerError, StagedFile
 from .adapters.codex import CodexRenderer
+from .adapters.copilot import CopilotRenderer
 from .adapters.cursor import CursorRenderer
 from .executor import path_hash
 from .install_model import CohortPaths, Op, OpType
@@ -37,6 +38,7 @@ RENDERERS: dict = {
     "claude": ClaudeRenderer(),
     "codex": CodexRenderer(),
     "cursor": CursorRenderer(),
+    "copilot": CopilotRenderer(),
 }
 
 
