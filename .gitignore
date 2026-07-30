@@ -22,3 +22,6 @@ htmlcov/
 # not source; canonical lives under canonical/. Force-add if ever intentional.
 /.cohort/
 /.claude/
+
+# Dashboard server runtime log (written by `cohort dashboard`) — local state, not source.
+/.dashboard.log
