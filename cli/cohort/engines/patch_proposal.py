@@ -417,24 +417,34 @@ def propose_patch_agentic(
     model: str | None = None,
     max_iterations: int = 24,
     max_tokens: int = 4096,
+    max_prompt_bytes: int = 200_000,
     transcript_path: Path | None = None,
 ) -> ProposalOutcome:
     """Like :func:`propose_patch`, but the engine EXPLORES the repo read-only to gather
     its own context, then proposes the patch — instead of working from a packaged bundle.
 
-    The trust boundary is unchanged. Exploration is read-only and egress-gated per read
-    (a sensitive path or secret-bearing file is refused, its bytes never returned) and
-    recorded to ``transcript_path`` for audit; the repo's egress opt-out is checked
-    before the loop starts. The proposed patch is then parsed, re-gated (footprint +
-    sensitive class + secret backstop), and applied only inside an isolated worktree by
-    the same :func:`_gate_and_apply` the one-shot path uses — ``repo_root``'s working
-    tree is never touched, nothing is committed, and the change still faces the
+    The trust boundary is unchanged. The assembled agentic instruction — the outbound
+    payload, which embeds the task and the repo's project_context — faces the **same
+    pre-egress gates the one-shot path runs, before any network call**: egress opt-out →
+    payload byte-bound → secret scan (via :func:`gates.preflight`, fail-closed, first
+    failure wins). Exploration is then read-only and egress-gated per read (a sensitive
+    path or secret-bearing file is refused, its bytes never returned) and recorded to
+    ``transcript_path`` for audit. The proposed patch is finally parsed, re-gated
+    (footprint + sensitive class + secret backstop), and applied only inside an isolated
+    worktree by the same :func:`_gate_and_apply` the one-shot path uses — ``repo_root``'s
+    working tree is never touched, nothing is committed, and the change still faces the
     coordinator's verification and the human PR review.
+
+    Args:
+        max_prompt_bytes: Hard UTF-8 byte cap on the outbound agentic instruction,
+            mirroring the one-shot :func:`propose_patch` bound (default 200,000).
 
     Raises:
         ProposalError: unknown/unauthorised engine, empty footprint, or the loop hit a
             bound (iterations/output) before producing a final patch.
         EgressBlockedError: the repo opted out of external-engine egress.
+        PayloadTooLargeError: the assembled instruction exceeds ``max_prompt_bytes``.
+        SecretFoundError: the task or project_context contains credential-shaped content.
         GateError: a proposed path or content was blocked (fail closed).
         EngineError / PatchError: the engine failed, or its patch could not be
             parsed/applied.
@@ -446,12 +456,23 @@ def propose_patch_agentic(
             "scope (pass at least one repo-relative path or glob)"
         )
 
-    # Egress opt-out is checked before any exploration begins; the per-read gate inside
-    # the loop then covers each file the engine touches.
-    gates.require_egress_allowed(project_context_text)
+    # Gate the OUTBOUND agentic instruction before any network I/O, exactly as the
+    # one-shot propose_patch gates its prompt: egress opt-out → payload bound → secret
+    # scan, fail-closed with the first failure winning (gates.preflight enforces this
+    # order). The instruction embeds the task AND the repo's project_context, so both
+    # are byte-bounded and secret-scanned here — not just the egress opt-out. Without
+    # this, a secret in the task or context would be POSTed to the engine unscanned,
+    # breaking the module invariant. The per-read gate inside the loop separately covers
+    # each file the engine chooses to read during exploration.
+    instruction = _assemble_agentic_task(task, allowed_footprint, project_context_text)
+    gates.preflight(
+        prompt=instruction,
+        project_context_text=project_context_text,
+        max_bytes=max_prompt_bytes,
+    )
 
     result = xai_agentic.run_agentic(
-        _assemble_agentic_task(task, allowed_footprint, project_context_text),
+        instruction,
         root=repo_root,
         model=model or spec.model_tiers.get("flagship") or spec.model_tiers.get("cheap"),
         engine_name=engine_name,
