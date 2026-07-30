@@ -65,18 +65,22 @@ class PayloadTooLargeError(GateError):
 # optional whitespace around the separators so a hand-typed variant still trips it.
 # These are the *reliable* signals — deny wins over allow (fail closed).
 #
-# Both markers are **line-anchored**: the directive must be the entire line (module a
-# few leading spaces and trailing whitespace), not merely a substring anywhere in the
-# file. A whole-file substring search would let ordinary prose weaponize the marker —
-# e.g. "do NOT add cohort:egress=allow" contains the literal allow-marker text inside
-# a *prohibition*, and a substring match would misread that sentence as permission and
-# disable the opt-out. Requiring the marker to stand alone on its own line makes that
-# negation-proof: prose that merely *mentions* a marker never matches.
+# Both markers are **line-anchored**: the directive must be the entire line (modulo
+# any leading indentation and trailing whitespace), not merely a substring anywhere in
+# the file. A whole-file substring search would let ordinary prose weaponize the
+# marker — e.g. "do NOT add cohort:egress=allow" contains the literal allow-marker
+# text inside a *prohibition*, and a substring match would misread that sentence as
+# permission and disable the opt-out. Requiring the marker to stand alone on its own
+# line makes that negation-proof: prose that merely *mentions* a marker never matches.
+# Leading whitespace is unbounded (not just 0-3 spaces) so a marker indented under a
+# list item or inside a fenced code block still trips — deny must never fail open on
+# indentation, and an over-eager allow match just falls back to the safer deny-wins
+# default.
 _EGRESS_DENY_MARKER_RE = re.compile(
-    r"^\s{0,3}cohort\s*:\s*egress\s*=\s*deny\s*$", re.IGNORECASE | re.MULTILINE
+    r"^[ \t]*cohort\s*:\s*egress\s*=\s*deny\s*$", re.IGNORECASE | re.MULTILINE
 )
 _EGRESS_ALLOW_MARKER_RE = re.compile(
-    r"^\s{0,3}cohort\s*:\s*egress\s*=\s*allow\s*$", re.IGNORECASE | re.MULTILINE
+    r"^[ \t]*cohort\s*:\s*egress\s*=\s*allow\s*$", re.IGNORECASE | re.MULTILINE
 )
 
 # Heading that opens an "## Egress" policy section. Merely *having* such a section is
@@ -440,10 +444,14 @@ def _classify_sensitive(path: str) -> str | None:
 
     if any(seg.lower().startswith(".env") for seg in segments):
         return "dotenv"
-    if any(seg.lower() == ".git" for seg in segments):
+    if any(seg.lower().rstrip(". ") == ".git" for seg in segments):
         # Any `.git` directory, not just the repo-root one — a nested `.git`
         # (a submodule's git dir, or one under any subdirectory) is just as
         # sensitive as the top-level one and must not be written blindly.
+        # Windows silently strips trailing dots/spaces from a path segment when
+        # opening it, so `.git.` or `.git ` opens the very same directory as
+        # `.git` — strip them before the equality check so that dodge doesn't
+        # slip a write past this gate.
         return "git-internal"
     if "hooks" in (seg.lower() for seg in segments):
         return "git-hook"

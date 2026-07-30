@@ -419,8 +419,8 @@ def test_corrupt_state_fails_closed_withholding_every_gated(tmp_path):
 # The threat: `cohort update` fast-forwards the office SOURCE; on a shared office
 # remote an update pull can introduce a gated artifact (hook/memory/skill/agent)
 # that a recompile auto-activates with no review. These tests exercise the office
-# store + compile's office withhold gate directly (the recorder wiring into
-# `cohort update` is the documented residual gap in quarantine.py).
+# store + compile's office withhold gate directly (the recorder is wired into
+# `cohort update` via record_office_delta + seed_office_baseline_if_absent).
 
 _OFFICE_HOOK_MARKER = "cohort office-evil-pulled-action"
 _OFFICE_HOOK = (

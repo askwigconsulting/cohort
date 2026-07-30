@@ -10,18 +10,21 @@ Cohort-owned and reversed on deinit.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 import tempfile
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from .executor import apply, preflight, reverse_full
+from .filelock import LockTimeout, file_lock
 from .frontmatter import dump_frontmatter
 from .install_model import CohortPaths, Op, OpType
 from .loader import load_artifact
-from .manifest import Manifest, load_manifest, new_install_id, now_iso
+from .manifest import Manifest, load_manifest, manifest_lock, new_install_id, now_iso
 
 PROJECT_IDE = "project"
 IMPORT_LINE = "@import ../.cohort/project_context.md"
@@ -238,8 +241,15 @@ def refresh_project_context(
     if dry_run:
         pf = preflight([merge_op], manifest, force=force)
         return {"changed": pf.classified[0].status.value != "satisfied"}
-    outcomes = apply([merge_op], paths, manifest, force=force)
-    manifest.persist(paths.manifest)
+    # Serialize the load→apply→persist cycle: re-read the manifest under the lock
+    # so a concurrent recompile/refresh in another process can't have its ops lost
+    # to a stale-read overwrite. ``state/`` exists here (the manifest loaded above).
+    with manifest_lock(paths.manifest):
+        manifest = load_manifest(paths.manifest)
+        if manifest is None:  # deinited under us between the check and the lock
+            return {"error": "not a Cohort project (run cohort init)"}
+        outcomes = apply([merge_op], paths, manifest, force=force)
+        manifest.persist(paths.manifest)
     return {
         "changed": any(o.status == "applied" for o in outcomes),
         "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
@@ -276,8 +286,13 @@ def refresh_claude_imports(
     src = _stage(paths.compiled / "project", "claude-import.txt", claude_import_block(has_memory))
     merge_op = Op(OpType.MERGE.value, PROJECT_IDE, str(claude_md),
                   src=src, strategy="block", preserve=False)
-    outcomes = apply([merge_op], paths, manifest, force=force)
-    manifest.persist(paths.manifest)
+    # Serialize the load→apply→persist cycle (see ``refresh_project_context``).
+    with manifest_lock(paths.manifest):
+        manifest = load_manifest(paths.manifest)
+        if manifest is None:  # deinited under us between the check and the lock
+            return {"error": "not a Cohort project (run cohort init)"}
+        outcomes = apply([merge_op], paths, manifest, force=force)
+        manifest.persist(paths.manifest)
     return {
         "changed": any(o.status == "applied" for o in outcomes),
         "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
@@ -375,6 +390,30 @@ def _registry_path(home: Path) -> Path:
     return CohortPaths.for_global(home).state / "projects.json"
 
 
+@contextmanager
+def _registry_lock(home: Path) -> Iterator[None]:
+    """Serialize a read-modify-write of the shared project registry across
+    processes — e.g. a terminal ``cohort init`` (``_register_project``) racing the
+    dashboard's ``list_projects`` self-heal. Wraps the whole ``_read_registry`` →
+    ``_write_registry`` cycle, so those primitives stay lock-free (no reentrancy).
+
+    The registry is advisory bookkeeping ("a write failure never fails
+    init/deinit"), so this preserves that fail-open contract: if the state dir
+    can't be created, or the lock can't be acquired within its timeout, the body
+    still runs unlocked rather than failing the caller."""
+    path = _registry_path(home)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        yield  # can't even create state/ → advisory op proceeds best-effort
+        return
+    try:
+        with file_lock(path):
+            yield
+    except LockTimeout:
+        yield  # contention beyond timeout → advisory op proceeds unlocked
+
+
 def _read_registry(home: Path) -> list[str]:
     import json
 
@@ -391,7 +430,11 @@ def _write_registry(home: Path, projects: list[str]) -> None:
     path = _registry_path(home)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"projects": projects}, indent=2), encoding="utf-8")
+        # Atomic write (tmp + os.replace), mirroring Manifest.persist, so a reader
+        # or a stolen-lock writer never observes a half-written registry.
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"projects": projects}, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
         pass  # advisory state; a write failure never fails init/deinit
 
@@ -403,16 +446,18 @@ def _register_project(home: Path, repo: Path) -> None:
     resolved = str(Path(repo).resolve())
     if Path(resolved) == gp.home.resolve():
         return
-    projects = _read_registry(home)
-    if resolved not in projects:
-        projects.append(resolved)
-        _write_registry(home, projects)
+    with _registry_lock(home):
+        projects = _read_registry(home)
+        if resolved not in projects:
+            projects.append(resolved)
+            _write_registry(home, projects)
 
 
 def _deregister_project(home: Path, repo: Path) -> None:
     resolved = str(Path(repo).resolve())
-    projects = [p for p in _read_registry(home) if p != resolved]
-    _write_registry(home, projects)
+    with _registry_lock(home):
+        projects = [p for p in _read_registry(home) if p != resolved]
+        _write_registry(home, projects)
 
 
 def _project_wiring(repo: Path) -> str:
@@ -441,7 +486,23 @@ def list_projects(home: Path, include_private: bool = True) -> list[dict[str, An
     cross-project activity/scorecards) pass ``include_private=False`` to withhold
     any project that set ``[dashboard].private = true``."""
     gp = CohortPaths.for_global(home)
-    original = _read_registry(home)
+    # Hold the registry lock across the read and the self-heal write so a
+    # concurrent init/deinit can't have its update clobbered by our prune (or
+    # vice versa). The lock is advisory/fail-open (see ``_registry_lock``).
+    with _registry_lock(home):
+        original = _read_registry(home)
+        kept, out = _scan_registry(home, gp, original, include_private)
+        if kept != original:
+            _write_registry(home, kept)
+    return out
+
+
+def _scan_registry(
+    home: Path, gp: CohortPaths, original: list[str], include_private: bool,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """The pure scan behind :func:`list_projects`: classify each registered path
+    into ``(kept, surfaced)``. Split out so the registry lock in ``list_projects``
+    wraps exactly the read → scan → self-heal-write cycle."""
     kept: list[str] = []
     out: list[dict[str, Any]] = []
     for p in original:
@@ -463,9 +524,7 @@ def list_projects(home: Path, include_private: bool = True) -> list[dict[str, An
             "specialists": len(specialists),
             "wiring": _project_wiring(repo),
         })
-    if kept != original:
-        _write_registry(home, kept)
-    return out
+    return kept, out
 
 
 def resolve_registered(home: Path, index: Any) -> Optional[Path]:
@@ -705,7 +764,11 @@ def session_recall(cwd: Path, source: str) -> Optional[str]:
     sessions_dir = paths.cohort_home / "sessions"
     if not paths.cohort_home.exists() or not sessions_dir.is_dir():
         return None
-    records = list(sessions_dir.glob("*.md"))
+    # Only auto-captured records (``*-auto.md`` from ``session_capture``) — never a
+    # human ``cohort snapshot`` (``<ts>-<id>.md``), whose rich hand-authored entry the
+    # nudge's "auto-captured" wording would misdescribe and which needs no promotion
+    # prompt (the human already curated it).
+    records = list(sessions_dir.glob("*-auto.md"))
     if not records:
         return None
     newest = max(records, key=lambda p: p.stat().st_mtime)
@@ -800,13 +863,17 @@ def working_capture(cwd: Path) -> Optional[str]:
                 return None  # tree unchanged since the last capture — skip the duplicate
         except OSError:
             pass
-    marker.write_text(digest, encoding="utf-8")
     branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "unknown"
     fm = dump_frontmatter(
         [("timestamp", now_iso()), ("branch", branch), ("kind", "auto")]
     ).rstrip("\n")
     filename = f"{_utc_compact()}-{_short_id()}-auto.md"
+    # Write the record FIRST, then stamp the dedup marker. If a crash lands between
+    # the two, the marker is simply not advanced, so the next turn re-captures (a
+    # harmless duplicate) rather than the marker recording a record that was never
+    # written (a silently lost turn).
     (d / filename).write_text(f"{fm}\n## Changed\n```\n{changed}\n```\n", encoding="utf-8")
+    marker.write_text(digest, encoding="utf-8")
     return f"state/{_WORKING_DIRNAME}/{filename}"
 
 

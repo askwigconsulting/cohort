@@ -41,6 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
+from .filelock import file_lock
 from .loader import load_artifact
 from .manifest import now_iso
 
@@ -211,15 +212,19 @@ def add_pending(
     Propagates ``QuarantineStateError`` if the existing state is unreadable."""
     if not state_dir.exists():  # nothing installed → nothing durably recordable
         return []
-    existing = load_pending(state_dir)
-    seen = {a.key for a in existing}
-    added: list[QuarantinedArtifact] = []
-    for a in artifacts:
-        if a.key not in seen:
-            seen.add(a.key)
-            added.append(a)
-    if added:
-        _save_pending(state_dir, existing + added)
+    # Serialize the load→union→save cycle across processes: a lost add here is a
+    # gate bypass (an unreviewed gated artifact never recorded, so never withheld),
+    # not merely lost bookkeeping. state_dir exists, so its lock-file can be created.
+    with file_lock(_state_file(state_dir)):
+        existing = load_pending(state_dir)
+        seen = {a.key for a in existing}
+        added: list[QuarantinedArtifact] = []
+        for a in artifacts:
+            if a.key not in seen:
+                seen.add(a.key)
+                added.append(a)
+        if added:
+            _save_pending(state_dir, existing + added)
     return added
 
 
@@ -245,36 +250,41 @@ def approve(
 
     Propagates ``QuarantineStateError`` on a corrupt file (refuse rather than reset).
     """
-    pending = load_pending(state_dir)
-    if approve_all:
-        cleared = sorted({a.name for a in pending})
-        _save_pending(state_dir, [])
-        return cleared
+    if not state_dir.exists():
+        return []  # nothing installed → nothing to clear
+    # Serialize the load→clear→save cycle so a concurrent ``add_pending`` (a fresh
+    # pull recording new gated artifacts) can't be clobbered by this approve's save.
+    with file_lock(_state_file(state_dir)):
+        pending = load_pending(state_dir)
+        if approve_all:
+            cleared = sorted({a.name for a in pending})
+            _save_pending(state_dir, [])
+            return cleared
 
-    to_clear: set[tuple[str, str, str]] = set()
-    cleared_names: set[str] = set()
-    for selector in names or ():
-        name, sep, hash_prefix = selector.partition("@")
-        matches = [a for a in pending if a.name == name]
-        if sep:
-            matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
-        if not matches:
-            continue  # unknown name/hash → no-op, matches prior behavior
-        distinct_hashes = sorted({a.content_hash for a in matches})
-        if len(distinct_hashes) > 1:
-            shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
-            raise AmbiguousApprovalError(
-                f"{name!r} matches {len(distinct_hashes)} pending records with "
-                f"different content — refusing to guess which was reviewed. "
-                f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
-            )
-        for a in matches:
-            to_clear.add(a.key)
-            cleared_names.add(a.name)
+        to_clear: set[tuple[str, str, str]] = set()
+        cleared_names: set[str] = set()
+        for selector in names or ():
+            name, sep, hash_prefix = selector.partition("@")
+            matches = [a for a in pending if a.name == name]
+            if sep:
+                matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
+            if not matches:
+                continue  # unknown name/hash → no-op, matches prior behavior
+            distinct_hashes = sorted({a.content_hash for a in matches})
+            if len(distinct_hashes) > 1:
+                shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
+                raise AmbiguousApprovalError(
+                    f"{name!r} matches {len(distinct_hashes)} pending records with "
+                    f"different content — refusing to guess which was reviewed. "
+                    f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
+                )
+            for a in matches:
+                to_clear.add(a.key)
+                cleared_names.add(a.name)
 
-    if to_clear:
-        _save_pending(state_dir, [a for a in pending if a.key not in to_clear])
-    return sorted(cleared_names)
+        if to_clear:
+            _save_pending(state_dir, [a for a in pending if a.key not in to_clear])
+        return sorted(cleared_names)
 
 
 def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
@@ -288,14 +298,18 @@ def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
     differ in bytes (a correctly-filed hook and a misfiled duplicate) both survive.
     Collapsing them by ``(kind, name)`` would drop one live record and re-activate
     an unreviewed artifact on the next recompile."""
+    if not state_dir.exists():
+        return []  # nothing installed → nothing to reconcile
     live: set[tuple[str, str, str]] = {
         (kind, name, content_hash(path))
         for kind, name, path in all_gated_in(my_root / "canonical")
     }
-    pending = load_pending(state_dir)
-    survivors = [a for a in pending if a.key in live]
-    if len(survivors) != len(pending):
-        _save_pending(state_dir, survivors)
+    # Serialize the load→prune→save cycle against a concurrent add/approve.
+    with file_lock(_state_file(state_dir)):
+        pending = load_pending(state_dir)
+        survivors = [a for a in pending if a.key in live]
+        if len(survivors) != len(pending):
+            _save_pending(state_dir, survivors)
     return survivors
 
 
@@ -318,15 +332,13 @@ def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
 #     shipped office, quarantine nothing) from an UPDATE pull (baseline present ⇒
 #     quarantine only identities not yet trusted — the delta).
 #
-# RESIDUAL GAP (documented): compile READS this store (``office_pending_keys``) and
-# withholds, exactly as it reads ``pending_keys`` for my-office. Populating it is
-# ``record_office_delta`` and clearing it is ``approve_office`` — the office analogue
-# of what ``my-office sync``/``approve`` call. Wiring those into ``cohort update`` and
-# a ``cohort office approve`` command lives in ``cli.py``, which is outside this
-# change's footprint. Until that wiring lands the store stays empty, so the compile
-# gate is a safe no-op: it never breaks a first install or an update, it simply does
-# not yet withhold in production. The mechanism and its fail-closed behavior are
-# complete and tested here.
+# The office store is populated by ``record_office_delta`` (wired into ``cohort update``,
+# after ``seed_office_baseline_if_absent`` records the pre-pull tree as the trusted
+# baseline) and cleared by ``approve_office`` — the office analogue of what
+# ``my-office sync``/``approve`` call. compile READS this store (``office_pending_keys``)
+# and withholds, exactly as it reads ``pending_keys`` for my-office. The gate is LIVE: an
+# update pull that introduces a gated office artifact (hook/memory/skill/agent) is
+# withheld from the recompile until reviewed. The mechanism is fail-closed and tested here.
 
 _OFFICE_BASELINE_FILE = "office_baseline.json"
 
@@ -398,40 +410,80 @@ def _current_office_identities(office_root: Path) -> dict[tuple[str, str, str], 
     return out
 
 
+def seed_office_baseline_if_absent(state_dir: Path, office_root: Path) -> bool:
+    """Establish the trusted-office baseline from the CURRENT office tree if no
+    baseline exists yet; return whether it seeded.
+
+    This is the #6 fix. ``cohort update`` calls it BEFORE the fast-forward merge,
+    so ``office_root`` is still the *pre-pull* (install-time shipped) tree. Seeding
+    the baseline from that tree means the pull that follows is measured as a delta
+    against what the user already had — so an auto-activating hook/memory/skill/
+    agent the pull *introduces* is quarantined by ``record_office_delta``, not
+    silently folded into "trusted".
+
+    Without this pre-pull seed, ``record_office_delta``'s own first-call branch
+    (baseline absent ⇒ trust the current set) would run AFTER the merge and adopt
+    the freshly-pulled set — trusting a shared-remote artifact introduced in that
+    same pull, unreviewed. The residual trust boundary is deliberate: the pre-pull
+    tree is the source the user chose to clone and install from, so trusting it is
+    correct; only *later* pulls from a shared remote are gated.
+
+    No-op returning False if a baseline already exists (never clobbers it) or
+    ``state_dir`` is absent. A present-but-corrupt baseline is treated as existing
+    (returns False); ``record_office_delta`` then raises ``QuarantineStateError``
+    and the caller fails closed."""
+    if not state_dir.exists():
+        return False
+    with file_lock(_office_state_file(state_dir)):
+        if _office_baseline_file(state_dir).exists():
+            return False
+        _save_office_baseline(state_dir, _current_office_identities(office_root).keys())
+    return True
+
+
 def record_office_delta(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
     """Record the gated-office artifacts an update pull introduced (the office
     analogue of ``my-office sync``'s ``add_pending``). Call this AFTER an office
     ``cohort update`` pull, before recompiling.
 
-    First call (no baseline ⇒ first install): establish the baseline as the shipped
-    office's gated set — trusted, so *nothing* is quarantined and the first install is
-    never blocked. Returns []. Later calls: every current gated identity not already
-    in the baseline is the pull delta; each is added to the office pending store
-    (withheld by compile until approved) and folded into the baseline so it is not
-    re-flagged (it stays withheld via the pending store, not by re-detection). Returns
-    the newly-quarantined records. No-op returning [] if ``state_dir`` is absent."""
+    Normal flow: ``cohort update`` calls ``seed_office_baseline_if_absent`` on the
+    PRE-pull tree first, so by the time this runs a baseline always exists and the
+    just-pulled set is measured against the install-time shipped set. Every current
+    gated identity not already in the baseline is the pull delta; each is added to
+    the office pending store (withheld by compile until approved) and folded into
+    the baseline so it is not re-flagged (it stays withheld via the pending store,
+    not by re-detection). Returns the newly-quarantined records.
+
+    Fallback (no baseline — a direct caller/test that did not pre-seed): establish
+    the baseline as the current gated set and quarantine nothing. This trusts the
+    current tree, which is only safe when it is the install-time shipped set; the
+    #6 fix (``seed_office_baseline_if_absent``, called pre-pull) is what guarantees
+    that in the real update path. No-op returning [] if ``state_dir`` is absent."""
     if not state_dir.exists():
         return []
     current = _current_office_identities(office_root)
-    baseline = load_office_baseline(state_dir)
-    if baseline is None:  # first install: trust the shipped office, quarantine nothing
-        _save_office_baseline(state_dir, current.keys())
-        return []
-    new_identities = [ident for ident in current if ident not in baseline]
-    if not new_identities:
-        return []
-    existing = load_office_pending(state_dir)
-    seen = {a.key for a in existing}
-    added: list[QuarantinedArtifact] = []
-    for kind, name, chash in new_identities:
-        if (kind, name, chash) not in seen:
-            added.append(QuarantinedArtifact(kind, name, chash, now_iso()))
-    if added:
-        _save_office_pending(state_dir, existing + added)
-        # Fold the delta into the baseline: it is now "seen" and must not be
-        # re-detected on the next pull. It remains WITHHELD by the pending store
-        # until approved — approval removes it from pending, not from the baseline.
-        _save_office_baseline(state_dir, set(baseline) | set(current))
+    # Serialize the baseline+pending read-modify-write against a concurrent office
+    # approve/reconcile/seed (all anchor on the same office lock file).
+    with file_lock(_office_state_file(state_dir)):
+        baseline = load_office_baseline(state_dir)
+        if baseline is None:  # unseeded fallback: trust the current set, quarantine nothing
+            _save_office_baseline(state_dir, current.keys())
+            return []
+        new_identities = [ident for ident in current if ident not in baseline]
+        if not new_identities:
+            return []
+        existing = load_office_pending(state_dir)
+        seen = {a.key for a in existing}
+        added: list[QuarantinedArtifact] = []
+        for kind, name, chash in new_identities:
+            if (kind, name, chash) not in seen:
+                added.append(QuarantinedArtifact(kind, name, chash, now_iso()))
+        if added:
+            _save_office_pending(state_dir, existing + added)
+            # Fold the delta into the baseline: it is now "seen" and must not be
+            # re-detected on the next pull. It remains WITHHELD by the pending store
+            # until approved — approval removes it from pending, not from the baseline.
+            _save_office_baseline(state_dir, set(baseline) | set(current))
     return added
 
 
@@ -444,35 +496,39 @@ def approve_office(
     guess. Approving removes the record from the office pending store; the identity
     stays in the baseline, so it is not re-quarantined and compile places it next
     recompile. Propagates ``QuarantineStateError`` on a corrupt store."""
-    pending = load_office_pending(state_dir)
-    if approve_all:
-        cleared = sorted({a.name for a in pending})
-        _save_office_pending(state_dir, [])
-        return cleared
+    if not state_dir.exists():
+        return []  # nothing installed → nothing to clear
+    # Serialize the load→clear→save cycle against a concurrent record_office_delta.
+    with file_lock(_office_state_file(state_dir)):
+        pending = load_office_pending(state_dir)
+        if approve_all:
+            cleared = sorted({a.name for a in pending})
+            _save_office_pending(state_dir, [])
+            return cleared
 
-    to_clear: set[tuple[str, str, str]] = set()
-    cleared_names: set[str] = set()
-    for selector in names or ():
-        name, sep, hash_prefix = selector.partition("@")
-        matches = [a for a in pending if a.name == name]
-        if sep:
-            matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
-        if not matches:
-            continue
-        distinct_hashes = sorted({a.content_hash for a in matches})
-        if len(distinct_hashes) > 1:
-            shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
-            raise AmbiguousApprovalError(
-                f"{name!r} matches {len(distinct_hashes)} pending office records with "
-                f"different content — refusing to guess which was reviewed. "
-                f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
-            )
-        for a in matches:
-            to_clear.add(a.key)
-            cleared_names.add(a.name)
-    if to_clear:
-        _save_office_pending(state_dir, [a for a in pending if a.key not in to_clear])
-    return sorted(cleared_names)
+        to_clear: set[tuple[str, str, str]] = set()
+        cleared_names: set[str] = set()
+        for selector in names or ():
+            name, sep, hash_prefix = selector.partition("@")
+            matches = [a for a in pending if a.name == name]
+            if sep:
+                matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
+            if not matches:
+                continue
+            distinct_hashes = sorted({a.content_hash for a in matches})
+            if len(distinct_hashes) > 1:
+                shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
+                raise AmbiguousApprovalError(
+                    f"{name!r} matches {len(distinct_hashes)} pending office records with "
+                    f"different content — refusing to guess which was reviewed. "
+                    f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
+                )
+            for a in matches:
+                to_clear.add(a.key)
+                cleared_names.add(a.name)
+        if to_clear:
+            _save_office_pending(state_dir, [a for a in pending if a.key not in to_clear])
+        return sorted(cleared_names)
 
 
 def office_reconcile(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
@@ -480,9 +536,13 @@ def office_reconcile(state_dir: Path, office_root: Path) -> list[QuarantinedArti
     (deleted or superseded by a later pull), returning survivors. Office analogue of
     ``reconcile`` — but against ``office_root/canonical``, never ``my/canonical`` (the
     reason the two stores are separate)."""
+    if not state_dir.exists():
+        return []  # nothing installed → nothing to reconcile
     live = set(_current_office_identities(office_root))
-    pending = load_office_pending(state_dir)
-    survivors = [a for a in pending if a.key in live]
-    if len(survivors) != len(pending):
-        _save_office_pending(state_dir, survivors)
+    # Serialize the load→prune→save cycle against a concurrent record/approve.
+    with file_lock(_office_state_file(state_dir)):
+        pending = load_office_pending(state_dir)
+        survivors = [a for a in pending if a.key in live]
+        if len(survivors) != len(pending):
+            _save_office_pending(state_dir, survivors)
     return survivors

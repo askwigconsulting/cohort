@@ -25,6 +25,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # Exercise the declared floor (3.10, no tomllib) as well as the
+        # version CI historically pinned (3.12).
+        python-version: ["3.10", "3.12"]
     env:
       # Python UTF-8 mode: make open()/read_text()/subprocess text decoding default
       # to UTF-8 so the suite isn't at the mercy of the Windows console codepage
@@ -34,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           # Cache pip's download cache, keyed on the dependency spec, so the
           # per-run `pip install` reuses wheels instead of re-downloading. The
           # Windows job is the long pole; this shaves the install step on both.

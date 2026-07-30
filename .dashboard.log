@@ -1,0 +1,33 @@
+cohort dashboard: http://127.0.0.1:8787/ (Ctrl-C to stop)
+----------------------------------------
+Exception occurred during processing of request from ('127.0.0.1', 53014)
+Traceback (most recent call last):
+  File "/usr/lib64/python3.14/socketserver.py", line 697, in process_request_thread
+    self.finish_request(request, client_address)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/socketserver.py", line 362, in finish_request
+    self.RequestHandlerClass(request, client_address, self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib64/python3.14/socketserver.py", line 766, in __init__
+    self.handle()
+    ~~~~~~~~~~~^^
+  File "/usr/lib64/python3.14/http/server.py", line 496, in handle
+    self.handle_one_request()
+    ~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/usr/lib64/python3.14/http/server.py", line 484, in handle_one_request
+    method()
+    ~~~~~~^^
+  File "/home/jonathanaskwig/Code/cohort/cli/cohort/dashboard.py", line 618, in do_GET
+    self._send_json(200, state)
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "/home/jonathanaskwig/Code/cohort/cli/cohort/dashboard.py", line 582, in _send_json
+    self._send(code, json.dumps(payload).encode("utf-8"), "application/json")
+    ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/jonathanaskwig/Code/cohort/cli/cohort/dashboard.py", line 579, in _send
+    self.wfile.write(body)
+    ~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/lib64/python3.14/socketserver.py", line 845, in write
+    self._sock.sendall(b)
+    ~~~~~~~~~~~~~~~~~~^^^
+BrokenPipeError: [Errno 32] Broken pipe
+----------------------------------------

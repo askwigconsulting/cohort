@@ -403,6 +403,19 @@ def test_session_recall_none_when_no_records(repo, home):
     assert project.session_recall(repo, source="startup") is None
 
 
+def test_session_recall_ignores_a_human_snapshot(repo, home):
+    # LOW fix: recall globs only auto records now, so a human `cohort snapshot`
+    # (<ts>-<id>.md, no -auto suffix) is never surfaced with the "auto-captured"
+    # nudge text — that text would misdescribe a hand-authored entry.
+    init(repo, home)
+    project.do_snapshot(repo, dry_run=False, refresh_index=False)  # a human snapshot
+    assert project.session_recall(repo, source="startup") is None
+    # An actual auto record still surfaces.
+    project.session_capture(repo)
+    surfaced = project.session_recall(repo, source="startup")
+    assert surfaced is not None and "auto-captured" in surfaced
+
+
 # === working memory (mid-session scratch, consolidated at boundaries) ========
 
 
@@ -432,6 +445,30 @@ def test_working_capture_stages_only_when_the_tree_changed(repo, home):
     assert first is not None and first.startswith("state/working-memory/")
     # dedupe: the same tree state must not stage a second, duplicate record
     assert project.working_capture(repo) is None
+
+
+def test_working_capture_writes_record_before_marker(repo, home, monkeypatch):
+    # LOW fix: the record is written BEFORE the dedup marker, so a crash between
+    # the two loses nothing (the next turn re-captures) rather than advancing the
+    # marker past a record that was never written. Simulate the crash by failing
+    # the marker write and asserting the record survived.
+    init(repo, home)
+    (repo / "new_file.txt").write_text("x", encoding="utf-8")
+    wm = CohortPaths.for_project(repo).cohort_home / "state" / "working-memory"
+    real_write_text = Path.write_text
+
+    def failing_write_text(self, data, *args, **kwargs):
+        if self.name == project._WORKING_CAPTURE_MARKER:
+            raise OSError("simulated crash writing the dedup marker")
+        return real_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", failing_write_text)
+    with pytest.raises(OSError):
+        project.working_capture(repo)
+    # The record exists despite the marker write failing — the turn is not lost.
+    records = list(wm.glob("*-auto.md"))
+    assert len(records) == 1
+    assert "## Changed" in records[0].read_text(encoding="utf-8")
 
 
 def test_working_memory_review_surfaces_pending_notes(repo, home):

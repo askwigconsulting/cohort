@@ -166,6 +166,23 @@ def test_json_remerge_after_user_edit_skips_not_duplicates():
     assert skipped == 1
 
 
+def test_json_force_restore_replaces_diverged_entry_not_duplicates():
+    """Audit #5: --force on a user-edited (diverged) placed entry must REPLACE
+    it with the canonical entry, not append alongside it — else the hook
+    fires twice. Mirrors plan_block_merge's force-replace semantics."""
+    placed = {"matcher": "", "hooks": [{"type": "command", "command": "cohort"}]}
+    prior_tags = [{"event": "SessionStart", "entry_hash": merge.entry_hash(placed)}]
+    edited = {"matcher": "", "hooks": [{"type": "command", "command": "USER EDIT"}]}
+    existing = {"hooks": {"SessionStart": [edited]}}
+    fragment = {"hooks": {"SessionStart": [placed]}}
+    new, owned, skipped = merge.merge_hooks(existing, fragment, prior_tags, force=True)
+    session_start = new["hooks"]["SessionStart"]
+    assert len(session_start) == 1  # exactly ONE entry — not the edited copy plus canonical
+    assert session_start[0] == placed  # the canonical entry, restored
+    assert skipped == 0
+    assert owned == [{"event": "SessionStart", "entry_hash": merge.entry_hash(placed)}]
+
+
 def test_json_remerge_updates_changed_canonical_entry():
     old = {"matcher": "", "hooks": [{"type": "command", "command": "v1"}]}
     new_entry = {"matcher": "", "hooks": [{"type": "command", "command": "v2"}]}

@@ -134,6 +134,14 @@ def merge_hooks(
       duplicate, never overwrite the user's version).
 
     Idempotent: re-merging an unchanged roster yields ``new == existing``.
+
+    ``force`` re-asserts the canonical entry even over a diverged (user-edited)
+    one — REPLACING it rather than appending alongside it, mirroring
+    ``plan_block_merge``'s force-replace semantics. Identity is content-hash
+    only (no per-entry id), so an edited copy of our entry is indistinguishable
+    from an unrelated entry the user added; the replacement is bounded to at
+    most as many entries as diverged, so it never strips more than the
+    divergence can account for.
     """
     prior_tags = prior_tags or []
     prior_by_event: dict[str, set] = {}
@@ -157,6 +165,23 @@ def merge_hooks(
 
         # 2. Prior entries no longer present unchanged → user edited/removed them.
         diverged = {h for h in prior_set if h not in existing_set}
+
+        # 2b. Force restore REPLACES a diverged entry instead of appending
+        # alongside it (else the same hook fires twice). We can't recover the
+        # edited entry's identity beyond "it's neither canonical nor a
+        # verified-prior entry" — so drop that many unaccounted-for entries,
+        # oldest-position-first, capped at len(diverged) so we never remove
+        # more than the divergence could plausibly explain.
+        if force and diverged:
+            unaccounted_idx = [
+                i
+                for i, e in enumerate(kept)
+                if entry_hash(e) not in canon_set and entry_hash(e) not in prior_set
+            ]
+            drop = set(unaccounted_idx[: len(diverged)])
+            if drop:
+                kept = [e for i, e in enumerate(kept) if i not in drop]
+                kept_set = {entry_hash(e) for e in kept}
 
         # 3. Add canonical entries not already present; suppress diverged ones.
         for entry, h in zip(canon_entries, canon_hashes):

@@ -409,6 +409,32 @@ def test_reverse_removes_dangling_owned_link(home, src):
     assert not dest.is_symlink() and result.removed == 1  # removed, not skipped/leaked
 
 
+@requires_symlinks
+def test_reverse_skips_dangling_link_the_user_repointed_elsewhere(home, src, tmp_path):
+    """A dangling link is ours to remove only if it still points at OUR recorded
+    target (live or dangling). If the user re-pointed it to their own target and
+    that target later became unavailable, the link now dangles too -- but it is
+    not ours, so reverse must leave it alone rather than deleting the user's own
+    re-point."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "canonical"
+    m = make_manifest()
+    apply([Op(OpType.LINK.value, GLOBAL_IDE, str(dest), src=str(src / "file.txt"))], paths, m, force=False)
+
+    other = tmp_path / "mine.txt"
+    other.write_text("mine\n", encoding="utf-8")
+    dest.unlink()
+    os.symlink(other, dest)  # user re-points it to their own target
+    other.unlink()  # ...which later becomes unavailable (link now dangles)
+    assert dest.is_symlink() and not dest.exists()
+
+    result = reverse_full(m, paths)
+    assert dest.is_symlink()  # left alone -- not our link to delete
+    assert result.removed == 0
+    assert result.skipped >= 1
+
+
 # --- O1: an interrupted copy must never masquerade as a foreign clobber -----
 
 
@@ -572,4 +598,65 @@ def test_delete_if_only_ours_reverse_leaves_no_backup(home, src):
     reverse_full(m, paths)
 
     assert not dest.exists()  # delete-if-only-ours
+    assert not dest.with_name(dest.name + ".bak").exists()  # no litter
+
+
+# --- preserve default: fail safe on a pre-``preserve`` manifest -------------
+
+
+def test_scaffold_op_missing_preserve_key_defaults_to_preserved() -> None:
+    """A SCAFFOLD op dict with no ``preserve`` key at all -- e.g. recorded by a
+    Cohort version that predates the field -- must default to preserved, not
+    un-preserved. SCAFFOLD ops are, by construction, team-owned content; reading
+    the missing key as falsy would let a non-purge deinit remove a team file it
+    was never supposed to touch."""
+    data = {"op": OpType.SCAFFOLD.value, "ide": GLOBAL_IDE, "dest": "/repo/.cohort/cohort.toml", "src": "/tmp/x"}
+    assert "preserve" not in data  # sanity: simulating a pre-``preserve`` manifest
+    op = Op.from_dict(data)
+    assert op.preserve is True
+
+
+def test_scaffold_op_explicit_preserve_false_is_respected() -> None:
+    """An explicit ``preserve: false`` on a SCAFFOLD op (e.g. .gitignore, which is
+    safe to regenerate) is NOT overridden by the fail-safe default -- the default
+    only fills in a truly *missing* key, never second-guesses an explicit value."""
+    data = {"op": OpType.SCAFFOLD.value, "ide": GLOBAL_IDE, "dest": "/repo/.cohort/.gitignore", "src": "/tmp/x", "preserve": False}
+    op = Op.from_dict(data)
+    assert op.preserve is False
+
+
+def test_non_scaffold_op_missing_preserve_key_stays_falsy() -> None:
+    """Only SCAFFOLD ops get the fail-safe default -- mkdir/merge ops genuinely mix
+    preserved and non-preserved instances by design (e.g. the state dir mkdir is
+    never preserved), so a missing key there must keep reading as falsy."""
+    data = {"op": OpType.MKDIR.value, "ide": GLOBAL_IDE, "dest": "/repo/.cohort/state"}
+    op = Op.from_dict(data)
+    assert op.preserve is None
+    assert not op.preserve  # falsy, as `if op.preserve and not purge` relies on
+
+
+def test_reverse_keeps_scaffolded_team_file_from_a_pre_preserve_manifest(home, src):
+    """End-to-end: a manifest whose SCAFFOLD op dict has no ``preserve`` key (as if
+    written by a pre-P4-field Cohort version) must not have that file swept away
+    by a non-purge ``deinit``."""
+    paths = paths_for(home)
+    paths.state.mkdir(parents=True)
+    dest = home / "cohort.toml"
+    dest.write_text("[project]\n", encoding="utf-8")
+    op = Op(OpType.SCAFFOLD.value, GLOBAL_IDE, str(dest), src=str(src / "file.txt"))
+    m = Manifest.from_dict(
+        {
+            "install_id": "testid000001",
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "mode": "link",
+            "ides": [],
+            # No "preserve" key on the op dict at all -- the pre-field manifest shape.
+            "ops": [{"op": op.op, "ide": op.ide, "dest": op.dest, "src": op.src}],
+        }
+    )
+
+    result = reverse_full(m, paths)
+
+    assert dest.exists()  # kept, not swept, despite the missing preserve key
+    assert result.skipped >= 1
     assert not dest.with_name(dest.name + ".bak").exists()  # no litter
