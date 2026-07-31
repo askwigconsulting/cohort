@@ -136,9 +136,17 @@ class ReadOnlyToolbox:
         manifest = default_branch_file(self.root, gates.SECRET_ALLOWLIST_PATH)
         self._secret_allowlist = gates.parse_secret_allowlist(manifest or "")
 
-    def _undeclared_secret_labels(self, rel: str, text: str) -> list[str]:
-        """Labels for credential-shaped content in ``text`` that ``rel`` has not declared."""
-        findings = gates.scan_for_secret_findings(text)
+    def _undeclared_secret_labels(self, rel: str, raw: bytes) -> list[str]:
+        """Labels for credential-shaped content in ``rel`` that it has not declared.
+
+        Takes **bytes** and decodes latin-1, matching the CLI-doer gate exactly. Scanning
+        the UTF-8 text instead produced a *different digest* for the same value whenever
+        non-ASCII bytes sat nearby, so one gate's printed declaration line would not
+        unblock the other (audit r3, M7). Fail-closed either way, but confusing — and a
+        manifest that works on one path and not the other invites exempting more than
+        intended.
+        """
+        findings = gates.scan_for_secret_findings(raw.decode("latin-1"))
         if not findings:
             return []
         remaining = gates.unsuppressed_findings(findings, rel, self._secret_allowlist)
@@ -235,7 +243,7 @@ class ReadOnlyToolbox:
             return f"refused: {path!r} is not UTF-8 text (binary file)"
         # Content-level egress gate: a secret in any file, expected or not, is refused —
         # unless the repo has declared that exact value fake in its committed manifest.
-        labels = self._undeclared_secret_labels(self._rel(target), text)
+        labels = self._undeclared_secret_labels(self._rel(target), raw[:_MAX_READ_BYTES])
         if labels:
             return (
                 f"refused: {path!r} contains credential-shaped content "
@@ -268,10 +276,11 @@ class ReadOnlyToolbox:
             if self._gate(rel) is not None:
                 continue  # refused paths are invisible to search
             try:
-                content = file.read_text(encoding="utf-8")
+                raw = file.read_bytes()
+                content = raw.decode("utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if self._undeclared_secret_labels(rel, content):
+            if self._undeclared_secret_labels(rel, raw):
                 continue  # never surface a line from a secret-bearing file
             for lineno, line in enumerate(content.splitlines(), 1):
                 if pattern in line:

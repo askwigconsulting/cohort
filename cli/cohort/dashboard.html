@@ -531,7 +531,11 @@
   </div>
 </dialog>
 
-<div id="toasts"></div>
+<!-- aria-live so action results and errors are announced. They are transient visual
+     toasts, so without this a screen-reader user gets no feedback at all that an action
+     succeeded or failed. "polite" (not "assertive") because these follow a deliberate
+     user action and must not interrupt mid-sentence. -->
+<div id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
 
 <script src="/dashboard.js"></script>
 </body>
