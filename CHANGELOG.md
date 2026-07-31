@@ -11,6 +11,87 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`/barney`** — explain a complex topic so simply nobody can get it wrong. Encodes the
+  method (name the one idea, decide what to omit, say where the analogy breaks, order steps
+  so each uses only what is already explained) rather than just asking for simpler words.
+  Bans "it's simple" and "just", and holds accuracy above simplicity: a danger or an
+  irreversible step survives the simplification.
+- **A declared, digest-bound secret-scan manifest** (`.cohort/secret-scan-allow.txt`). A repo
+  whose fixtures are credential-shaped by construction — any secret scanner, this one
+  included — could not send itself to an external engine at all. Each entry binds a **value
+  digest to a path**, so exempting a file is not a blind spot: a real credential added beside
+  a declared fake still blocks. Refusals print the exact declaration lines, so unblocking
+  never means guessing a digest.
+- **A `reasoning` grok tier** (`grok-4.20-0309-reasoning`), probed live and confirmed to
+  serve back its own name. `grok-4-heavy` does not exist on the account, and
+  `grok-4.20-multi-agent-0309` is deliberately unregistered — chat/completions rejects it, so
+  naming it would hand callers a model that fails at dispatch.
+- **A `vendor-reachability` audit dimension**, always-on, whose only acceptable evidence is a
+  command that ran and the output it produced (#243). Reading the dispatch path and
+  concluding a vendor works is the exact failure it exists to catch.
+- **Model-tier rotation across audit runs** — `balanced` → `complex-heavy` → `simple-heavy`,
+  with the tier recorded per dimension in the ledger so the false-positive rate becomes
+  tier-aware (#240).
+- **A README section stating what leaves your machine**, to whom, per command, and the exact
+  `cohort:egress=deny` marker that stops it — with the warning that prose does not work,
+  only the literal marker.
+
+### Fixed
+- **The secret scanner no longer flags ordinary code.** Self-referential keyword arguments
+  (`max_tokens=max_tokens`), forwarded attribute references (`token=srv.token`) and type
+  annotations (`token: bytes`) read as credential assignments. Detection is unchanged —
+  a `GITHUB_TOKEN:` or `DATABASE_PASSWORD=` carrying a real value still trips. Two exemptions that
+  went **too far** were caught by the audit and closed the same day: a `name.surname` password
+  and any value merely *starting* with a type name both slipped through, the latter in `:`
+  form — which is how YAML, the dominant secrets-config format, writes every assignment.
+- **A failing vendor CLI no longer reports success.** No doer path checked the exit code, so a
+  broken engine read as "reviewed your repo, had nothing to say". A CLI that is present but
+  broken now raises `DoerFailedError` and falls back to the vendor's API transport **with a
+  printed note** — never silently. Gate refusals are still never retried elsewhere.
+- **`my-office sync` no longer reports success when placement failed.** A post-sync recompile
+  failure returned the same empty list that means "nothing installed"; it now reports
+  `recompile_failed` and says the IDE files are stale.
+- **A corrupt manifest fails closed instead of crashing.** `load_manifest` raised a raw
+  `JSONDecodeError` out of whichever command touched it; it now raises a typed error naming
+  the file and the recovery, and `persist` keeps a `.json.bak` so there is something to
+  restore from. "Absent" remains a legitimate state, distinct from unreadable.
+- **Concurrent engine reviews no longer overwrite each other's transcripts.** Slots are
+  reserved atomically instead of computed; five parallel reviews previously produced four
+  transcripts, losing the record of what was egressed exactly when the fan-out was widest.
+- **A timed-out doer now takes its whole process group with it.** Only the direct child was
+  killed, so helpers an agentic CLI spawned outlived the wall-clock cap — still spending
+  against the vendor API, still writing into a worktree about to be deleted.
+- **Bounded work that was unbounded**: a 32MB client-side cap on the response body both xAI
+  transports buffer (`max_tokens` is a request hint, not a resource bound), and timeouts on
+  the worktree and post-doer git calls, which sit on paths a user waits on.
+- **A failed rollback-ledger write is reported.** It was swallowed, so the advertised one-shot
+  undo silently did not exist until someone reached for it.
+- **Dashboard controls are keyboard-operable** — the "create" cards were click-wired `<div>`s
+  and the reload chip a bare `<span>`; action results and errors now announce via a live
+  region instead of being silent visual toasts.
+- **`/consult-gpt` no longer appears to hang.** Codex was never the problem: the command
+  lacked a stdin redirect and a timeout budget, so a slow consult looked identical to a hung
+  one.
+- Documentation that asserted something false: `(no local file access)` was printed on paths
+  that *do* send file contents, `DESIGN.md` described a narrower quarantine scope than
+  `GATED_KINDS` enforces, and `consult-grok` recommended `grok-4-latest` — an alias that
+  resolves to `grok-4.3`, not the flagship.
+
+### Security
+- **A secret-scan suppression can no longer authorise its own egress.** The refusal prints
+  paste-ready declaration lines *into the caller's context*, so an agent at `supervised` or
+  `autopilot` could commit them and re-dispatch with nobody looking — and egress is
+  irreversible. Entries reachable from the **default branch** apply silently; entries
+  committed only on the current branch require an **interactive confirmation on a TTY**, so
+  an agent's shell, CI and hooks are refused. Confirmation authorises *declared* fixtures
+  only — a credential nothing declares is never waved through.
+- **The API reviewer honours the same gate as the CLI doer.** Its toolbox scanned without the
+  manifest, so on a repo with credential-shaped fixtures `read_file` refused its own source
+  and `grep` skipped it **silently** — a review could look complete while missing exactly the
+  files it was asked to check. It also read the *live* tree, letting an uncommitted edit widen
+  what may be sent; it now reads a committed ref, like the doer.
+
 ## [0.14.0] — 2026-07-31 · Dashboard usability
 
 ### Changed
