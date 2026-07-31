@@ -13,7 +13,14 @@ async function api(path, opts = {}) {
     headers: { "X-Cohort-Token": TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+  if (!res.ok) {
+    // Carry the status so callers can tell a 401 (stale token after a server
+    // restart) from a generic failure — the live chip / poll-health logic keys
+    // off it (HIGH-3).
+    const err = new Error(body.error || ("HTTP " + res.status));
+    err.status = res.status;
+    throw err;
+  }
   return body;
 }
 function toast(msg, cls) {
@@ -40,6 +47,10 @@ function confirmDlg(title, body, yesLabel) {
 async function runAction(btn, action, args, okMsg) {
   if (PENDING) return null;
   PENDING = action;
+  // The "under the hood" wire marches only while an action that actually flows
+  // through the compile pipeline is pending (Part B) — recompile/update.
+  const flows = action === "recompile" || action === "update";
+  if (flows) document.body.classList.add("action-pending");
   if (btn) { btn.disabled = true; btn.classList.add("busy"); }
   try {
     const a = { ...(args || {}) }; if (FOCUS != null) a.project = FOCUS;
@@ -49,10 +60,14 @@ async function runAction(btn, action, args, okMsg) {
     await refresh();
     return report;
   } catch (e) {
-    toast(e.message, "err");
+    // A 401 here means the token is stale (dashboard restarted) — surface it the
+    // same way poll health does, not as a raw "missing or bad token".
+    if (e && e.status === 401) markDisconnected();
+    else toast(e.message, "err");
     return null;
   } finally {
     PENDING = null;
+    if (flows) document.body.classList.remove("action-pending");
     if (btn) { btn.disabled = false; btn.classList.remove("busy"); }
   }
 }
@@ -124,6 +139,9 @@ function artifactCard(it) {
   // and a button-in-a-button is invalid ARIA. tabIndex + the Enter/Space keydown
   // handler below keep it keyboard-activatable without claiming a button role.
   el.tabIndex = 0;
+  // Stable identity so keyboard focus survives a poll re-render (HIGH-2): the
+  // card is destroyed+rebuilt every poll, so focus is restored by matching this.
+  el.dataset.key = "art:" + it.layer + ":" + it.kind + ":" + it.name;
   el.title = "View " + it.kind + " · " + it.name;
 
   const head = document.createElement("div"); head.className = "art-head";
@@ -300,6 +318,11 @@ function renderProject(p) {
 }
 function renderProjectSwitcher(s) {
   const sel = $("project-switcher");
+  // Don't rebuild the <select>'s options while the user has it open/focused: a
+  // poll re-render would collapse the dropdown and reset the selection (HIGH-2).
+  // Its options only change when a project is added/removed, which can't happen
+  // while the menu is open.
+  if (document.activeElement === sel) return;
   const projects = s.projects || [];
   if (!projects.length) { sel.hidden = true; return; }
   sel.hidden = false;
@@ -333,6 +356,7 @@ function renderProjectsOverview(s) {
     const el = document.createElement("div");
     el.className = "proj-card" + (focused ? " focused" : "");
     el.tabIndex = 0; el.setAttribute("role", "button");
+    el.dataset.key = "proj:" + p.index;  // stable identity for focus restore (HIGH-2)
     el.title = (focused ? "Managing " : "Manage ") + p.name;
 
     const head = document.createElement("div"); head.className = "proj-head";
@@ -455,17 +479,86 @@ function renderScorecards(s) {
     holder.appendChild(el);
   }
 }
+function scrollToId(id) {
+  const el = $(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+/* The "needs attention" strip (Part A): the one place that answers "is anything
+   wrong / what do I do?". It re-surfaces EXISTING state fields — nothing is
+   computed here that the server didn't already send — hoisting ONLY the non-green
+   states, each linking to its section or its fix action. All-green collapses to a
+   quiet "all good" line. */
+function renderAttention(s) {
+  const strip = $("attention");
+  strip.textContent = "";
+  const g = s.global || {};
+  const items = [];  // [icon, text, onClick]
+  const src = g.source || {};
+  if (!src.ok) items.push(["⚠", "Source broken — relink", () => scrollToId("under-the-hood")]);
+  const parity = Object.values(g.parity || {});
+  if (parity.length === 0) {
+    items.push(["⚙", "Office not compiled — recompile", () => $("btn-recompile").click()]);
+  } else if (!parity.every((p) => p.ok !== false)) {
+    items.push(["⚙", "IDE output behind — recompile", () => $("btn-recompile").click()]);
+  }
+  const unmanaged = (g.unmanaged || []).length;
+  if (unmanaged) {
+    items.push(["📄", unmanaged + " unmanaged file" + (unmanaged === 1 ? "" : "s") + " in ~/.claude",
+      () => scrollToId("under-the-hood")]);
+  }
+  const behind = (g.update || {}).behind || 0;
+  if (behind > 0) {
+    items.push(["▲", behind + " commit" + (behind === 1 ? "" : "s") + " behind — update", () => $("btn-update").click()]);
+  }
+  const proj = s.project || {};
+  if ((proj.staleness || {}).stale) items.push(["⏱", "Context stale — snapshot", () => $("btn-snapshot").click()]);
+  const low = ((proj.signals || {}).low_rated_agents || []).length;
+  if (low) items.push(["👎", low + " low-rated agent" + (low === 1 ? "" : "s"), () => scrollToId("scorecards-section")]);
+
+  if (!items.length) {
+    strip.className = "attention ok";
+    const ok = document.createElement("span"); ok.className = "attn-ok";
+    ok.textContent = "✓ All good — nothing needs attention.";
+    strip.appendChild(ok);
+    return;
+  }
+  strip.className = "attention";
+  for (const [icon, text, onClick] of items) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "attn-item"; b.textContent = icon + " " + text;
+    b.addEventListener("click", onClick);
+    strip.appendChild(b);
+  }
+}
+/* Keyboard focus survives a poll re-render (HIGH-2): capture the focused card's
+   stable data-key before the sub-renders wipe+rebuild every holder, then restore
+   focus to the matching rebuilt element afterwards. Static controls (buttons, the
+   switcher) are never removed, so they keep focus on their own. */
+function activeCardKey() {
+  const el = document.activeElement;
+  return el && el.dataset ? (el.dataset.key || null) : null;
+}
+function restoreCardFocus(key) {
+  if (!key) return;
+  let el = null;
+  // Keys are built from safe tokens (layer/kind/slug/index), but stay defensive:
+  // a bad selector or a card that no longer exists must never throw here.
+  try { el = document.querySelector('[data-key="' + key + '"]'); } catch (_) { el = null; }
+  if (el && typeof el.focus === "function") el.focus({ preventScroll: true });
+}
 function render(s) {
+  const focusKey = activeCardKey();
   STATE = s;
   $("version").textContent = "v" + (s.version || "?");
   const g = s.global || {};
+  const roster = g.roster || { count: 0 };  // degraded/partial state must never throw (HIGH-1)
   const src = g.source || {};
   setDot("st-source", src.ok ? "" : "bad", src.ok ? (src.linked ? "source linked" : "source ok") : "source broken — relink");
   const parity = Object.values(g.parity || {});
   const parityOk = parity.every((p) => p.ok !== false);
   setDot("st-parity", parity.length === 0 ? "warn" : parityOk ? "" : "warn",
     parity.length === 0 ? "not compiled" : parityOk ? "renderers in parity" : "parity gap");
-  setDot("st-placed", g.roster.count ? "" : "warn", g.roster.count + " agents placed");
+  setDot("st-placed", roster.count ? "" : "warn", roster.count + " agents placed");
   const wiring = (s.project && s.project.wiring) || null;
   setDot("st-wiring", !wiring ? "warn" : wiring.state === "present" ? "" : "warn",
     !wiring ? "no project here" : wiring.state === "present" ? "project wired" : "wiring " + wiring.state + " — re-init");
@@ -480,16 +573,70 @@ function render(s) {
   $("pipe-sub").textContent = unmanaged
     ? unmanaged + " unmanaged file" + (unmanaged === 1 ? "" : "s") + " in ~/.claude — run cohort status for adopt hints"
     : "how your office actually works";
+  renderAttention(s);
   renderProjectSwitcher(s);
   renderProjectsOverview(s);
   renderCrossProjectActivity(s);
   renderScorecards(s);
   renderLevels();
   renderProject(s.project || null);
+  restoreCardFocus(focusKey);
 }
+/* ---------- poll health + degraded-state banner ---------- */
+// The token is per-launch; after a dashboard restart an old tab's polls 401. Tie
+// the header "live" chip to poll health (HIGH-3): a 401 or repeated failures flip
+// it to "disconnected — reload"; the next success restores it. And a degraded
+// server response (200 + {error, degraded}) shows a persistent banner and keeps
+// the last good render, rather than throwing/blanking (HIGH-1).
+let POLL_FAILS = 0, DISCONNECTED = false;
+const POLL_FAIL_LIMIT = 3;
+function setLive(connected) {
+  const chip = $("live-chip");
+  if (connected) { chip.classList.remove("down"); $("live-label").textContent = "live"; chip.title = "Live — polling for updates"; }
+  else { chip.classList.add("down"); $("live-label").textContent = "disconnected — reload"; chip.title = "Lost contact with the dashboard — click to reload"; }
+}
+function markConnected() {
+  POLL_FAILS = 0;
+  if (DISCONNECTED) { DISCONNECTED = false; setLive(true); }
+}
+function markDisconnected() {
+  if (DISCONNECTED) return;  // flip + toast once, until a poll next succeeds
+  DISCONNECTED = true;
+  setLive(false);
+  toast("Dashboard was restarted — reload this page", "err");
+}
+function notePollFailure(e) {
+  POLL_FAILS += 1;
+  if ((e && e.status === 401) || POLL_FAILS >= POLL_FAIL_LIMIT) markDisconnected();
+  console.error("refresh failed:", e);
+}
+function showBanner(msg) {
+  const b = $("error-banner");
+  b.textContent = "⚠ " + (msg || "The dashboard hit an error") + " — check the terminal, then reload this page.";
+  b.hidden = false;
+}
+function hideBanner() { $("error-banner").hidden = true; }
 async function refresh() {
-  try { render(await api("/api/state" + (FOCUS != null ? "?project=" + FOCUS : ""))); }
-  catch (e) { console.error("refresh failed:", e); } // transient poll failure or render bug
+  let s;
+  try {
+    s = await api("/api/state" + (FOCUS != null ? "?project=" + FOCUS : ""));
+  } catch (e) {
+    notePollFailure(e);  // network/401 — the chip reflects it; keep the last render
+    return;
+  }
+  markConnected();  // the server responded — connection is healthy
+  // Degraded response (#226 server fix returns 200 + {error, degraded}): show a
+  // persistent banner and keep the last good render instead of throwing on the
+  // missing global/roster (HIGH-1).
+  if (s && (s.degraded || s.error)) { showBanner(s.error); return; }
+  hideBanner();
+  try { render(s); }
+  catch (e) {
+    // Belt-and-braces: render() is guarded, but any residual render bug must
+    // surface as a banner, never a silent blank page.
+    console.error("render failed:", e);
+    showBanner("The dashboard hit a rendering error");
+  }
 }
 
 /* ---------- wiring ---------- */
@@ -583,5 +730,7 @@ $("edit-form").addEventListener("submit", async (e) => {
 });
 
 $("project-switcher").addEventListener("change", (e) => { FOCUS = e.target.value; refresh(); });
+// When disconnected, the live chip is the reload affordance (HIGH-3).
+$("live-chip").addEventListener("click", () => { if (DISCONNECTED) location.reload(); });
 refresh();
 setInterval(() => { if (!PENDING) refresh(); }, 6000);

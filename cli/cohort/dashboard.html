@@ -52,6 +52,10 @@
     box-shadow:0 0 0 0 rgba(52,211,153,.7); animation:pulse 2.2s infinite;
   }
   @keyframes pulse { 70% { box-shadow:0 0 0 9px rgba(52,211,153,0);} 100% { box-shadow:0 0 0 0 rgba(52,211,153,0);} }
+  /* The live chip is tied to poll health (dashboard.js): on a 401 / repeated poll
+     failures it flips to a disconnected, non-pulsing, clickable "reload" state. */
+  .live.down { color:var(--bad); cursor:pointer; }
+  .live.down i { background:var(--bad); box-shadow:none; animation:none; }
   header .spacer { flex:1; }
 
   /* ---- buttons ------------------------------------------------------------ */
@@ -105,7 +109,11 @@
   .stage .state { margin-top:8px; }
   .wire { position:absolute; top:26px; left:calc(50% + 34px); right:calc(-50% + 34px); height:2px;
           background:repeating-linear-gradient(90deg, rgba(124,92,255,.55) 0 10px, transparent 10px 18px);
-          background-size:28px 2px; animation:flow 1.1s linear infinite; }
+          background-size:28px 2px; }
+  /* Motion should mean something: the "wire" only marches while a recompile/update
+     action is actually pending (dashboard.js toggles body.action-pending), not on a
+     loop regardless of activity. */
+  body.action-pending .wire { animation:flow 1.1s linear infinite; }
   .stage:last-child .wire { display:none; }
   @keyframes flow { to { background-position:28px 0; } }
   .dot { display:inline-flex; align-items:center; gap:6px; font:600 11px/1 var(--mono); color:var(--dim); }
@@ -256,11 +264,36 @@
 
   .diag { font:600 10px/1 var(--mono); color:var(--warn); }
 
+  /* ---- error banner (persistent, degraded-state) --------------------------- */
+  .banner {
+    margin-top:14px; background:rgba(248,113,113,.12); border:1px solid rgba(248,113,113,.5);
+    border-radius:12px; padding:11px 15px; color:#fecaca; font-size:13px; font-weight:600;
+  }
+  /* ---- "needs attention" strip --------------------------------------------- */
+  .attention { margin-top:14px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .attn-item {
+    font:600 12px/1.2 inherit; color:var(--warn); background:rgba(251,191,36,.08);
+    border:1px solid rgba(251,191,36,.4); border-radius:999px; padding:7px 13px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:6px; transition:border-color .12s ease, transform .12s ease;
+  }
+  .attn-item:hover { transform:translateY(-1px); border-color:var(--warn); }
+  .attn-item:focus-visible { outline:2px solid var(--warn); outline-offset:2px; }
+  .attention.ok .attn-ok { color:var(--faint); font:600 12px/1 var(--mono); letter-spacing:.04em; }
+
+  /* ---- demoted "under the hood" -------------------------------------------- */
+  details.hood > summary {
+    cursor:pointer; color:var(--dim); font:600 12px/1 var(--mono); letter-spacing:.06em;
+    padding:8px 2px; list-style:none;
+  }
+  details.hood > summary::-webkit-details-marker { display:none; }
+  details.hood > summary::before { content:"▸ "; }
+  details.hood[open] > summary::before { content:"▾ "; }
+
   /* MED-2: stop every continuously-looping animation (pulse/flow/spin) for users
      who've asked the OS not to show motion. One-shot transitions (e.g. the toast
      `rise` entrance, hover transforms) are left alone — only `infinite` loops. */
   @media (prefers-reduced-motion: reduce) {
-    .live i, .wire, .btn .spin { animation:none; }
+    .live i, .wire, body.action-pending .wire, .btn .spin { animation:none; }
   }
 </style>
 </head>
@@ -269,7 +302,7 @@
   <header>
     <div class="wordmark">◆ <b>COHORT</b></div>
     <span class="chip" id="version">v—</span>
-    <span class="chip live"><i></i>live</span>
+    <span class="chip live" id="live-chip" title="Live — polling for updates"><i></i><span id="live-label">live</span></span>
     <span class="chip" id="repo-chip" hidden></span>
     <select class="chip" id="project-switcher" title="Switch project" aria-label="Switch project" hidden></select>
     <div class="spacer"></div>
@@ -280,69 +313,20 @@
     <button class="btn primary" id="btn-update" title="Fast-forward the office to upstream and recompile"><span class="spin"></span>▲ Update<span class="badge" id="behind" hidden></span></button>
   </header>
 
-  <!-- Under the hood -->
-  <section>
-    <h2>Under the hood <span class="rule"></span><span class="sub" id="pipe-sub">how your office actually works</span></h2>
-    <div class="card pipeline">
-      <div class="flow">
-        <div class="stage">
-          <div class="node">✍️</div>
-          <h3>Canonical</h3>
-          <p>The office's single source of truth — plain markdown you (or your team) own.</p>
-          <div class="state"><span class="dot" id="st-source"><i></i><span>source</span></span></div>
-          <div class="wire"></div>
-        </div>
-        <div class="stage">
-          <div class="node">⚙️</div>
-          <h3>Compiled</h3>
-          <p>Cohort renders each agent for your IDE — and strips every write tool: advisors stay read-only.</p>
-          <div class="state"><span class="dot" id="st-parity"><i></i><span>parity</span></span></div>
-          <div class="wire"></div>
-        </div>
-        <div class="stage">
-          <div class="node">🔗</div>
-          <h3>Placed</h3>
-          <p>Linked into <span style="font-family:var(--mono)">~/.claude</span> — reversible, manifest-tracked, never clobbers your files.</p>
-          <div class="state"><span class="dot" id="st-placed"><i></i><span>—</span></span></div>
-          <div class="wire"></div>
-        </div>
-        <div class="stage">
-          <div class="node">🤖</div>
-          <h3>In session</h3>
-          <p>ChiefOfStaff triages; specialists advise; a human decides. Nothing acts on its own.</p>
-          <div class="state"><span class="dot" id="st-wiring"><i></i><span>wiring</span></span></div>
-        </div>
-      </div>
-      <div class="caption">Edit canonical → recompile → the office updates. Every arrow is deterministic, reversible, and human-gated.</div>
-    </div>
-  </section>
+  <!-- Needs attention: the single answer to "is anything wrong?". A persistent
+       error banner for a degraded server response, then a strip that hoists ONLY
+       the non-green office states (re-surfaced from existing state fields, computed
+       nowhere new). All-green collapses to a quiet "all good" line. -->
+  <div id="error-banner" class="banner" role="alert" hidden></div>
+  <div id="attention" class="attention" aria-label="Needs attention"></div>
 
-  <!-- Three scopes, top to bottom: the company office (with its cross-project
-       rollups) · your office · this project. Every kind (agent / skill / command /
-       hook / memory) shows here, tagged. -->
+  <!-- Company / you / project mental model, telemetry last. Every kind
+       (agent / skill / command / hook / memory) shows here, tagged. -->
   <section>
     <h2>Company office <span class="rule"></span>
       <span class="sub">agents, skills, commands &amp; hooks shared across your whole company</span>
       <span class="lvl-count" id="cnt-office"></span></h2>
     <div class="card"><div class="level" id="level-office"></div></div>
-  </section>
-
-  <!-- Cross-project activity: recent session records aggregated across every
-       initialized Cohort project — office-wide, not the focused-project feed
-       (below, in "Managing"), which also covers that project's feedback/proposals. -->
-  <section>
-    <h2>Office activity <span class="rule"></span>
-      <span class="sub">recent sessions across every initialized project</span></h2>
-    <div class="card"><ul class="feed" id="xproj-feed"></ul></div>
-  </section>
-
-  <!-- Per-agent scorecards: Cohort's lightweight answer to agent benchmarking —
-       binary up/down feedback aggregated across every initialized project
-       (ratings are up|down only; there is no numeric average). -->
-  <section>
-    <h2>Agent scorecards <span class="rule"></span>
-      <span class="sub">up/down feedback across every initialized project · last 30 days</span></h2>
-    <div class="card"><div class="score-grid" id="scorecards"></div></div>
   </section>
 
   <section>
@@ -375,11 +359,74 @@
       <span style="font-family:var(--mono)">cohort init</span> there) to manage its specialists.</div>
   </section>
 
+  <!-- Telemetry, last: office-wide activity, then per-agent scorecards, then the
+       focused project's own feed. -->
+  <!-- Cross-project activity: recent session records aggregated across every
+       initialized Cohort project — office-wide, not the focused-project feed
+       (below, in "Activity"), which also covers that project's feedback/proposals. -->
+  <section>
+    <h2>Office activity <span class="rule"></span>
+      <span class="sub">recent sessions across every initialized project</span></h2>
+    <div class="card"><ul class="feed" id="xproj-feed"></ul></div>
+  </section>
+
+  <!-- Per-agent scorecards: Cohort's lightweight answer to agent benchmarking —
+       binary up/down feedback aggregated across every initialized project
+       (ratings are up|down only; there is no numeric average). -->
+  <section id="scorecards-section">
+    <h2>Agent scorecards <span class="rule"></span>
+      <span class="sub">up/down feedback across every initialized project · last 30 days</span></h2>
+    <div class="card"><div class="score-grid" id="scorecards"></div></div>
+  </section>
+
   <!-- Activity -->
   <section id="activity-section" hidden>
     <h2>Activity <span class="rule"></span><span class="sub">what the office has been up to</span></h2>
     <div class="stats" id="stats"></div>
     <div class="card"><ul class="feed" id="feed"></ul></div>
+  </section>
+
+  <!-- Under the hood — demoted (Part B): an onboarding diagram, not daily signal.
+       Its four live dots now ride the attention strip; kept here, collapsed by
+       default, at the bottom. The "wire" animates only while a recompile/update
+       is pending (body.action-pending). -->
+  <section id="under-the-hood">
+    <h2>Under the hood <span class="rule"></span><span class="sub" id="pipe-sub">how your office actually works</span></h2>
+    <details class="hood">
+      <summary>Show the compile pipeline</summary>
+      <div class="card pipeline">
+        <div class="flow">
+          <div class="stage">
+            <div class="node">✍️</div>
+            <h3>Canonical</h3>
+            <p>The office's single source of truth — plain markdown you (or your team) own.</p>
+            <div class="state"><span class="dot" id="st-source"><i></i><span>source</span></span></div>
+            <div class="wire"></div>
+          </div>
+          <div class="stage">
+            <div class="node">⚙️</div>
+            <h3>Compiled</h3>
+            <p>Cohort renders each agent for your IDE — and strips every write tool: advisors stay read-only.</p>
+            <div class="state"><span class="dot" id="st-parity"><i></i><span>parity</span></span></div>
+            <div class="wire"></div>
+          </div>
+          <div class="stage">
+            <div class="node">🔗</div>
+            <h3>Placed</h3>
+            <p>Linked into <span style="font-family:var(--mono)">~/.claude</span> — reversible, manifest-tracked, never clobbers your files.</p>
+            <div class="state"><span class="dot" id="st-placed"><i></i><span>—</span></span></div>
+            <div class="wire"></div>
+          </div>
+          <div class="stage">
+            <div class="node">🤖</div>
+            <h3>In session</h3>
+            <p>ChiefOfStaff triages; specialists advise; a human decides. Nothing acts on its own.</p>
+            <div class="state"><span class="dot" id="st-wiring"><i></i><span>wiring</span></span></div>
+          </div>
+        </div>
+        <div class="caption">Edit canonical → recompile → the office updates. Every arrow is deterministic, reversible, and human-gated.</div>
+      </div>
+    </details>
   </section>
 
   <footer>loopback-only · token-guarded · no daemon · every button is the same human-gated CLI command</footer>
