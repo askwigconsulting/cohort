@@ -162,8 +162,13 @@ def _override_health(source: Optional[Path], gpaths: CohortPaths) -> list[dict[s
     return out
 
 
-def do_status(home: Path, cwd: Path) -> dict[str, Any]:
-    """Aggregate global + project state, read-only."""
+def do_status(home: Path, cwd: Path, include_raw_inventory: bool = False) -> dict[str, Any]:
+    """Aggregate global + project state, read-only.
+
+    ``include_raw_inventory`` stashes the raw inventory items under a private
+    ``_inventory_items`` key so the dashboard's ``collect_state`` can reuse this
+    one tree scan instead of re-walking it (#226); the CLI leaves it off so the
+    key never leaks into ``cohort status --json``."""
     gpaths = CohortPaths.for_global(home)
     manifest = load_manifest(gpaths.manifest)
     agents_dir = gpaths.canonical / "agents"  # the installed canonical (R5)
@@ -191,8 +196,13 @@ def do_status(home: Path, cwd: Path) -> dict[str, Any]:
     ppaths = CohortPaths.for_project(repo)
     is_project = ppaths.cohort_home != gpaths.cohort_home and ppaths.cohort_home.exists()
     # Inventory summary across every kind and layer — so `cohort status` (and the
-    # dashboard) recognizes the whole office, not just agents.
-    result["inventory"] = inventory_summary(inventory(home, repo if is_project else None))
+    # dashboard) recognizes the whole office, not just agents. The raw items are
+    # stashed under a private key so the dashboard's collect_state reuses this one
+    # scan instead of re-walking the tree (#226); it pops the key before serving.
+    inventory_items = inventory(home, repo if is_project else None)
+    if include_raw_inventory:
+        result["_inventory_items"] = inventory_items
+    result["inventory"] = inventory_summary(inventory_items)
     # A cwd under $HOME with no enclosing repo resolves to $HOME itself, whose
     # .cohort is the GLOBAL office home — never report it as a project (the
     # roster would read as self-shadowing specialists and the wiring check

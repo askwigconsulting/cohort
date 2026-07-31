@@ -24,6 +24,7 @@ from __future__ import annotations
 import datetime
 import hmac
 import json
+import logging
 import os
 import re
 import secrets
@@ -84,6 +85,13 @@ from .update import do_update, update_status
 _UPDATE_TTL_SECONDS = 900  # update_status fetches the network; don't per-poll it
 _RECENT_LIMIT = 10
 _ACTIVITY_LIMIT = 20  # cross-project activity feed cap (dashboard, #145)
+# The office-wide read-only aggregates (parity + cross-project scans) change only
+# on a mutating action, but the UI polls /api/state every ~6s. Memoize them for a
+# few seconds so back-to-back polls reuse one scan instead of re-parsing every
+# canonical file and every project's session/feedback .md each time (#226).
+_AGGREGATE_TTL_SECONDS = 3.0
+
+_log = logging.getLogger("cohort.dashboard")
 
 
 _resolve_source_lenient = resolve_source_lenient  # shared with status (source.py)
@@ -138,6 +146,62 @@ class _UpdateCache:
         with self._lock:
             self._value = None
             self._at = 0.0
+
+
+class _AggregateCache:
+    """Short-TTL memo over the office-wide read-only aggregates ``collect_state``
+    recomputes on every poll (#226).
+
+    ``check_parity`` re-parses all canonical files per IDE and the cross-project
+    scans re-read every session/feedback ``.md`` in every project — pure functions
+    of the office on disk, which only a mutating action changes. The UI polls every
+    ~6s, so without a memo each poll redoes that whole scan. This caches the bundle
+    for ``_AGGREGATE_TTL_SECONDS``; a mutating action calls :meth:`invalidate` so
+    the next poll recomputes rather than serving stale state.
+
+    Unlike ``_UpdateCache`` (which refreshes off-thread because it does an 8s
+    ``git fetch``) these are local file reads, so compute happens inline off the
+    lock — the lock only guards the trivial value swap, and a rare concurrent miss
+    simply recomputes twice."""
+
+    def __init__(self, ttl: float = _AGGREGATE_TTL_SECONDS) -> None:
+        self._lock = threading.Lock()
+        self._ttl = ttl
+        self._value: Optional[dict[str, Any]] = None
+        self._at = 0.0
+
+    def get(self, home: Path, source: Optional[Path], ides: list[str]) -> dict[str, Any]:
+        with self._lock:
+            if self._value is not None and time.monotonic() - self._at <= self._ttl:
+                return self._value
+        value = _compute_aggregates(home, source, ides)
+        with self._lock:
+            self._value = value
+            self._at = time.monotonic()
+        return value
+
+    def invalidate(self) -> None:
+        with self._lock:
+            self._value = None
+            self._at = 0.0
+
+
+def _compute_aggregates(home: Path, source: Optional[Path], ides: list[str]) -> dict[str, Any]:
+    """The office-wide read-only aggregates, computed once per poll (or reused from
+    :class:`_AggregateCache`). ``projects`` is the single ``list_projects`` scan the
+    cross-project views share; ``parity`` is per-IDE canonical-vs-installed drift."""
+    projects = list_projects(home, include_private=False)
+    parity: dict[str, Any] = {}
+    if source is not None:
+        for ide in ides:
+            if ide in RENDERERS:
+                parity[ide] = check_parity(source, ide, RENDERERS).to_dict()
+    return {
+        "projects": projects,
+        "activity": cross_project_activity(home, projects),
+        "scorecards": cross_project_scorecards(home, projects),
+        "parity": parity,
+    }
 
 
 def _proposal_entry(path: Path) -> dict[str, Any]:
@@ -200,38 +264,60 @@ def _agent_cards(agents_dir: Path) -> list[dict[str, Any]]:
     return cards
 
 
-def cross_project_activity(home: Path, limit: int = _ACTIVITY_LIMIT) -> list[dict[str, Any]]:
+def cross_project_activity(
+    home: Path, projects: Optional[list[dict[str, Any]]] = None,
+    limit: int = _ACTIVITY_LIMIT,
+) -> list[dict[str, Any]]:
     """Recent session records aggregated across every initialized Cohort project —
     the office-wide activity feed (#145). Loops ``list_projects`` over
     ``improve.load_session_entries`` (the dated half of the ``aggregate_signals``
     shared extraction), tags each entry with its owning project, and merges
     newest-first, capped at ``limit``. Distinct from ``state["project"]["sessions"]``
-    below, which is the focused project's own feed."""
+    below, which is the focused project's own feed.
+
+    ``projects`` may be supplied to reuse a single ``list_projects`` scan across the
+    other aggregates in one poll. A project whose session store is unreadable (e.g.
+    a corrupt/non-UTF-8 ``.md``) is skipped and logged, never fatal (#226)."""
+    if projects is None:
+        projects = list_projects(home, include_private=False)
     merged: list[dict[str, Any]] = []
-    for proj in list_projects(home, include_private=False):
-        paths = CohortPaths.for_project(Path(proj["path"]))
-        for entry in load_session_entries(paths):
-            merged.append({
-                "project": proj["name"],
-                "timestamp": entry["timestamp"],
-                "author": entry["author"],
-                "branch": entry["branch"],
-            })
+    for proj in projects:
+        try:
+            paths = CohortPaths.for_project(Path(proj["path"]))
+            for entry in load_session_entries(paths):
+                merged.append({
+                    "project": proj["name"],
+                    "timestamp": entry["timestamp"],
+                    "author": entry["author"],
+                    "branch": entry["branch"],
+                })
+        except Exception as exc:  # noqa: BLE001 - one bad project must not sink the feed
+            _log.warning("cross_project_activity: skipping %s: %s", proj.get("name"), exc)
     merged.sort(key=lambda e: e["timestamp"] or "", reverse=True)
     return merged[:limit]
 
 
-def cross_project_scorecards(home: Path) -> list[dict[str, Any]]:
+def cross_project_scorecards(
+    home: Path, projects: Optional[list[dict[str, Any]]] = None,
+) -> list[dict[str, Any]]:
     """Per-agent up/down scorecards aggregated across every initialized Cohort
     project — Cohort's lightweight answer to agent benchmarking (#145). Agents are
     shared across the office, so a single project's feedback undercounts real
     usage; this loops ``list_projects`` over ``improve.load_feedback_entries``
     (the dated half of the ``aggregate_signals`` shared extraction) and scores the
-    merged entries with ``improve.agent_scorecards``."""
+    merged entries with ``improve.agent_scorecards``.
+
+    ``projects`` may be supplied to reuse a single ``list_projects`` scan. A project
+    whose feedback store is unreadable is skipped and logged, never fatal (#226)."""
+    if projects is None:
+        projects = list_projects(home, include_private=False)
     entries: list[dict[str, Any]] = []
-    for proj in list_projects(home, include_private=False):
-        paths = CohortPaths.for_project(Path(proj["path"]))
-        entries.extend(load_feedback_entries(paths))
+    for proj in projects:
+        try:
+            paths = CohortPaths.for_project(Path(proj["path"]))
+            entries.extend(load_feedback_entries(paths))
+        except Exception as exc:  # noqa: BLE001 - one bad project must not sink scoring
+            _log.warning("cross_project_scorecards: skipping %s: %s", proj.get("name"), exc)
     return agent_scorecards(entries)
 
 
@@ -263,39 +349,52 @@ def claude_memory_summary(home: Path, repo_path: str) -> dict[str, Any]:
 
 def collect_state(
     home: Path, cwd: Path, update_cache: Optional[_UpdateCache] = None,
-    project_index: Any = None,
+    project_index: Any = None, aggregate_cache: Optional[_AggregateCache] = None,
 ) -> dict[str, Any]:
     """Everything the dashboard shows, as one JSON-safe dict. Read-only.
 
     ``project_index`` focuses a registered project (from the UI switcher) instead
     of the launch cwd's — resolved server-side against the registry (never a
-    client path)."""
+    client path).
+
+    ``aggregate_cache`` memoizes the office-wide read-only scans (parity, the
+    cross-project feeds, and the shared ``list_projects``) so a burst of ~6s polls
+    reuses one scan; a mutating action invalidates it (#226). Without one, a
+    throwaway cache computes fresh each call (the CLI/test path)."""
     focused = resolve_registered(home, project_index) if project_index is not None else None
-    state = do_status(home, focused if focused is not None else cwd)
-    state["projects"] = list_projects(home, include_private=False)
+    state = do_status(home, focused if focused is not None else cwd, include_raw_inventory=True)
+    source = _resolve_source_lenient(home)
+    # Office-wide aggregates: memoized, and computed once per poll. ``projects`` is
+    # a single ``list_projects`` scan shared by the switcher list and both feeds;
+    # per-project reads fail-soft inside the cross-project helpers (#226).
+    agg = (aggregate_cache or _AggregateCache()).get(home, source, state["global"]["ides"])
+    # A per-poll copy — claude_memory is attached here, never onto the cached list.
+    state["projects"] = [dict(proj) for proj in agg["projects"]]
     for proj in state["projects"]:
-        proj["claude_memory"] = claude_memory_summary(home, proj["path"])
+        try:
+            proj["claude_memory"] = claude_memory_summary(home, proj["path"])
+        except Exception as exc:  # noqa: BLE001 - one unreadable store must not 500 the poll
+            _log.warning("claude_memory_summary: skipping %s: %s", proj.get("name"), exc)
+            proj["claude_memory"] = {"count": 0, "updated": None}
     state["focused_project"] = state.get("project", {}).get("repo")
     state["version"] = __version__
     # Cross-project views (#145): office-wide, independent of the focused project —
     # every initialized project contributes, never just the one being managed.
-    state["activity"] = cross_project_activity(home)
-    state["scorecards"] = cross_project_scorecards(home)
-    source = _resolve_source_lenient(home)
+    state["activity"] = agg["activity"]
+    state["scorecards"] = agg["scorecards"]
     state["global"]["update"] = (update_cache or _UpdateCache()).get(source, home)
-    parity = {}
-    if source is not None:
-        for ide in state["global"]["ides"]:
-            if ide in RENDERERS:
-                parity[ide] = check_parity(source, ide, RENDERERS).to_dict()
-    state["global"]["parity"] = parity
+    state["global"]["parity"] = agg["parity"]
 
     # The full inventory — every kind across office / my / project (read-only),
     # with an ``active`` flag (an office agent may be filtered out by the roster
     # subset; my/project artifacts and every non-agent kind always compile).
+    # ``do_status`` already ran ``inventory`` for its summary and stashed the raw
+    # items under a private key; reuse them so the poll scans the tree once (#226).
     repo = Path(state["project"]["repo"]) if "project" in state else None
     installed_office_agents = set(state["global"]["roster"]["names"])
-    items = inventory(home, repo)
+    items = state.pop("_inventory_items", None)
+    if items is None:
+        items = inventory(home, repo)
     for it in items:
         it["active"] = (
             it["name"] in installed_office_agents
@@ -615,7 +714,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             q = urllib.parse.parse_qs(self.path.split("?", 1)[1]) if "?" in self.path else {}
             pi = (q.get("project") or [None])[0]
-            state = collect_state(self.server.home, self.server.cwd, self.server.update_cache, pi)
+            # Backstop: per-project/per-file reads already fail-soft inside
+            # collect_state, but any unexpected read error must still degrade to a
+            # served page, never 500 the whole dashboard (#226). Mirrors do_POST.
+            try:
+                state = collect_state(
+                    self.server.home, self.server.cwd, self.server.update_cache,
+                    pi, self.server.aggregate_cache,
+                )
+            except Exception as exc:  # noqa: BLE001 - one bad read must not blank the UI
+                _log.warning("collect_state failed: %s", exc)
+                self._send_json(200, {"error": f"state collection failed: {exc}", "degraded": True})
+                return
             self._send_json(200, state)
         elif self.path.startswith("/api/artifact?"):
             if not self._guard():
@@ -658,6 +768,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 raise ActionError("args must be an object")
             with self.server.action_lock:  # mutating commands never run concurrently
                 report = run_action(self.server.home, self.server.cwd, action, args)
+            # Every action here mutates the office, so the memoized read-only
+            # aggregates (parity, cross-project scans) are now stale — drop them so
+            # the next poll recomputes instead of serving pre-action state (#226).
+            self.server.aggregate_cache.invalidate()
             if action == "update":
                 self.server.update_cache.invalidate()  # drop the stale behind-count
             self._send_json(200, report)
@@ -680,6 +794,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.cwd = cwd
         self.token = secrets.token_urlsafe(32)
         self.update_cache = _UpdateCache()
+        self.aggregate_cache = _AggregateCache()
         self.action_lock = threading.Lock()
 
     @property
