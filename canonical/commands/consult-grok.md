@@ -33,8 +33,14 @@ cohort engine consult grok --prompt-file <f>
 
 Never pass the prompt as an inline shell argument — write it to a file first, then pass the
 file path. The consult is **advisory** in both modes — it recommends, Claude weighs, the
-human decides — and nothing is written to this repo. Model choice defaults to the
-`grok-4-latest` flagship.
+human decides — and nothing is written to this repo.
+
+**Model choice** defaults to the engine's `flagship` tier. Ask for a tier by name
+(`--tier flagship | cheap | reasoning`), not for a vendor alias: xAI's aliases silently
+resolve to a *different* model than their name suggests — `grok-4-latest` serves `grok-4.3`,
+not the flagship — so the registry pins concrete, probed ids and the tier name is the only
+thing that reliably gets you the model you asked for. `cohort engine consult grok --tier
+nonsense` lists the tiers this engine actually has.
 
 ## 2. Egress — allowed by default, opt-out per repo
 

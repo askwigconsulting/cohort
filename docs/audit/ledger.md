@@ -16,21 +16,38 @@ filesystem, moves data off-machine, executes external-engine code, or bootstraps
 
 ## Dimension coverage
 
-| Dimension | Last run | FP rate | Notes |
-|---|---|---|---|
-| critical-path | 2026-07-29 (r1) | 0/5 | swept every run |
-| security | 2026-07-29 (r1) | 0/6 | |
-| correctness | 2026-07-29 (r1) | 1/8 struck (#7 office-quarantine "inert" — wrong, it's wired) | |
-| concurrency | 2026-07-29 (r1) | 0/7 | |
-| honesty | 2026-07-29 (r1) | 0/2 | |
-| tests | 2026-07-29 (r1) | 0/4 | |
-| supply-chain | 2026-07-29 (r1) | 0/5 | |
-| performance | — never | — | **deferred to r2** |
-| resilience | — never | — | **deferred to r2** |
-| naming | — never | — | **deferred to r2** |
-| docs | — never | — | **deferred to r2** |
-| ops | — never | — | **deferred to r2** |
-| accessibility | — never | — | **deferred to r2 (dashboard UI)** |
+`Tiers seen` records which model tier reviewed the dimension on each run, so the FP rate
+below can be read **per tier** rather than as one blended number — the point of the model
+rotation in `/audit` §3. A dimension only ever seen by one tier has that tier's blind spots
+baked into its history.
+
+| Dimension | Last run | Tiers seen | FP rate | Notes |
+|---|---|---|---|---|
+| critical-path | 2026-07-29 (r1) | opus (r1) | 0/5 | swept every run |
+| security | 2026-07-29 (r1) | opus (r1) | 0/6 | |
+| correctness | 2026-07-29 (r1) | opus (r1) | 1/8 struck (#7 office-quarantine "inert" — wrong, it's wired) | |
+| concurrency | 2026-07-29 (r1) | opus (r1) | 0/7 | |
+| honesty | 2026-07-29 (r1) | opus (r1) | 0/2 | |
+| tests | 2026-07-29 (r1) | opus (r1) | 0/4 | |
+| supply-chain | 2026-07-29 (r1) | opus (r1) | 0/5 | |
+| performance | — never | — | — | **deferred to r2** |
+| resilience | — never | — | — | **deferred to r2** |
+| naming | — never | — | — | **deferred to r2** |
+| docs | — never | — | — | **deferred to r2** |
+| ops | — never | — | — | **deferred to r2** |
+| accessibility | — never | — | — | **deferred to r2 (dashboard UI)** |
+| vendor-reachability | — never | — | — | **always-on from r3**; added 2026-07-31 after grok was found unreachable despite correct code |
+
+## Model phase
+
+`/audit` advances the routing phase each run — `balanced` → `complex-heavy` →
+`simple-heavy` → `balanced` — so no dimension is permanently bound to one tier's blind
+spots. Record the phase each run and read the *next* one from here.
+
+| Run | Phase |
+|---|---|
+| r1 (2026-07-29) | balanced (retroactive — routing predates the rotation) |
+| **next run** | **complex-heavy** |
 
 ## Run 1 — 2026-07-29
 

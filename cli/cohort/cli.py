@@ -1021,7 +1021,8 @@ def engine_consult(
     tier: Optional[str] = typer.Option(
         None,
         "--tier",
-        help="Model tier to request: flagship (default) | cheap. "
+        help="Model tier to request; defaults to 'flagship'. Tiers vary by engine — "
+        "pass an unknown one to list this engine's. "
         "Mutually exclusive with --model.",
     ),
     model: Optional[str] = typer.Option(
@@ -1198,7 +1199,8 @@ def engine_review(
     tier: Optional[str] = typer.Option(
         None,
         "--tier",
-        help="Model tier: flagship (default) | cheap. Mutually exclusive with --model.",
+        help="Model tier; defaults to 'flagship'. Tiers vary by engine — pass an "
+        "unknown one to list this engine's. Mutually exclusive with --model.",
     ),
     model: Optional[str] = typer.Option(
         None,

@@ -50,8 +50,8 @@ found nothing — an absence claimed without a search is as bad as an invented c
 Read `docs/audit/ledger.md` (create it on the first run). It records, per dimension ×
 subsystem: last audited, findings raised, findings that turned out false, and the project's
 declared critical path. Pick this run's slice from the stalest entries — plus the critical
-path and go-to-market, always. If the caller named a dimension, audit that and still sweep
-both always-on dimensions.
+path, go-to-market and vendor-reachability, always. If the caller named a dimension, audit
+that and still sweep all three always-on dimensions.
 
 The ledger also declares the **business context**, without which the business track is
 guesswork. Naming it is the first run's job, same as the critical path:
@@ -93,9 +93,35 @@ this domain), add it to the ledger as a new dimension.
 | **supply-chain** | Unpinned or floating dependency versions, lockfile drift or absence, unmaintained/abandoned deps, license incompatibility, transitive CVEs, unverified install/post-install scripts | A dependency that can change under you between two builds |
 | **accessibility** | Keyboard-unreachable controls, missing screen-reader labels/semantics, contrast below threshold, focus traps, motion without a reduced-motion path | An interactive element a keyboard alone cannot operate |
 | **ops** | Alerting that reaches nobody, unenforced entitlements, config vs reality drift, untested restore, capacity a live loop depends on | A control configured but never observed working |
+| **vendor-reachability** *(always on)* | Whether real work still reaches **each** vendor **right now**: every doer and reviewer path actually dispatched end to end, CLI-first→API-fallback holding, the announced channel matching the one that answered, and every model id in the registry resolving to itself | A vendor path that returns success with an empty body |
 
 **Weight actual defects highest**, then risks, then improvements. "Consider scalability" is
 worthless output; name the failure and the input that triggers it.
+
+### vendor-reachability is dispatched, never reasoned about
+
+This is the one dimension a reviewer **cannot** answer by reading code, and the only
+acceptable evidence is a **command that ran and the output it produced**. Reading the
+dispatch path and concluding "grok works" is exactly the failure mode: on 2026-07-31 the
+code was correct, the gates passed, and grok was unreachable anyway — the sandbox could not
+execute a CLI installed under `~/.local`, and the CLI itself was rejected by the vendor's
+current API. Neither is visible in the source.
+
+Each run, for **every** vendor and **both** transports:
+
+- **Dispatch a real task** and quote the answer. A round-trip that returns nothing is a
+  failure even when the exit code is 0.
+- **Name the channel that actually answered** and check it matches what was announced. A
+  silent downgrade to a weaker transport invalidates every finding routed through it.
+- **Resolve every registered model id** against the live endpoint and confirm it serves
+  back its own name. Aliases drift, and a tier that quietly resolves elsewhere means the
+  rotation below is measuring the wrong model.
+- **Report unreachable vendors in the audit itself.** A run that lost a vendor is a
+  *narrower* run, and the report must say so — never quietly redistribute its share.
+
+**Never present a single-vendor result as cross-vendor.** If a vendor could not be reached,
+say which, say why, and state what that leaves unreviewed. A fabricated cross-vendor
+convergence is worse than an admitted gap.
 
 ### The privacy dimension has a trap worth naming
 
@@ -165,6 +191,33 @@ Every reviewer gets: its dimension, the operational gates (scope, evidence-befor
 adversarial self-check, verify, calibrate), and its track's evidence standard — `file:line`
 for the code track, a named artifact or a **searched-and-documented absence** for the
 business track. **Verify against the deployed branch**, not a stale checkout.
+
+### Rotate the tier across runs (the sine wave)
+
+Routing by fit alone is stable, and stability is the problem: a dimension always reviewed by
+one tier permanently inherits that tier's blind spots. So the *phase* advances each run —
+read the last phase from the ledger and move to the next:
+
+| Phase | Routing | What it is for |
+|---|---|---|
+| **balanced** | mixed tiers, by fit as above | the default read |
+| **complex-heavy** | Fable/Opus across the board, including the mechanical sweeps | subtlety a cheap tier glosses |
+| **simple-heavy** | Sonnet/Haiku wherever the floor allows | mechanical defects a reasoning model reads past |
+
+Then `balanced` again. Within a phase, prefer a tier that has **not** reviewed this
+dimension recently — the aim is that over several runs every dimension has been seen by
+every tier, because the *union* of their perspectives is what hardens a finding.
+
+Two rules the phase never overrides. **The always-on dimensions keep their quality floor** —
+critical-path, go-to-market and vendor-reachability never drop below a capable tier just
+because it is a simple-heavy run. And a **simple-heavy run is not a cheap run**: it is an
+experiment in what a mechanical reader catches, so it still cross-examines and still
+verifies.
+
+Record the tier per dimension in the ledger. That makes the existing per-dimension
+false-positive rate **tier-aware**: a dimension producing mostly-struck findings under one
+tier is a candidate for re-run under another, and over time the ledger shows which tier
+actually finds signal where.
 
 ## 4. Cross-examine (round two)
 
