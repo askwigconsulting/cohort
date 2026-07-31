@@ -240,3 +240,29 @@ def test_do_update_office_delta_is_a_noop_without_state_dir(tmp_path: Path):
     _commit(up, "a.txt", "1\n")
     result = do_update(src, tmp_path / "home", pip_run=_no_pip)
     assert result.status == "updated"
+
+
+def test_office_reconcile_prunes_records_whose_bytes_are_gone(home: Path, tmp_path: Path):
+    """dead-ends (audit r3): `office_reconcile` existed and was called from nowhere, so
+    office pending records only ever grew — `cohort office review` listed identities a
+    reviewer could not resolve, because the artifact they would approve no longer existed.
+
+    Wired at the update site rather than the review command: pruning a record un-withholds
+    it, which is only safe against the very tree the delta was recorded from. Re-resolving
+    the office root at review time could point at a different clone, make a genuinely
+    pending artifact look absent, and let it be placed unreviewed.
+    """
+    from cohort import quarantine
+
+    state = _state(home)
+    _seed(state, "office_quarantine.json", [_rec("deleted-upstream", _HASH_A)])
+    assert len(quarantine.office_pending_keys(state)) == 1
+
+    # An office tree that does not contain those bytes — deleted or superseded upstream.
+    office = tmp_path / "office"
+    (office / "canonical").mkdir(parents=True)
+
+    survivors = {a.key for a in quarantine.office_reconcile(state, office)}
+
+    assert survivors == set()                                 # nothing left to review
+    assert quarantine.office_pending_keys(state) == set()     # and the prune persisted

@@ -804,6 +804,18 @@ def do_update(
     # independently and fails closed, so it stays the real backstop.
     try:
         quarantine.record_office_delta(CohortPaths(home).state, source)
+        # Then drop pending records whose bytes are no longer in the office tree — deleted
+        # upstream, or superseded by this very pull. `office_reconcile` was written for this
+        # and was never called from anywhere, so office pending records only ever grew:
+        # `cohort office review` listed identities a reviewer could not resolve by
+        # reviewing, because the artifact they would approve no longer existed.
+        #
+        # It belongs *here*, not in the review command. Pruning a record un-withholds it, so
+        # it is only safe against the tree the delta was recorded from — which this function
+        # already holds as `source`. Re-resolving the office root at review time could point
+        # at a different clone, making a genuinely pending artifact look absent, pruning it,
+        # and letting it be placed unreviewed.
+        quarantine.office_reconcile(CohortPaths(home).state, source)
     except quarantine.QuarantineStateError:
         pass
 
