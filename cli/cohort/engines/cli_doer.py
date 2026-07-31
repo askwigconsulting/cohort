@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -511,15 +512,61 @@ def run_codex_in_worktree(
     # still writing into a worktree Cohort is about to delete. start_new_session makes a
     # group kill *possible* but does not perform one. Closing this needs the child pid
     # (i.e. Popen), so it is tracked separately rather than bolted on here.
-    return subprocess.run(
+    return _launch_vendor_cli(cmd, timeout=timeout, env=env)
+
+
+def _launch_vendor_cli(
+    cmd: list[str], *, timeout: float, env: dict[str, str]
+) -> subprocess.CompletedProcess:
+    """Run a vendor CLI non-interactively and, on timeout, kill its **whole process group**.
+
+    The single seam through which every vendor CLI is spawned, so confinement and teardown
+    are decided in one place rather than per call site.
+
+    ``subprocess.run(timeout=…)`` kills only the *direct child*. An agentic CLI spawns
+    helpers, so past the wall-clock cap those helpers kept running — still spending against
+    the vendor API, and still writing into a worktree Cohort was about to delete
+    (audit r3, M5). ``start_new_session=True`` was already set and the comment claimed it
+    "reaps grandchildren"; it does not, it only puts the tree in its own process group so
+    that a group kill becomes *possible*. This performs it.
+
+    stdin is ``DEVNULL``: these doers are non-interactive, and a TTY the child inherited
+    could otherwise be used to inject keystrokes back into Cohort (TIOCSTI).
+    """
+    with subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
         env=env,
         stdin=subprocess.DEVNULL,
         start_new_session=True,
-    )
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            # Drain whatever the tree produced before it died — on a timeout that output
+            # is the only diagnostic there is.
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the process group led by ``proc``, falling back to the child alone.
+
+    The group exists because the process was started with ``start_new_session=True``. An
+    already-reaped group, or a platform without ``killpg``, is not an error: the goal is
+    that nothing outlives the cap, and an already-dead tree satisfies it.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, AttributeError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def _git(worktree: Path, *args: str) -> str:
@@ -690,15 +737,7 @@ def run_grok_in_worktree(
     # Unlike codex (see M5 note in run_codex_in_worktree), grok's tree is largely reaped
     # anyway by bwrap's --die-with-parent when the jail leader dies — but that guarantee
     # rests on bwrap, not on Cohort.
-    return subprocess.run(
-        argv,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    return _launch_vendor_cli(argv, timeout=timeout, env=env)
 
 
 def _egress_gate_text(repo_root: Path, project_context_text: str) -> str:

@@ -9,12 +9,43 @@ are all exercised.
 from __future__ import annotations
 
 import subprocess
+import time
 import types
 from pathlib import Path
 
 import pytest
 
 from cohort.engines import cli_doer, gates, patch_proposal
+
+
+class _FakePopen:
+    """A ``subprocess.Popen`` stand-in recording the kwargs the launch seam passes.
+
+    The confinement flags (``stdin=DEVNULL``, ``start_new_session=True``) are set at the
+    Popen call, so that is where they must be asserted — the seam above it now owns the
+    timeout-and-group-kill behaviour instead.
+    """
+
+    def __init__(self, seen: dict, *, returncode: int = 0, stdout: str = "", stderr: str = ""):
+        self._seen = seen
+        self._returncode = returncode
+        self._out = (stdout, stderr)
+
+    def __call__(self, cmd, **kwargs):
+        self._seen["cmd"] = cmd
+        self._seen["kwargs"] = kwargs
+        self.pid = 4242
+        self.returncode = self._returncode
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def communicate(self, timeout=None):
+        return self._out
 
 
 def _init_git_repo(root: Path, files: dict[str, str]) -> None:
@@ -39,20 +70,21 @@ def _worktree_count(root: Path) -> int:
 
 
 def _fake_codex(edit: dict[str, str], returncode: int = 0):
-    """A subprocess.run stand-in: for the codex call, write ``edit`` into the worktree
-    (named by ``-C``); for git calls, run the real git."""
-    real_run = subprocess.run
+    """A ``_launch_vendor_cli`` stand-in: write ``edit`` into the worktree (named by
+    ``-C``) as codex would, and report ``returncode``.
 
-    def run(cmd, **kwargs):
-        if cmd[:2] == ["codex", "exec"]:
-            wt = Path(cmd[cmd.index("-C") + 1])
-            for rel, content in edit.items():
-                (wt / rel).parent.mkdir(parents=True, exist_ok=True)
-                (wt / rel).write_text(content, encoding="utf-8")
-            return types.SimpleNamespace(returncode=returncode, stdout="edited", stderr="")
-        return real_run(cmd, **kwargs)
+    Patched at the vendor-launch seam rather than at ``subprocess.run``, so git calls run
+    for real without the fake having to tell git and codex apart — and so a test can never
+    accidentally spawn the real vendor CLI."""
 
-    return run
+    def launch(cmd, **kwargs):
+        wt = Path(cmd[cmd.index("-C") + 1])
+        for rel, content in edit.items():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(content, encoding="utf-8")
+        return types.SimpleNamespace(returncode=returncode, stdout="edited", stderr="")
+
+    return launch
 
 
 @pytest.fixture
@@ -65,7 +97,7 @@ def test_codex_doer_edits_the_worktree_leaving_source_untouched(
 ) -> None:
     _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run",
+        "cohort.engines.cli_doer._launch_vendor_cli",
         _fake_codex({"src/app.py": "value = 2\n"}),
     )
 
@@ -86,14 +118,12 @@ def test_codex_doer_command_is_sandbox_confined_to_the_worktree(
     real_run = subprocess.run
 
     def capture(cmd, **kwargs):
-        if cmd[:2] == ["codex", "exec"]:
-            seen["cmd"] = cmd
-            wt = Path(cmd[cmd.index("-C") + 1])
-            (wt / "a.py").write_text("x=2\n", encoding="utf-8")
-            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-        return real_run(cmd, **kwargs)
+        seen["cmd"] = cmd
+        wt = Path(cmd[cmd.index("-C") + 1])
+        (wt / "a.py").write_text("x=2\n", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", capture)
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, model="gpt-5.6-sol")
 
     cmd = seen["cmd"]
@@ -107,7 +137,7 @@ def test_codex_doer_reports_footprint_violations(
 ) -> None:
     _init_git_repo(tmp_path, {"src/app.py": "1\n"})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run",
+        "cohort.engines.cli_doer._launch_vendor_cli",
         _fake_codex({"src/app.py": "2\n", "other/sneaky.py": "3\n"}),
     )
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, footprint=["src"])
@@ -194,7 +224,7 @@ def test_explicit_project_context_kwarg_overrides_repo_state(
     an allow-marked context passes even if it differs from the on-disk file."""
     _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run",
+        "cohort.engines.cli_doer._launch_vendor_cli",
         _fake_codex({"src/app.py": "value = 2\n"}),
     )
     result = cli_doer.run_doer(
@@ -369,7 +399,7 @@ def test_run_grok_in_worktree_hands_grok_a_scrubbed_env_not_the_host(
         seen["env"] = kwargs.get("env")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", capture)
     cli_doer.run_grok_in_worktree(tmp_path / "wt", "do a thing")
 
     env = seen["env"]
@@ -387,11 +417,7 @@ def test_run_grok_in_worktree_is_non_interactive_and_own_session(tmp_path, monke
     monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
     seen = {}
 
-    def capture(cmd, **kwargs):
-        seen["kwargs"] = kwargs
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.Popen", _FakePopen(seen))
     cli_doer.run_grok_in_worktree(tmp_path / "wt", "do a thing")
 
     assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
@@ -403,15 +429,37 @@ def test_run_codex_in_worktree_is_non_interactive_and_own_session(tmp_path, monk
     monkeypatch.setattr("cohort.engines.cli_doer.shutil.which", lambda _n: "/usr/bin/codex")
     seen = {}
 
-    def capture(cmd, **kwargs):
-        seen["kwargs"] = kwargs
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.Popen", _FakePopen(seen))
     cli_doer.run_codex_in_worktree(tmp_path / "wt", "do a thing")
 
     assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
     assert seen["kwargs"]["start_new_session"] is True
+
+
+def test_a_timed_out_vendor_cli_takes_its_whole_process_group_with_it(tmp_path):
+    """Audit r3, M5. A real kernel-level check, not a mock.
+
+    ``subprocess.run(timeout=…)`` kills only the direct child, so helpers an agentic CLI
+    spawned outlived the wall-clock cap — still spending against the vendor API, and still
+    writing into a worktree Cohort was about to delete. Here the "CLI" spawns a grandchild
+    that would survive its parent, and the group kill must reap it.
+    """
+    marker = tmp_path / "grandchild-still-alive"
+    # Parent spawns a detached grandchild that keeps touching a file, then sleeps past the
+    # timeout. Killing only the parent would leave the grandchild writing.
+    script = (
+        f"(while true; do touch {marker}; sleep 0.05; done) & "
+        "sleep 30"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        cli_doer._launch_vendor_cli(
+            ["/bin/sh", "-c", script], timeout=1.0, env={"PATH": "/usr/bin:/bin"}
+        )
+
+    # Give any survivor a clear window to prove it is still running.
+    marker.unlink(missing_ok=True)
+    time.sleep(0.6)
+    assert not marker.exists(), "a grandchild outlived the doer timeout"
 
 
 def test_worktree_secret_scan_refuses_committed_secret_before_dispatch(
@@ -470,12 +518,10 @@ def test_declared_fixture_clears_the_worktree_scan_and_dispatch_proceeds(
     real_run = subprocess.run
 
     def spy(cmd, **kwargs):
-        if cmd[:2] == ["codex", "exec"]:
-            spawned["called"] = True
-            return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
-        return real_run(cmd, **kwargs)
+        spawned["called"] = True
+        return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
 
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", spy)
     cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
     assert spawned["called"] is True
 
@@ -548,12 +594,10 @@ def test_a_human_confirming_unblocks_a_branch_local_declaration(
     spawned = {"called": False}
 
     def spy(cmd, **kwargs):
-        if cmd[:2] == ["codex", "exec"]:
-            spawned["called"] = True
-            return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
-        return real_run(cmd, **kwargs)
+        spawned["called"] = True
+        return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
 
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", spy)
     cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
 
     assert spawned["called"] is True
@@ -679,7 +723,7 @@ def test_doer_allows_when_total_wire_bytes_within_cap(
     101-byte cap runs. Paired with the over-cap test, one byte of cap decides it."""
     _init_git_repo(tmp_path, {"data.txt": "x" * 100})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run", _fake_codex({"data.txt": "y\n"})
+        "cohort.engines.cli_doer._launch_vendor_cli", _fake_codex({"data.txt": "y\n"})
     )
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, max_wire_bytes=101)
     assert result.returncode == 0
