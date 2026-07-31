@@ -100,3 +100,40 @@ Two-phase fix. Coordinator verified every diff and re-ran the suite as the integ
 - **#217 — DONE.** Pinned floating deps (`PyYAML<7`, `pytest<10`, `jsonschema<5`); added `requirements.lock` (runtime closure); installed `bubblewrap` in Linux CI so the confinement test (audit #11) runs instead of skip-gating.
 
 **Still open (new discovery, tracked):** none from this round — the 4 extra manifest sites were folded into the #4 closure rather than deferred.
+
+## Run 2 — 2026-07-31 (mostly Fable + Opus panel)
+
+Panel: 8 Claude reviewers (Fable: critical-path, security, go-to-market; Opus: concurrency,
+resilience, performance, docs, accessibility) + a grok cross-vendor pass. Coordinator (Opus)
+re-verified every HIGH + convergent finding against the code. Slice weighted to the large NEW
+surface since r1 (the v0.12.0 grok CLI-preference dispatch, the manifest-lock completion, the
+release machinery) + the never-covered dimensions.
+
+**grok cross-vendor pass: fail-closed blocked** — the worktree (a full cohort checkout) tripped
+the secret scanner on the repo's own detection **test fixtures**, so nothing was sent. The gate
+worked correctly; no independent grok findings this run (→ finding #233).
+
+### Confirmed — HIGH
+1. **grok/codex doer TIOCSTI escape** — `_grok_sandbox_argv` omits `--new-session` (`cli_doer.py:373`); doers inherit the TTY (`:296`,`:428`, no `stdin=`). Compromised engine → host RCE; mitigated on kernels ≥6.2. **#225.** Coordinator-verified.
+2. **Dashboard `/api/state` unbounded+uncached every 6s, no failure isolation** — `check_parity` re-parses 55 files/IDE (`parity.py:113`); cross-project activity/scorecards re-read every session/feedback file/project (`dashboard.py:203,224`); `do_GET` no try/except → one bad `.md` 500s all. **CONVERGENT (performance + resilience).** **#226.**
+
+### Confirmed — MED
+3. **grok `/etc`+`/usr` readable & un-scanned; docstring overstates read-confinement** (`cli_doer.py:378,365`) — CONVERGENT (security + critical-path). **#227.**
+4. **grok-cli-as-doer reverses RFC 0004 with no recorded rationale** + stale docstrings (`cli_doer.py:226`, `cli.py:944`) — the RFC's "read-only mode" precondition is only half-met; the TIOCSTI + /etc findings are exactly what it guarded. **#228.**
+5. **Doer egress opt-out reads a caller string (default `""`), not repo state** (`cli_doer.py:495,548,604`) — latent. **#229.**
+6. **filelock non-atomic stale-steal + token-release** (`filelock.py:80,97`) — real, **narrow/near-impossible** in practice (downgraded on likelihood). **#230.**
+7. **Agentic loop has no overall wall-clock deadline** (`xai_agentic.py:440`, ~90 min worst case). **#231.**
+8. **Dashboard a11y** — color-only sparkline (`dashboard.js:436`), no `prefers-reduced-motion`, sub-AA `--faint` text. **#232.**
+9. **grok CLI-doer unusable on ordinary/own repos** — 5 MB wire cap vs full checkout + secret-fixture false positives (usability; gates are correctly fail-closed). **#233.**
+
+### Confirmed — business track (go-to-market)
+- **PyPI name `cohort` is taken by a same-category competitor** — `pip install cohort` installs a rival; name not locked (no publish step). **#234.** Other GTM findings (multi-IDE wedge shipped "experimental" vs a 38k-star marketplace + AGENTS.md standard; ~8-step onboarding; office-vs-dev-workflow wedge untested on a real user; no adoption channel) are **owner decisions**, not eng tickets — in the report.
+
+### Struck / downgraded (round 2)
+- Nothing struck — the Fable/Opus panel was evidence-disciplined and the coordinator re-verified the HIGH/convergent set against code. Two **downgraded**: filelock races → narrow/near-impossible for ms-scale JSON rewrites; grok-under-`~/`-unreachable → conditional on install layout (fails closed, so safe).
+
+### Notable controls verified sound (evidence-based negatives)
+CLI routing never reaches the xAI API after a gate fires (`_run_grok_cli_review_or_exit` exits on every branch); grok is never run unsandboxed and its diff is never auto-applied; update is FF-only to a pinned SHA with fail-closed signature/pinned-key gates (`update.py:688,764`); `patch.py` write-containment refuses symlink traversal; install `apply`/`reverse` is crash-consistent (atomic writes + LIFO reverse); worktree cleanup is on every error path; quarantine + manifest RMW cycles are serialized under one lock anchor per store; `_UpdateCache` is exemplary TTL-caching.
+
+### Dimension coverage update
+critical-path · security · concurrency · resilience · performance · docs · accessibility · go-to-market → **swept r2 (2026-07-31)**. Still stale: **naming, ops, privacy, business-ops, dead-ends** (never); correctness/honesty/tests/supply-chain (r1) — next rotation.
