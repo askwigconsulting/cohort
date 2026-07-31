@@ -33,6 +33,18 @@ from cohort.engines.xai_agentic import AgenticResult
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _grok_cli_unavailable_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the ``engine propose`` CLI tests to the xAI API-direct patch path.
+
+    ``engine propose grok`` now prefers the local bubblewrap-sandboxed grok CLI whenever
+    grok-cli AND bwrap are installed (which they may be on the test host), emitting that
+    worktree's diff instead of the API proposal. Pin the CLI as 'unavailable' so these
+    API-path proposal tests stay deterministic; the CLI-preferred path is covered in
+    test_engine_tier_review."""
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: False)
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #

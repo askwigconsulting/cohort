@@ -389,6 +389,159 @@ def test_worktree_byte_count_fails_closed_on_unmeasurable_file(tmp_path):
         patch_proposal.cleanup_worktree(tmp_path, worktree)
 
 
+# === grok read-only reviewer (run_grok_review) ==============================
+
+
+@pytest.fixture
+def _grok_installed(monkeypatch):
+    """Make both grok-cli and bwrap look installed so the sandbox assertion passes and
+    the gate sequence (not the availability check) is what a test exercises."""
+    monkeypatch.setattr(
+        cli_doer.shutil, "which",
+        lambda name: "/usr/bin/grok" if name == "grok" else None,
+    )
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+
+
+def _spy_grok(stdout: str = "grok's analysis", returncode: int = 0):
+    """A run_grok_in_worktree stand-in that records it ran and returns fixed stdout."""
+    calls = {"n": 0}
+
+    def run(worktree, task, **kwargs):
+        calls["n"] += 1
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    return calls, run
+
+
+def test_grok_cli_available_requires_both_grok_and_bwrap(monkeypatch):
+    """_grok_cli_available is True only when grok AND bwrap are both present — either
+    missing means the CLI path can't run confined, so callers fall back to the API."""
+    monkeypatch.setattr(cli_doer.shutil, "which",
+                        lambda name: "/usr/bin/grok" if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    assert cli_doer._grok_cli_available() is True
+
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: None)
+    assert cli_doer._grok_cli_available() is False  # bwrap missing
+
+    monkeypatch.setattr(cli_doer.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    assert cli_doer._grok_cli_available() is False  # grok missing
+
+
+def test_run_grok_review_returns_stdout_and_discards_the_worktree(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """The read path returns grok's stdout as the analysis and ALWAYS discards the
+    worktree (unlike the doer, which leaves it for review) — grok's confined edits go
+    with it."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    calls, spy = _spy_grok(stdout="the code looks fine")
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    result = cli_doer.run_grok_review("review this", repo_root=tmp_path)
+
+    assert calls["n"] == 1
+    assert result.analysis == "the code looks fine"
+    assert result.transcript == "the code looks fine"
+    assert result.returncode == 0
+    assert _worktree_count(tmp_path) == 1  # worktree discarded (read path keeps no diff)
+
+
+def test_run_grok_review_secret_in_task_refuses_before_grok(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """A secret in the task refuses at the task secret-scan — BEFORE the worktree is even
+    created and BEFORE grok runs (gate order mirrors run_grok_doer)."""
+    _init_git_repo(tmp_path, {"a.py": "1\n"})
+    calls, spy = _spy_grok()
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(gates.SecretFoundError):
+        cli_doer.run_grok_review(
+            "use AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY here",
+            repo_root=tmp_path,
+        )
+
+    assert calls["n"] == 0                 # grok never reached
+    assert _worktree_count(tmp_path) == 1  # no worktree leaked (refused before creation)
+
+
+def test_run_grok_review_egress_optout_refuses_before_grok(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """The repo egress opt-out refuses before grok and before any worktree is created."""
+    _init_git_repo(tmp_path, {"a.py": "1\n"})
+    calls, spy = _spy_grok()
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(gates.EgressBlockedError):
+        cli_doer.run_grok_review(
+            "review", repo_root=tmp_path,
+            project_context_text="## Egress\n\ncohort:egress=deny\n",
+        )
+
+    assert calls["n"] == 0
+    assert _worktree_count(tmp_path) == 1
+
+
+def test_run_grok_review_over_cap_refuses_before_grok_and_cleans_up(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """An over-cap worktree refuses at the wire-byte gate — grok is never reached and the
+    throwaway worktree is cleaned up (101 bytes > 100-byte cap)."""
+    _init_git_repo(tmp_path, {"data.txt": "x" * 100})
+    calls, spy = _spy_grok()
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(gates.PayloadTooLargeError):
+        cli_doer.run_grok_review("t", repo_root=tmp_path, max_wire_bytes=100)
+
+    assert calls["n"] == 0                 # gate fired before grok
+    assert _worktree_count(tmp_path) == 1  # worktree cleaned up on refusal
+
+
+def test_run_grok_review_worktree_secret_scan_refuses_before_grok(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """A committed worktree file carrying a credential refuses at the worktree secret
+    scan — grok never reads it, and the worktree is cleaned up."""
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    calls, spy = _spy_grok()
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(gates.SecretFoundError):
+        cli_doer.run_grok_review("tidy the config", repo_root=tmp_path)
+
+    assert calls["n"] == 0
+    assert _worktree_count(tmp_path) == 1
+
+
+def test_run_grok_review_cleans_up_worktree_on_grok_failure(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """If grok itself fails (times out / raises), the read path still discards the
+    worktree — the finally cleanup runs on the failure path too."""
+    _init_git_repo(tmp_path, {"a.py": "1\n"})
+
+    def boom(worktree, task, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="grok", timeout=1.0)
+
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", boom)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        cli_doer.run_grok_review("review", repo_root=tmp_path)
+
+    assert _worktree_count(tmp_path) == 1  # cleaned up despite grok failing
+
+
+def test_run_grok_review_empty_task_refused(tmp_path, _grok_installed):
+    """An empty task is refused, matching run_grok_doer."""
+    with pytest.raises(cli_doer.DoerError, match="empty"):
+        cli_doer.run_grok_review("   ", repo_root=tmp_path)
+
+
 def test_run_doer_routes_grok_to_the_grok_doer(monkeypatch):
     """run_doer dispatches 'grok'/'xai' to the grok doer instead of refusing."""
     called = {}

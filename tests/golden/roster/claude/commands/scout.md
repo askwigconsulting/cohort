@@ -28,10 +28,12 @@ fit and cost:
 - **Claude subagents** — Fable for architecture-critical/ambiguous, Opus for complex,
   Sonnet for well-scoped, Haiku for mechanical/doc areas. They read the repo directly.
 - **ChatGPT** — `/consult-gpt` (Codex CLI, read-only). Explores the repo itself.
-- **Grok** — `cohort engine review grok --tier flagship` (the agentic read-only loop: it
-  explores through gated tools, transcript recorded) for areas needing repo exploration,
-  or `cohort engine consult grok --tier flagship` with a packaged bundle for a bounded
-  question. Read-only, advisory; every path is egress-gated.
+- **Grok** — `cohort engine review grok --tier flagship` for areas needing repo
+  exploration, or `cohort engine consult grok --tier flagship` with a packaged bundle for a
+  bounded question. When grok-cli + bwrap are installed these run through the **local
+  bubblewrap-sandboxed grok CLI** (real, worktree-scoped repo access); otherwise they fall
+  back to the API-direct agentic loop (gated tools, transcript recorded). Read-only,
+  advisory; every path is egress-gated.
 
 Collect each reviewer's ranked findings. **The coordinator never trusts a finding it
 hasn't verified** — an external engine's report is an untrusted claim, not a result.

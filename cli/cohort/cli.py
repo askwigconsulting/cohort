@@ -36,7 +36,7 @@ import json as _json
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 import typer
 
@@ -924,6 +924,70 @@ def _resolve_engine_model(spec, tier: Optional[str], model: Optional[str]) -> st
         raise typer.Exit(code=2)
 
 
+def _is_grok_engine(engine: str) -> bool:
+    """Whether ``engine`` names Grok (the only engine with a local CLI to prefer here).
+
+    Codex is already CLI-first through its own code path; the CLI-vs-API preference this
+    guards is grok-only, so every dispatch check narrows to grok via this alias set."""
+    from .engines import cli_doer
+
+    return engine.strip().lower() in cli_doer._GROK_ENGINE_ALIASES
+
+
+def _run_grok_cli_review_or_exit(
+    task: str,
+    *,
+    repo_root: Path,
+    model: str,
+    project_context_text: str,
+) -> NoReturn:
+    """Run the local grok CLI as a read-only reviewer, print its analysis, then exit.
+
+    Shared by ``engine consult`` and ``engine review`` when the grok CLI is preferred over
+    the xAI API. Every gate fires inside :func:`cli_doer.run_grok_review` *before* grok is
+    invoked; a gate refusal exits non-zero here and is **never** retried against the API —
+    a gate failure is a refusal, not a reason to switch channels. Always terminates via
+    ``typer.Exit``.
+    """
+    from .engines import cli_doer
+    from .engines import gates as engine_gates
+    from .engines import patch_proposal
+
+    try:
+        review = cli_doer.run_grok_review(
+            task,
+            repo_root=repo_root,
+            model=model,
+            project_context_text=project_context_text,
+        )
+    except engine_gates.EgressBlockedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.SecretFoundError as exc:
+        typer.echo(f"error: {exc}. Nothing was sent.", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.GateError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except cli_doer.DoerUnavailableError as exc:
+        # The availability check passed but the CLI vanished mid-run — surface it, do not
+        # silently fall back to the API.
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except cli_doer.DoerError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except patch_proposal.ProposalError as exc:
+        # worktree creation failed (e.g. a git error) — surface it cleanly, never
+        # traceback, and never fall back to the API after starting the CLI path.
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    for line in review.analysis.splitlines():
+        typer.echo(_display_safe(line))
+    raise typer.Exit(code=0)
+
+
 @engine_app.command("consult")
 def engine_consult(
     engine: str = typer.Argument(..., help="Registered engine name (e.g. 'grok')."),
@@ -1033,6 +1097,28 @@ def engine_consult(
     except engine_gates.GateError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
+
+    # Prefer the local grok CLI (real, worktree-scoped file access under bubblewrap) over
+    # the xAI API-direct path, which sees only this prompt. grok-only — other engines stay
+    # on their current path. A gate refusal inside run_grok_review exits, never falls back.
+    from .engines import cli_doer
+
+    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+        typer.echo(
+            "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
+            err=True,
+        )
+        _run_grok_cli_review_or_exit(
+            prompt,
+            repo_root=repo_root,
+            model=chosen_model,
+            project_context_text=project_context_text,
+        )
+    if _is_grok_engine(engine):
+        typer.echo(
+            "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
+            err=True,
+        )
 
     try:
         text = engine_xai.consult(prompt, model=chosen_model, max_tokens=max_tokens)
@@ -1189,6 +1275,28 @@ def engine_review(
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
 
+    # Prefer the local grok CLI (real, worktree-scoped file access under bubblewrap) over
+    # the xAI API-direct agentic loop. grok-only — other engines stay on run_agentic. A
+    # gate refusal inside run_grok_review exits, never falls back to the API.
+    from .engines import cli_doer
+
+    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+        typer.echo(
+            "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
+            err=True,
+        )
+        _run_grok_cli_review_or_exit(
+            task,
+            repo_root=repo_root,
+            model=chosen_model,
+            project_context_text=project_context_text,
+        )
+    if _is_grok_engine(engine):
+        typer.echo(
+            "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
+            err=True,
+        )
+
     transcript_path = _next_transcript_path(repo_root, transcript)
     try:
         outcome = xai_agentic.run_agentic(
@@ -1325,6 +1433,86 @@ def engine_propose(
     project_context_text = (
         context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
     )
+
+    # Prefer the local grok CLI: it edits a bubblewrap-sandboxed worktree directly (real
+    # file access), and Cohort emits that worktree's diff as the proposal — reviewed like
+    # any propose output, never auto-applied. grok-only; a gate refusal exits, never falls
+    # back to the API. Other engines stay on the API-direct patch_proposal path below.
+    from .engines import cli_doer
+    from .engines import patch_proposal
+
+    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+        typer.echo(
+            "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
+            err=True,
+        )
+        try:
+            result = cli_doer.run_grok_doer(
+                task,
+                repo_root=repo_root,
+                footprint=cleaned_footprint,
+                project_context_text=project_context_text,
+            )
+        except engine_gates.EgressBlockedError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+        except engine_gates.SecretFoundError as exc:
+            typer.echo(f"error: {exc}. Nothing was applied.", err=True)
+            raise typer.Exit(code=1)
+        except engine_gates.GateError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+        except cli_doer.DoerUnavailableError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2)
+        except cli_doer.DoerError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+        except patch_proposal.ProposalError as exc:
+            # worktree creation failed (e.g. a git error) — surface it cleanly, never
+            # traceback, and never fall back to the API after starting the CLI path.
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1)
+
+        if not result.changed_files:
+            typer.echo(
+                f"the grok CLI proposed no changes (exit {result.returncode}).", err=True
+            )
+            typer.echo(f"worktree: {result.worktree}")
+            raise typer.Exit(code=1)
+        for path in result.changed_files:
+            typer.echo(f"  changed: {_display_safe(path)}")
+        typer.echo(f"worktree: {result.worktree}")
+        if result.footprint_violations:
+            # Match the API propose path's strict --footprint semantics: a scope violation
+            # is a REJECTION, not an advisory note. Nothing was applied (grok's writes are
+            # confined to the throwaway worktree); the worktree is left only for inspection.
+            # Exit non-zero so the proposal is treated as failed regardless of which channel
+            # (CLI vs API) produced it — the preference must not silently weaken --footprint.
+            typer.echo(
+                "footprint violations (grok edited paths outside the declared scope):",
+                err=True,
+            )
+            for violation in result.footprint_violations:
+                typer.echo(f"  ! {_display_safe(violation)}", err=True)
+            typer.echo(
+                "REJECTED: the proposal edited paths outside --footprint; treat it as "
+                "failed (the API path rejects the same violation). Nothing was applied.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        typer.echo(
+            "review the proposed diff in the worktree, run the tests, then integrate — "
+            "nothing was committed, nothing was auto-applied, and this repo's working "
+            "tree is unchanged.",
+            err=True,
+        )
+        raise typer.Exit(code=0)
+    if _is_grok_engine(engine):
+        typer.echo(
+            "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
+            err=True,
+        )
 
     try:
         if agentic:

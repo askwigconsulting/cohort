@@ -21,9 +21,21 @@ from typer.testing import CliRunner
 
 from cohort.cli import app
 from cohort.engines import xai
+from cohort.engines.cli_doer import DoerResult, GrokReviewResult
 from cohort.engines.xai_agentic import AgenticResult
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _grok_cli_unavailable_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default every test here to the xAI API-direct path.
+
+    ``engine consult``/``review``/``propose`` now prefer the local grok CLI whenever
+    grok-cli AND bwrap are installed — which they may be on the test host — so pin the CLI
+    as 'unavailable' by default, keeping the API-path wiring tests deterministic. The
+    CLI-preferred tests below override this by patching _grok_cli_available to True."""
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: False)
 
 
 # --- engine consult: tier / model selection --------------------------------
@@ -297,3 +309,165 @@ def test_engine_review_runs_the_real_loop_and_writes_the_transcript(
     assert "stopped_reason: final" in result.output
     transcript = tmp_path / ".cohort" / "engine-transcripts" / "0001.jsonl"
     assert transcript.is_file()  # the audit trail was written
+
+
+# --- CLI-preferred dispatch: prefer the local grok CLI over the xAI API ------
+#
+# When the bubblewrap-sandboxed grok CLI is installed it has real, worktree-scoped file
+# access the API-direct path lacks, so every grok read/consult/propose path prefers it and
+# falls back to the API (with a printed note) only when it is unavailable. grok-only —
+# codex/other engines are untouched.
+
+
+def _prompt_file(tmp_path: Path, text: str = "review this") -> Path:
+    p = tmp_path / "task.txt"
+    p.write_text(text, encoding="utf-8")
+    return p
+
+
+def test_engine_consult_prefers_grok_cli_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: True)
+    review = GrokReviewResult(
+        engine="grok", analysis="LOCAL-CLI-ANALYSIS", transcript="LOCAL-CLI-ANALYSIS",
+        returncode=0,
+    )
+    review_mock = MagicMock(return_value=review)
+    consult_mock = MagicMock(return_value="API-SHOULD-NOT-RUN")
+    with patch("cohort.engines.cli_doer.run_grok_review", review_mock), \
+         patch("cohort.cli.engine_xai.consult", consult_mock):
+        result = runner.invoke(
+            app, ["engine", "consult", "grok", "--prompt-file", str(_prompt_file(tmp_path))]
+        )
+    assert result.exit_code == 0, result.output
+    assert "LOCAL-CLI-ANALYSIS" in result.output
+    assert "local grok CLI" in result.output   # the CLI-preferred note
+    review_mock.assert_called_once()
+    consult_mock.assert_not_called()            # the API path was not taken
+
+
+def test_engine_consult_falls_back_to_api_when_grok_cli_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: False)
+    consult_mock = MagicMock(return_value="API-REPLY")
+    with patch("cohort.cli.engine_xai.consult", consult_mock):
+        result = runner.invoke(
+            app, ["engine", "consult", "grok", "--prompt-file", str(_prompt_file(tmp_path))]
+        )
+    assert result.exit_code == 0, result.output
+    assert "API-REPLY" in result.output
+    assert "xAI API-direct" in result.output    # the fallback note
+    consult_mock.assert_called_once()
+
+
+def test_engine_review_prefers_grok_cli_when_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: True)
+    review = GrokReviewResult(
+        engine="grok", analysis="CLI-REVIEW-OUTPUT", transcript="CLI-REVIEW-OUTPUT",
+        returncode=0,
+    )
+    review_mock = MagicMock(return_value=review)
+    agentic_mock = MagicMock()
+    with patch("cohort.engines.cli_doer.run_grok_review", review_mock), \
+         patch("cohort.engines.xai_agentic.run_agentic", agentic_mock):
+        result = runner.invoke(
+            app, ["engine", "review", "grok", "--task-file", str(_prompt_file(tmp_path))]
+        )
+    assert result.exit_code == 0, result.output
+    assert "CLI-REVIEW-OUTPUT" in result.output
+    assert "local grok CLI" in result.output
+    review_mock.assert_called_once()
+    agentic_mock.assert_not_called()            # the API agentic loop was not taken
+
+
+def test_engine_review_falls_back_to_api_when_grok_cli_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: False)
+    agentic_mock = MagicMock(
+        return_value=AgenticResult(text="API-AGENTIC-OUTPUT", stopped_reason="final")
+    )
+    with patch("cohort.engines.xai_agentic.run_agentic", agentic_mock):
+        result = runner.invoke(
+            app, ["engine", "review", "grok", "--task-file", str(_prompt_file(tmp_path))]
+        )
+    assert result.exit_code == 0, result.output
+    assert "API-AGENTIC-OUTPUT" in result.output
+    assert "xAI API-direct" in result.output
+    agentic_mock.assert_called_once()
+
+
+def test_engine_propose_prefers_grok_cli_and_emits_its_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: True)
+    doer_result = DoerResult(
+        engine="grok", worktree=tmp_path / "wt", changed_files=["src/app.py"],
+        diff="--- a\n+++ b\n", returncode=0, stdout_tail="", footprint_violations=[],
+    )
+    doer_mock = MagicMock(return_value=doer_result)
+    propose_mock = MagicMock()
+    with patch("cohort.engines.cli_doer.run_grok_doer", doer_mock), \
+         patch("cohort.engines.patch_proposal.propose_patch", propose_mock):
+        result = runner.invoke(
+            app,
+            ["engine", "propose", "grok", "--footprint", "src",
+             "--task-file", str(_prompt_file(tmp_path))],
+        )
+    assert result.exit_code == 0, result.output
+    assert "local grok CLI" in result.output
+    assert "changed: src/app.py" in result.output
+    assert "nothing was auto-applied" in result.output
+    doer_mock.assert_called_once()
+    propose_mock.assert_not_called()            # the API patch path was not taken
+
+
+def test_engine_propose_falls_back_to_api_when_grok_cli_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from cohort.engines import patch_proposal
+
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: False)
+    # Short-circuit the API path with a known error: it proves routing reached it without
+    # having to fabricate a full proposal outcome.
+    propose_mock = MagicMock(side_effect=patch_proposal.ProposalError("stop here"))
+    with patch("cohort.engines.patch_proposal.propose_patch", propose_mock):
+        result = runner.invoke(
+            app,
+            ["engine", "propose", "grok", "--footprint", "src",
+             "--task-file", str(_prompt_file(tmp_path))],
+        )
+    assert result.exit_code == 1, result.output
+    assert "xAI API-direct" in result.output    # the fallback note printed first
+    propose_mock.assert_called_once()
+
+
+def test_gate_refusal_on_cli_path_does_not_fall_back_to_the_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A gate failure on the preferred CLI path is a refusal, never a reason to retry the
+    API — run_grok_review raising a gate error must NOT reach engine_xai.consult."""
+    monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
+    monkeypatch.setattr("cohort.engines.cli_doer._grok_cli_available", lambda: True)
+    from cohort.engines import gates
+
+    review_mock = MagicMock(side_effect=gates.SecretFoundError("task carries a secret"))
+    consult_mock = MagicMock(return_value="API-MUST-NOT-RUN")
+    with patch("cohort.engines.cli_doer.run_grok_review", review_mock), \
+         patch("cohort.cli.engine_xai.consult", consult_mock):
+        result = runner.invoke(
+            app, ["engine", "consult", "grok", "--prompt-file", str(_prompt_file(tmp_path))]
+        )
+    assert result.exit_code == 1, result.output
+    assert "task carries a secret" in result.output
+    consult_mock.assert_not_called()            # gate refusal did NOT fall back to the API

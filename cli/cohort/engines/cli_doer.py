@@ -241,6 +241,23 @@ class DoerResult:
     footprint_violations: list[str] = field(default_factory=list)
 
 
+@dataclass
+class GrokReviewResult:
+    """The outcome of a read-only grok-CLI review run (:func:`run_grok_review`).
+
+    Unlike :class:`DoerResult`, there is no worktree and no diff: the read path keeps
+    grok's *answer*, not its edits, and discards the throwaway worktree grok explored (any
+    writes grok made there were confined by bubblewrap and thrown away with it). For a CLI
+    run grok's stdout IS the transcript — there is no separate JSONL file — so
+    ``transcript`` is the full captured stdout stream and ``analysis`` is that same text,
+    surfaced as grok's report."""
+
+    engine: str
+    analysis: str
+    transcript: str
+    returncode: int
+
+
 def run_codex_in_worktree(
     worktree: Path,
     task: str,
@@ -303,6 +320,18 @@ def _footprint_violations(changed: list[str], footprint: list[str] | None) -> li
 def _bwrap() -> str | None:
     """Path to the ``bwrap`` (bubblewrap) binary, or None if it isn't installed."""
     return shutil.which("bwrap")
+
+
+def _grok_cli_available() -> bool:
+    """Whether the locally-installed, bubblewrap-sandboxed grok CLI can run here.
+
+    True only when BOTH the ``grok`` CLI and ``bwrap`` are installed: grok-cli has no
+    sandbox of its own, so Cohort will only run it confined by bubblewrap (see
+    :func:`_grok_sandbox_argv`). Callers use this to prefer the local CLI (which has
+    real, worktree-scoped file access) and fall back to the xAI API-direct path when it
+    returns False. Mirrors the two checks :func:`_assert_grok_sandbox_available` enforces,
+    as a boolean rather than a raise."""
+    return shutil.which("grok") is not None and _bwrap() is not None
 
 
 def _assert_grok_sandbox_available() -> None:
@@ -399,6 +428,62 @@ def run_grok_in_worktree(
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
 
 
+def _grok_gated_worktree(
+    task: str,
+    *,
+    repo_root: Path,
+    max_wire_bytes: int,
+    project_context_text: str,
+) -> Path:
+    """Run every pre-dispatch gate, in order, and return a grok-ready worktree.
+
+    This is the single gate sequence shared by the grok *write* doer
+    (:func:`run_grok_doer`) and the grok *read* reviewer (:func:`run_grok_review`), so
+    both paths are guaranteed — structurally, not by a copied-and-drifting duplicate — to
+    apply the identical gates in the identical order, all BEFORE grok is ever invoked:
+
+    1. refuse an empty task;
+    2. :func:`_assert_grok_sandbox_available` (fail fast — never build a worktree we can't
+       use);
+    3. :func:`gates.require_egress_allowed` (honor the repo's egress opt-out);
+    4. :func:`gates.assert_no_secrets` on the task text;
+    5. create the detached, committed-files-only worktree;
+    6. :func:`_assert_worktree_within_wire_budget` — bound the TOTAL egress (task +
+       tracked worktree bytes the CLI reads and sends);
+    7. :func:`_assert_worktree_files_have_no_secrets` — secret-scan those same files.
+
+    If any worktree-level gate (6/7) raises, the just-created worktree is cleaned up
+    before the error propagates, so a refusal never leaks a throwaway worktree. On success
+    the caller owns the returned worktree's lifecycle.
+
+    Raises:
+        DoerError: empty task.
+        DoerUnavailableError: the ``grok`` CLI or ``bwrap`` is not installed.
+        EgressBlockedError / SecretFoundError: the repo opted out of egress, or the task
+            (or a committed worktree file) carries credential-shaped content.
+        PayloadTooLargeError: the total exposed payload exceeds ``max_wire_bytes``, or a
+            tracked file could not be measured fail-closed.
+    """
+    if not task.strip():
+        raise DoerError("task is empty")
+
+    _assert_grok_sandbox_available()  # fail fast — never create a worktree we can't use
+    gates.require_egress_allowed(project_context_text)
+    gates.assert_no_secrets(task)
+
+    worktree = patch_proposal._create_worktree(repo_root)
+    try:
+        # The vendor CLI reads the worktree's committed files and sends them to xAI, so
+        # gate those files (not just the task string) before dispatch: bound the TOTAL
+        # exposed bytes (task + tracked files) first, then secret-scan those same files.
+        _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
+        _assert_worktree_files_have_no_secrets(worktree)
+    except BaseException:
+        patch_proposal.cleanup_worktree(repo_root, worktree)
+        raise
+    return worktree
+
+
 def run_grok_doer(
     task: str,
     *,
@@ -428,20 +513,13 @@ def run_grok_doer(
             exceeds ``max_wire_bytes``, or a tracked file could not be measured
             fail-closed (both gated before grok runs).
     """
-    if not task.strip():
-        raise DoerError("task is empty")
-
-    _assert_grok_sandbox_available()  # fail fast — never create a worktree we can't use
-    gates.require_egress_allowed(project_context_text)
-    gates.assert_no_secrets(task)
-
-    worktree = patch_proposal._create_worktree(repo_root)
+    worktree = _grok_gated_worktree(
+        task,
+        repo_root=repo_root,
+        max_wire_bytes=max_wire_bytes,
+        project_context_text=project_context_text,
+    )
     try:
-        # The vendor CLI reads the worktree's committed files and sends them to xAI, so
-        # gate those files (not just the task string) before dispatch: bound the TOTAL
-        # exposed bytes (task + tracked files) first, then secret-scan those same files.
-        _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
-        _assert_worktree_files_have_no_secrets(worktree)
         proc = run_grok_in_worktree(worktree, task, model=model, timeout=timeout)
         _git(worktree, "add", "-A")
         diff = _git(worktree, "diff", "--cached")
@@ -458,6 +536,61 @@ def run_grok_doer(
     except BaseException:
         patch_proposal.cleanup_worktree(repo_root, worktree)
         raise
+
+
+def run_grok_review(
+    task: str,
+    *,
+    repo_root: Path,
+    model: str | None = None,
+    timeout: float = _DOER_TIMEOUT_SECONDS,
+    max_wire_bytes: int = _DEFAULT_MAX_WIRE_BYTES,
+    project_context_text: str = "",
+) -> GrokReviewResult:
+    """Dispatch grok-cli as a READ-ONLY reviewer inside a throwaway bubblewrap worktree.
+
+    The read counterpart to :func:`run_grok_doer`. It applies the **identical gate
+    sequence** — via the shared :func:`_grok_gated_worktree`, so the order cannot drift:
+    assert sandbox, honor the egress opt-out, secret-scan the task, create the
+    committed-files-only worktree, bound the total wire bytes, secret-scan the worktree
+    files — every gate BEFORE grok is invoked. grok then runs confined to the worktree by
+    bubblewrap (network open, scrubbed minimal env, API key on the env never argv), and
+    its stdout is returned as the analysis.
+
+    Unlike the doer, this **always discards the worktree** (``finally``): the read path
+    wants grok's answer, not a diff. Any files grok wrote were confined to the worktree by
+    the kernel and are thrown away with it — so grok's writes never touch this repo and
+    are never surfaced. A grok failure still cleans up the worktree.
+
+    Raises:
+        DoerError: empty task.
+        DoerUnavailableError: the ``grok`` CLI or ``bwrap`` is not installed.
+        EgressBlockedError / SecretFoundError: the repo opted out of egress, or the task
+            (or a committed worktree file grok would send to xAI) carries
+            credential-shaped content (gated before grok runs).
+        PayloadTooLargeError: the total exposed payload (task + tracked worktree files)
+            exceeds ``max_wire_bytes``, or a tracked file could not be measured
+            fail-closed (both gated before grok runs).
+    """
+    worktree = _grok_gated_worktree(
+        task,
+        repo_root=repo_root,
+        max_wire_bytes=max_wire_bytes,
+        project_context_text=project_context_text,
+    )
+    try:
+        proc = run_grok_in_worktree(worktree, task, model=model, timeout=timeout)
+        stdout = proc.stdout or ""
+        return GrokReviewResult(
+            engine="grok",
+            analysis=stdout,
+            transcript=stdout,
+            returncode=proc.returncode,
+        )
+    finally:
+        # The read path keeps grok's answer, not its edits — always discard the worktree,
+        # on success and on failure alike (grok's confined writes go with it).
+        patch_proposal.cleanup_worktree(repo_root, worktree)
 
 
 def run_codex_doer(
