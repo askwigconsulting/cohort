@@ -30,6 +30,14 @@ support is experimental** — the renderers are complete but doc-cited, not yet 
 
 ## Quickstart
 
+> **Do not `pip install cohort`.** The name `cohort` on PyPI belongs to a **different project
+> by different authors** — an unrelated multi-agent orchestration tool. Installing it will
+> look like it worked and will not install this software. There is no PyPI release of this
+> project; installing from this git repository is the only supported path.
+>
+> Asking an AI agent to "install Cohort" is a supported route — point it at
+> [`AGENTS.md`](AGENTS.md), which is written for exactly that and starts with this warning.
+
 **The guided path** (recommended): clone, run `./installer/bootstrap.sh --ide claude` (venv +
 install + compile in one step), then `cohort setup` — it interviews you: *is there a company Cohort
 repo to point to* (your org's fork becomes the office's upstream for updates and proposals), *which
