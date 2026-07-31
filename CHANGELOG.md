@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-31 · Dashboard usability
+
 ### Changed
 - **Dashboard UI/UX overhaul (from a multi-vendor UX `/scout`).** The dashboard now
   answers "is anything wrong / what do I do?" at a glance: a **"needs attention" strip**
@@ -632,7 +634,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/askwigconsulting/cohort/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/askwigconsulting/cohort/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/askwigconsulting/cohort/compare/v0.10.0...v0.11.0
