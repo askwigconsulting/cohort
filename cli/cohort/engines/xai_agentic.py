@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -47,6 +48,7 @@ from cohort.engines.xai import (
     EngineError,
     EnginePayloadError,
     EngineUnavailableError,
+    _RETRY_BACKOFF_SECONDS,
     _build_request,
     _resolve_api_key,
     _retry_after_seconds,
@@ -59,7 +61,12 @@ _DEFAULT_MAX_OUTPUT_BYTES = 400_000  # cumulative tool-result bytes fed back to 
 _MAX_READ_BYTES = 64_000  # per read_file call
 _MAX_MATCHES = 200  # per grep / find_files call
 _MAX_DIR_ENTRIES = 500  # per list_dir call
-_TIMEOUT = 120.0
+_TIMEOUT = 120.0  # per-call HTTP timeout
+# Cumulative wall-clock budget for a whole agentic run. The per-call ``_TIMEOUT`` and
+# the iteration/byte caps each bound one dimension; this bounds total latency, so a run
+# that makes steady but slow progress (many near-timeout calls) still terminates. 600s
+# ≈ 5 near-max calls, generous for a read-only review yet a firm ceiling.
+_DEFAULT_MAX_WALL_SECONDS = 600.0
 
 # Path-level read denylist (the content scanner is the real backstop). Any path
 # segment that is an internal/credential directory, or a basename that is a known
@@ -94,7 +101,7 @@ class AgenticResult:
     text: str
     transcript: list[ToolCall] = field(default_factory=list)
     iterations: int = 0
-    stopped_reason: str = "final"  # "final" | "max_iterations" | "output_cap"
+    stopped_reason: str = "final"  # "final" | "max_iterations" | "output_cap" | "wall_clock"
 
 
 # --------------------------------------------------------------------------- #
@@ -378,15 +385,18 @@ def _post_chat(spec: EngineSpec, key: str, body: dict[str, Any]) -> dict[str, An
             if exc.code in (401, 403):
                 raise EngineAuthError("xAI rejected the API key (401/403)") from None
             if exc.code == 429 and attempt == 0:
-                import time
-
                 time.sleep(_retry_after_seconds(exc.headers))
                 continue
             if 500 <= exc.code < 600 and attempt == 0:
+                # Bounded backoff before the single retry. Re-POSTing after a 5xx is not
+                # idempotent (a processed-but-lost response double-spends tokens); we
+                # accept that for one retry rather than build an idempotency handshake.
+                time.sleep(_RETRY_BACKOFF_SECONDS)
                 continue
             raise EngineUnavailableError(f"xAI returned HTTP {exc.code}") from None
         except (urllib.error.URLError, TimeoutError, ValueError, UnicodeDecodeError):
             if attempt == 0:
+                time.sleep(_RETRY_BACKOFF_SECONDS)
                 continue
             raise EngineUnavailableError(
                 "xAI request failed to reach the API after one retry"
@@ -403,6 +413,7 @@ def run_agentic(
     max_iterations: int = _DEFAULT_MAX_ITERATIONS,
     max_tokens: int = 4096,
     max_output_bytes: int = _DEFAULT_MAX_OUTPUT_BYTES,
+    max_wall_seconds: float = _DEFAULT_MAX_WALL_SECONDS,
     transcript_path: Path | None = None,
     _poster: Callable[[EngineSpec, str, dict[str, Any]], dict[str, Any]] | None = None,
 ) -> AgenticResult:
@@ -417,6 +428,10 @@ def run_agentic(
         max_iterations: Hard cap on tool-calling rounds.
         max_tokens: Per-response API token cap.
         max_output_bytes: Cumulative cap on tool-result bytes fed back to the model.
+        max_wall_seconds: Cumulative wall-clock budget for the whole run, checked at the
+            top of each round; when exceeded the loop stops cleanly with a
+            ``"wall_clock"`` outcome rather than raising. Bounds total latency alongside
+            the iteration and byte caps.
         transcript_path: If given, the transcript is also written there as JSONL.
         _poster: Injection seam for tests (defaults to the real HTTP poster).
 
@@ -436,8 +451,21 @@ def run_agentic(
     ]
     transcript: list[ToolCall] = []
     output_bytes = 0
+    deadline = time.monotonic() + max_wall_seconds
 
     for iteration in range(1, max_iterations + 1):
+        # Wall-clock budget check at the top of each round, before spending another
+        # (potentially near-timeout) API call. ``time.monotonic()`` is unaffected by
+        # system-clock changes, so the budget cannot be extended or collapsed by a
+        # clock adjustment mid-run.
+        if time.monotonic() >= deadline:
+            _maybe_write_transcript(transcript_path, transcript)
+            return AgenticResult(
+                text="(stopped: agentic wall-clock budget exhausted before a final answer)",
+                transcript=transcript,
+                iterations=iteration - 1,  # rounds completed before the budget check
+                stopped_reason="wall_clock",
+            )
         body = {
             "model": model,
             "messages": messages,

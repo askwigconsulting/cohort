@@ -448,6 +448,95 @@ def test_state_includes_full_inventory(home, tmp_path, source):
     assert all(it["active"] for it in items)  # fixture placed the full roster
 
 
+# === #226: failure isolation + per-poll memoization ==========================
+
+
+def test_state_survives_a_corrupt_session_file_in_another_project(server, home, tmp_path, source):
+    """A non-UTF-8 (or otherwise unreadable) .md in ANY OTHER project must not 500
+    the office-wide cross-project scan — the bad project is skipped and logged,
+    the focused project and every healthy one is still served."""
+    srv, focused_repo = server  # the fixture's inited + registered repo ("repo")
+    other_repo = inited_repo(tmp_path, source, home, name="repo-b")
+    run_cli("snapshot", home=home, cwd=focused_repo)
+    run_cli("snapshot", home=home, cwd=other_repo)
+    # Poison the *other* project's session store with invalid UTF-8 bytes.
+    bad = other_repo / ".cohort" / "sessions" / "corrupt.md"
+    bad.write_bytes(b"\xff\xfe not valid utf-8 \x80\x81\x00")
+    code, data = request(srv, "GET", "/api/state", token=srv.token)
+    assert code == 200  # one bad file no longer 500s the dashboard
+    state = json.loads(data)
+    assert "activity" in state  # full state served, not the degraded backstop
+    seen = {entry["project"] for entry in state["activity"]}
+    assert "repo" in seen  # the healthy focused project survives
+    assert "repo-b" not in seen  # the corrupt one is skipped, not fatal
+
+
+def test_aggregate_scans_are_memoized_within_ttl(home, tmp_path, source, monkeypatch):
+    """A second poll inside the TTL reuses the first poll's parity + cross-project
+    scans instead of recomputing them (call-count spy)."""
+    from cohort import dashboard
+
+    repo = inited_repo(tmp_path, source, home)
+    calls = {"parity": 0, "activity": 0, "scorecards": 0, "list_projects": 0}
+    for name, key in (
+        ("check_parity", "parity"), ("cross_project_activity", "activity"),
+        ("cross_project_scorecards", "scorecards"), ("list_projects", "list_projects"),
+    ):
+        real = getattr(dashboard, name)
+
+        def make_spy(real, key):
+            def spy(*a, **k):
+                calls[key] += 1
+                return real(*a, **k)
+            return spy
+
+        monkeypatch.setattr(dashboard, name, make_spy(real, key))
+
+    cache = dashboard._AggregateCache()
+    first = dashboard.collect_state(home, repo, aggregate_cache=cache)
+    counts_after_first = dict(calls)
+    assert counts_after_first["parity"] >= 1  # the first poll really did the work
+    assert counts_after_first["activity"] == 1
+    assert counts_after_first["list_projects"] == 1  # one scan shared by all consumers
+    second = dashboard.collect_state(home, repo, aggregate_cache=cache)
+    assert calls == counts_after_first  # nothing recomputed within the TTL
+    # ...and the served values are unchanged (memo does not alter the shape).
+    assert second["activity"] == first["activity"]
+    assert second["scorecards"] == first["scorecards"]
+    assert second["global"]["parity"] == first["global"]["parity"]
+
+
+def test_mutating_action_invalidates_the_aggregate_memo(server, monkeypatch):
+    """A POST action drops the memo so the next poll recomputes rather than
+    serving pre-action state."""
+    from cohort import dashboard
+
+    srv, _ = server
+    calls = {"n": 0}
+    real = dashboard.check_parity
+
+    def spy(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(dashboard, "check_parity", spy)
+
+    assert request(srv, "GET", "/api/state", token=srv.token)[0] == 200
+    after_first = calls["n"]
+    assert after_first >= 1
+    # second poll within TTL: served from the memo, no recompute
+    assert request(srv, "GET", "/api/state", token=srv.token)[0] == 200
+    assert calls["n"] == after_first
+    # a mutating action invalidates the memo
+    code, _ = request(
+        srv, "POST", "/api/action", token=srv.token,
+        body={"action": "feedback", "args": {"rating": "up", "agent": "counsel", "note": "n"}},
+    )
+    assert code == 200
+    assert request(srv, "GET", "/api/state", token=srv.token)[0] == 200
+    assert calls["n"] > after_first  # recomputed after invalidation
+
+
 def test_set_roster_action_is_gone(server):
     # the roster editor was removed from the dashboard (no value); the CLI keeps
     # subsets via `cohort setup --agents`

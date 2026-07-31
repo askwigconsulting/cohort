@@ -941,7 +941,11 @@ def _run_grok_cli_review_or_exit(
     model: str,
     project_context_text: str,
 ) -> NoReturn:
-    """Run the local grok CLI as a read-only reviewer, print its analysis, then exit.
+    """Run the local grok CLI as a repo-read-only reviewer, print its analysis, then exit.
+
+    Repo-read-only means the worktree is discarded so the repo is never modified — grok
+    itself still runs write-capable inside the bubblewrap jail; its edits land in the
+    throwaway worktree and go with it.
 
     Shared by ``engine consult`` and ``engine review`` when the grok CLI is preferred over
     the xAI API. Every gate fires inside :func:`cli_doer.run_grok_review` *before* grok is

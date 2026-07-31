@@ -78,3 +78,82 @@ def test_release_leaves_a_stolen_lock_alone(tmp_path):
         lock.write_bytes(b"successor-token")
     assert lock.exists()  # not ours anymore → left in place
     assert lock.read_bytes() == b"successor-token"
+
+
+def test_steal_does_not_delete_a_fresh_lock_that_raced_in(tmp_path, monkeypatch):
+    """#230 steal TOCTOU: two waiters both pass the stale check on one abandoned
+    lock; between a waiter's check and its removal the stale lock is reclaimed and
+    a third party wins a *fresh* ``O_EXCL`` create in the freed slot. The removal
+    must not delete that fresh lock.
+
+    The race is injected deterministically by hooking ``_is_stale``: the first time
+    it confirms the lock is stale it swaps the abandoned lock for a fresh one — the
+    exact interleaving the atomic capture must survive. Against the old bare-unlink
+    logic the waiter deletes the fresh lock and then wrongly acquires (no
+    LockTimeout); against the fix it captures the fresh lock, sees it is not stale,
+    reinstates it, and times out."""
+    import cohort.filelock as fl
+
+    target = tmp_path / "state.json"
+    lock = tmp_path / "state.json.lock"
+    lock.write_bytes(b"stale-holder")  # a crashed holder's lock
+    old = time.time() - 3600
+    os.utime(lock, (old, old))  # abandoned
+
+    real_is_stale = fl._is_stale
+    state = {"injected": False}
+
+    def is_stale_injecting(path, stale):
+        result = real_is_stale(path, stale)
+        if not state["injected"] and Path(path) == lock and result:
+            state["injected"] = True
+            # A competing waiter reclaims the stale lock and a third party wins a
+            # fresh create in the gap between our stale-check and our removal.
+            os.unlink(lock)
+            lock.write_bytes(b"fresh-third-party")  # fresh mtime = now
+        return result
+
+    monkeypatch.setattr(fl, "_is_stale", is_stale_injecting)
+
+    with pytest.raises(LockTimeout):
+        with file_lock(target, timeout=0.3, stale=1.0, poll=0.05):
+            pass  # must not acquire: a fresh lock is held
+
+    assert lock.exists(), "steal deleted the fresh third-party lock"
+    assert lock.read_bytes() == b"fresh-third-party"
+
+
+def test_release_does_not_delete_a_successor_that_raced_in(tmp_path, monkeypatch):
+    """#230 release TOCTOU: a successor steals + re-creates our lock in the window
+    between our token-check and our unlink. The prior holder must not delete that
+    fresh lock.
+
+    The successor is injected deterministically at the moment of removal by hooking
+    ``os.unlink``. Against the old read-then-unlink logic the holder reads its own
+    token, then the successor re-creates the lock, then the unlink deletes the
+    successor's fresh lock. Against the fix the lock-file is captured (renamed into
+    a private staging file) *before* the successor acts, so the unlink only ever
+    targets that private copy and the successor's re-created lock survives."""
+    import cohort.filelock as fl
+
+    target = tmp_path / "state.json"
+    lock = tmp_path / "state.json.lock"
+
+    real_unlink = os.unlink
+    state = {"injected": False}
+
+    def unlink_injecting_successor(path, *args, **kwargs):
+        # Model a successor stealing + re-creating the lock in the window between
+        # deciding to remove and actually removing.
+        if not state["injected"]:
+            state["injected"] = True
+            lock.write_bytes(b"successor-token")  # a fresh lock from a new holder
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(fl.os, "unlink", unlink_injecting_successor)
+
+    with file_lock(target, timeout=1):
+        pass  # release runs on exit, into the injected successor race
+
+    assert lock.exists(), "prior holder deleted the successor's fresh lock"
+    assert lock.read_bytes() == b"successor-token"

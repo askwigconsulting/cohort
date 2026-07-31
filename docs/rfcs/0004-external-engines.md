@@ -1,6 +1,6 @@
 # RFC 0004 — External engines: non-Claude models as orchestrated doers
 
-- Status: **Accepted; implementation under review** (2026-07-17) — office review complete; **Grok enters API-direct, not via the community grok-cli**. Two PRs: foundation (registry + xAI client + `/consult-grok`) and the `patch_proposal` loop + code-enforced egress gates.
+- Status: **Accepted; implementation under review** (2026-07-17) — office review complete; **Grok enters API-direct, not via the community grok-cli**. Two PRs: foundation (registry + xAI client + `/consult-grok`) and the `patch_proposal` loop + code-enforced egress gates. **Amended 2026-07-31** — see the [Amendment](#amendment--2026-07-31-grok-cli-adopted-as-a-sandboxed-doer) below: v0.10.0/v0.12.0 reversed the transport and doer decisions (items 1–2) below in favor of a bubblewrap-sandboxed local grok-cli.
 - Author: Cohort maintainers
 - Created: 2026-07-17
 - Depends on: `/crew` (the coordinator protocol — delivered), `/consult-gpt` (advisory external consult — delivered), the worker-kickback + coordinator-verify signoff (delivered)
@@ -21,9 +21,19 @@ The binding decisions that supersede the draft below:
    HTTP API (`urllib`, `GROK_API_KEY` from env); it returns text, never executes tool
    calls.** grok-cli stays off the table unless it ever gains a real OS-sandboxed, read-only
    mode — and since API-direct yields the same outcome, that day should not come.
+
+   > **Superseded 2026-07-31.** grok-cli was adopted as the preferred local transport,
+   > bubblewrap-sandboxed. See the [Amendment](#amendment--2026-07-31-grok-cli-adopted-as-a-sandboxed-doer)
+   > below — the original text is preserved above for the decision history.
 2. **Vocabulary: Grok is a `patch_proposal` engine, never a "doer".** Cohort is the doer that
    applies, constrains, and verifies; Grok proposes an untrusted patch. Roles are
    `consult` and `patch_proposal`.
+
+   > **Superseded 2026-07-31.** grok-cli now also runs as a write doer
+   > (`cohort engine work grok`), bubblewrap-sandboxed. `patch_proposal` remains as the
+   > gated fallback (`engine propose grok --agentic`). See the
+   > [Amendment](#amendment--2026-07-31-grok-cli-adopted-as-a-sandboxed-doer) below — the
+   > original text is preserved above for the decision history.
 3. **The registry is a small Python registry, not per-engine descriptor files** — declarative
    metadata over two engines with different transports would be a fake abstraction; revisit
    descriptor files only when a third engine proves the shape.
@@ -39,7 +49,69 @@ The binding decisions that supersede the draft below:
    ship, the patch-proposal role is limited to non-sensitive/OSS repos.
 
 The architecture below is retained for context; where it conflicts with the above (notably
-the grok-cli confinement in §3 and the "doer" framing), **the decision wins.**
+the grok-cli confinement in §3 and the "doer" framing), **the decision wins** — except where
+the Amendment below has since superseded it.
+
+## Amendment — 2026-07-31: grok-cli adopted as a sandboxed doer
+
+**What changed.** Two releases reversed decisions 1 and 2 above:
+
+- **v0.10.0 (PR #204):** `cohort engine work grok` dispatches grok-cli as a write doer that
+  edits a throwaway worktree directly — Grok can now implement and review with real
+  filesystem access, not only propose a gated patch. Because grok-cli has no sandbox of its
+  own, Cohort imposes one with **bubblewrap**: every write is kernel-confined to the
+  worktree, the user's real home (SSH keys, other repos) is not mounted, and only the
+  network for the xAI API is left up. Requires `bwrap` (Linux); where it's absent the doer
+  refuses rather than run grok unconfined, and `engine propose grok --agentic` remains the
+  gated fallback.
+- **v0.12.0 (PR #223):** grok-cli became the **preferred transport** for `review` /
+  `consult` / `propose` too, not just `work`. When `grok` and `bwrap` are installed, Cohort
+  runs the local CLI in a throwaway worktree (real, worktree-scoped repo access) and falls
+  back to the xAI API-direct path — with a printed note — only when the CLI is absent. Both
+  paths share one gate helper (identical egress/secret/wire-byte gates), and a gate refusal
+  on the CLI path never falls back to the API.
+
+grok-cli is now the **preferred** doer and transport for Grok — the opposite of what
+decision 1 concluded — and Grok plays the `implement`/doer role directly (decision 2), not
+only `patch_proposal`; `patch_proposal` remains available as the gated fallback
+(`engine propose grok --agentic`).
+
+**Why the original decision was reversed.** Decision 1 rejected grok-cli because it is "a
+400-round agentic editor with no read-only mode" and because "the worktree is the sandbox"
+is false for a bare linked worktree (it shares `.git` and the process keeps full env/fs/
+network) — API-direct was adopted instead because it produced the same safety outcome
+without that exposure. **Bubblewrap changes that calculus.** Cohort now imposes real
+OS/kernel confinement grok-cli lacks on its own: the process is jailed to the worktree, the
+user's real home is not mounted, and network is restricted to the xAI API — a materially
+different, and materially stronger, sandbox than the bare linked worktree decision 1
+correctly rejected. Combined with the worktree always being discarded after the run, the
+result is read-only **with respect to the repo**, even though the grok-cli process itself
+remains write-capable inside the jail.
+
+**The honest caveat — the precondition is only half-met.** Decision 1's bar for
+reconsidering grok-cli was "a real OS-sandboxed, **read-only** mode." Bubblewrap satisfies
+the **OS-sandboxed** half. It does **not** satisfy the **read-only** half: grok-cli still has
+no read-only mode of its own; it runs write-capable inside the jail, and the read-only
+guarantee Cohort now offers (`run_grok_review`) comes from discarding the worktree
+afterward, not from grok-cli being unable to write. This was a **deliberate tradeoff** —
+kernel confinement plus a throwaway worktree substituting for a read-only mode the upstream
+tool doesn't have ("that day should not come," per decision 1 — it hasn't; Cohort built
+around the gap instead).
+
+That tradeoff carries a real, currently-open cost, and the audit surfaced it: run 2 of
+`/audit` (2026-07-31) flagged the exact residual risks a genuine read-only mode would have
+foreclosed, still live against the sandbox-only substitute:
+
+- **TIOCSTI escape** (issue #225) — a sandboxed-but-write-capable process can still attempt
+  a terminal-injection escape that bubblewrap's default profile doesn't block.
+- **`/etc` read-egress** (issue #227) — the bubblewrap profile's default mounts allow
+  reading host `/etc`, a narrower but real echo of the "full env/fs" exposure decision 1
+  warned about for bare worktrees.
+
+Both are being hardened now (issues #225, #227), not treated as closed. Until they are, the
+honest position is: grok-cli meets the OS-sandbox half of decision 1's precondition and not
+the read-only half — and that gap is exactly where the audit found live findings, which is
+the predicted failure mode of this tradeoff, not a surprise one.
 
 ## Summary
 

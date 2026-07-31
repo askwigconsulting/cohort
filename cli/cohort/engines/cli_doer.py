@@ -72,10 +72,12 @@ _DOER_TIMEOUT_SECONDS: float = 900.0
 # A hard ceiling on the TOTAL bytes a doer dispatch may expose to the vendor — the task
 # text plus every tracked worktree file the CLI reads and sends. gates.assert_payload_within
 # bounds only the prompt; this bounds the whole egress so a runaway worktree (a checked-in
-# data blob or vendored binary tree) can never be silently shipped off-machine. Generous
-# enough for an ordinary source worktree, tight enough to refuse a bulk data dump; a large
-# repo should scope the doer to a subtree or raise this deliberately.
-_DEFAULT_MAX_WIRE_BYTES: int = 5_000_000
+# data blob or vendored binary tree) can never be silently shipped off-machine. The threat
+# this cap targets is a runaway data/binary blob (a checked-in dataset, a vendored binary
+# tree), not normal source: 50MB clears normal-to-large source repositories while still
+# catching a bulk data dump. A repo legitimately larger should scope the doer to a subtree
+# or raise this deliberately.
+_DEFAULT_MAX_WIRE_BYTES: int = 50_000_000
 
 # Engine names that resolve to the Codex-sandboxed doer.
 _CODEX_ENGINE_ALIASES = frozenset({"gpt", "chatgpt", "codex", "openai"})
@@ -223,8 +225,10 @@ class DoerError(Exception):
 class DoerUnavailableError(DoerError):
     """The requested vendor CLI is not installed, or the engine has no CLI doer.
 
-    Grok raises this on purpose: its CLI is non-functional, so callers are pointed at
-    the agentic patch_proposal instead."""
+    grok-cli is the preferred grok doer (real, worktree-scoped file access under
+    bubblewrap); this is raised only when it cannot run confined here — i.e. the ``grok``
+    CLI or ``bwrap`` is absent. In that case callers fall back to the gated agentic
+    patch_proposal path (``cohort engine propose grok --agentic``)."""
 
 
 @dataclass
@@ -243,9 +247,12 @@ class DoerResult:
 
 @dataclass
 class GrokReviewResult:
-    """The outcome of a read-only grok-CLI review run (:func:`run_grok_review`).
+    """The outcome of a repo-read-only grok-CLI review run (:func:`run_grok_review`).
 
-    Unlike :class:`DoerResult`, there is no worktree and no diff: the read path keeps
+    Repo-read-only means the *repo* is left untouched (the worktree is discarded), not that
+    grok is denied writes: grok still runs write-capable inside the bubblewrap jail — its
+    edits land in the throwaway worktree and are thrown away with it. Unlike
+    :class:`DoerResult`, there is no surviving worktree and no diff: the read path keeps
     grok's *answer*, not its edits, and discards the throwaway worktree grok explored (any
     writes grok made there were confined by bubblewrap and thrown away with it). For a CLI
     run grok's stdout IS the transcript — there is no separate JSONL file — so
@@ -293,7 +300,18 @@ def run_codex_in_worktree(
     # the real home so `codex login` credentials (~/.codex) resolve; its own API key /
     # config-dir override ride the passthrough allow-list.
     env = _scrubbed_env(home=Path.home(), passthrough=_CODEX_ENV_PASSTHROUGH)
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    # This doer is non-interactive: close stdin (DEVNULL) so a TTY the child inherits can
+    # never be used to inject keystrokes (TIOCSTI), and start_new_session=True detaches it
+    # into its own process group/session so a timeout kill reaps grandchildren too.
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def _git(worktree: Path, *args: str) -> str:
@@ -354,13 +372,26 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
     """A bubblewrap invocation that runs ``inner`` with ``worktree`` as the ONLY
     persistent writable path.
 
-    grok-cli has no sandbox of its own, so Cohort imposes one with the kernel: system
-    dirs are read-only, ``HOME`` is an ephemeral tmpfs (grok-cli's history/logs are
-    discarded), and grok-cli's ``~/.grok`` settings are bind-mounted read-only so it
-    keeps the user's base-URL/model. The user's real home — SSH keys, dotfiles, other
-    repos — is NOT mounted, so grok can neither read a secret outside the worktree nor
-    write anywhere but the worktree. This is the OS-level confinement Codex gets from
-    ``--sandbox workspace-write``, applied from the outside.
+    grok-cli has no sandbox of its own, so Cohort imposes one with the kernel: ``/usr``
+    (and the usr-merge lib/bin dirs) is read-only, ``HOME`` is an ephemeral tmpfs
+    (grok-cli's history/logs are discarded), and grok-cli's ``~/.grok`` settings are
+    bind-mounted read-only so it keeps the user's base-URL/model. The user's real home —
+    SSH keys, dotfiles, other repos — is NOT mounted, and grok cannot write anywhere but
+    the worktree. This is the OS-level confinement Codex gets from ``--sandbox
+    workspace-write``, applied from the outside.
+
+    **Known residual read-exposure (grok), mirroring the codex framing.** This confines
+    *writes* to the worktree, but ``/usr`` and a **minimal ``/etc`` subset** stay readable
+    inside the jail — only the paths grok needs for TLS and name resolution (``/etc/ssl``,
+    ``/etc/resolv.conf``, ``/etc/hosts``, ``/etc/nsswitch.conf``, and the CA-store dirs
+    ``/etc/ca-certificates`` / ``/etc/pki`` where present), each bound only if it exists.
+    The rest of ``/etc`` and the real home are NOT mounted, so grok cannot read host
+    secrets outside the worktree; but this is a *reduced*, not eliminated, read surface, so
+    do not read it as "grok can read nothing outside the worktree." A repo that must keep
+    files off a vendor should use the egress opt-out or the gated ``patch_proposal`` path.
+
+    The process is put in its own session (``--new-session``) so a TTY the jail might see
+    cannot be used to inject keystrokes (TIOCSTI) back into Cohort.
 
     The network is left **fully open** — bubblewrap does no host egress filtering, so
     this is emphatically not a restriction to the xAI API. Confinement of *secrets*
@@ -372,12 +403,26 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
         _bwrap() or "bwrap",
         "--unshare-all", "--share-net",   # isolate PID/IPC/UTS/etc; keep network for the API
         "--die-with-parent",
+        "--new-session",                  # own session: no TIOCSTI keystroke injection
         "--proc", "/proc",
         "--dev", "/dev",
         "--tmpfs", "/tmp",
         "--ro-bind", "/usr", "/usr",
-        "--ro-bind", "/etc", "/etc",
     ]
+    # Grok needs TLS trust + name resolution to reach the xAI API, but does NOT need the
+    # rest of /etc — bind only the resolver/cert paths it uses, each only if it exists so a
+    # missing path can't break the argv. This narrows the readable jail surface from the
+    # whole of /etc to this minimal subset (#227).
+    for p in (
+        "/etc/ssl",
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/nsswitch.conf",
+        "/etc/ca-certificates",
+        "/etc/pki",
+    ):
+        if Path(p).exists():
+            argv += ["--ro-bind", p, p]
     # /lib /lib64 /bin /sbin are real dirs on some distros and usr-merge symlinks on
     # others; bind whichever actually exist so the node runtime resolves either way.
     for p in ("/lib", "/lib64", "/bin", "/sbin"):
@@ -425,7 +470,40 @@ def run_grok_in_worktree(
     # The sandbox leaves the network open, so scrub the environment to a minimal
     # allow-list: grok-cli receives ONLY this dict, never the host environment's secrets.
     env = _scrubbed_env(home=Path.home(), passthrough=_GROK_ENV_PASSTHROUGH)
-    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env)
+    # This doer is non-interactive: close stdin (DEVNULL) so a TTY cannot inject keystrokes
+    # into grok (TIOCSTI — belt-and-braces with the jail's --new-session), and
+    # start_new_session=True detaches bwrap into its own session so a timeout kill reaps
+    # grok and any grandchildren it spawned.
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _egress_gate_text(repo_root: Path, project_context_text: str) -> str:
+    """Return the text the egress gate must judge, deriving it from repo state when the
+    caller omitted it.
+
+    #229: a caller that omits ``project_context_text`` must not thereby ship an opted-out
+    repo — a bare ``run_*_doer(task, repo_root=...)`` would otherwise pass ``""`` and the
+    egress gate would read that as "not opted out". So when the kwarg is empty we read the
+    repo's own ``repo_root/.cohort/project_context.md`` and gate on that, exactly as the
+    CLI entrypoints already do. A non-empty kwarg is an explicit override and is kept
+    verbatim (it never *loosens* the gate — the derivation only ever adds an opt-out
+    signal). The file read is not error-guarded on purpose: if it exists but cannot be
+    read, the OSError propagates and the dispatch aborts (fail closed), never fails open.
+    """
+    if project_context_text:
+        return project_context_text
+    context_path = repo_root / ".cohort" / "project_context.md"
+    if context_path.is_file():
+        return context_path.read_text(encoding="utf-8")
+    return ""
 
 
 def _grok_gated_worktree(
@@ -468,7 +546,10 @@ def _grok_gated_worktree(
         raise DoerError("task is empty")
 
     _assert_grok_sandbox_available()  # fail fast — never create a worktree we can't use
-    gates.require_egress_allowed(project_context_text)
+    # Derive the egress context from repo state when the caller omitted it, so an opted-out
+    # repo can't be shipped by dropping the kwarg (#229). Gate ORDER is unchanged.
+    egress_text = _egress_gate_text(repo_root, project_context_text)
+    gates.require_egress_allowed(egress_text)
     gates.assert_no_secrets(task)
 
     worktree = patch_proposal._create_worktree(repo_root)
@@ -547,9 +628,12 @@ def run_grok_review(
     max_wire_bytes: int = _DEFAULT_MAX_WIRE_BYTES,
     project_context_text: str = "",
 ) -> GrokReviewResult:
-    """Dispatch grok-cli as a READ-ONLY reviewer inside a throwaway bubblewrap worktree.
+    """Dispatch grok-cli as a repo-read-only reviewer inside a throwaway bubblewrap worktree.
 
-    The read counterpart to :func:`run_grok_doer`. It applies the **identical gate
+    Repo-read-only, not grok-read-only: grok runs **write-capable inside the jail** and its
+    edits land in the throwaway worktree, which is discarded — so the *repo* is never
+    modified, but grok is not run in a read-only mode. The read counterpart to
+    :func:`run_grok_doer`. It applies the **identical gate
     sequence** — via the shared :func:`_grok_gated_worktree`, so the order cannot drift:
     assert sandbox, honor the egress opt-out, secret-scan the task, create the
     committed-files-only worktree, bound the total wire bytes, secret-scan the worktree
@@ -620,8 +704,11 @@ def run_codex_doer(
 
     # Gate the outbound task BEFORE spawning the CLI: honor the repo egress opt-out and
     # refuse a task that carries a secret. (The CLI then reads only committed worktree
-    # files, and its writes are OS-confined to the worktree.)
-    gates.require_egress_allowed(project_context_text)
+    # files, and its writes are OS-confined to the worktree.) Derive the egress context
+    # from repo state when the caller omitted it so an opted-out repo can't be shipped by
+    # dropping the kwarg (#229); gate ORDER is unchanged.
+    egress_text = _egress_gate_text(repo_root, project_context_text)
+    gates.require_egress_allowed(egress_text)
     gates.assert_no_secrets(task)
 
     worktree = patch_proposal._create_worktree(repo_root)

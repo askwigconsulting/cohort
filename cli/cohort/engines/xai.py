@@ -29,6 +29,12 @@ from cohort.engines import EngineSpec, get_engine
 # hostile or misconfigured header cannot pin the process for minutes.
 _MAX_RETRY_AFTER_SECONDS: float = 30.0
 
+# Fixed backoff before the single retry on a transient 5xx / connection failure.
+# Kept small (a bounded pause, not exponential backoff) because there is exactly one
+# retry — the point is to give a momentarily overloaded server a beat to recover, not
+# to implement a full retry schedule. The 429 path uses ``Retry-After`` instead.
+_RETRY_BACKOFF_SECONDS: float = 1.0
+
 
 class EngineError(Exception):
     """Base class for all xAI client failures."""
@@ -208,12 +214,19 @@ def consult(
                 continue
             if 500 <= status < 600 and not retried:
                 retried = True
+                # Re-POSTing chat/completions after a 5xx is NOT idempotent: if the
+                # server processed the first request before failing to respond, the
+                # retry double-spends tokens. We accept that for a single bounded retry
+                # (a transient 5xx is usually a lost response, not a completed one)
+                # rather than build an idempotency-key handshake for a one-shot call.
+                time.sleep(_RETRY_BACKOFF_SECONDS)
                 continue
             raise EngineUnavailableError(f"xAI returned HTTP {status}") from None
         except (urllib.error.URLError, TimeoutError):
             # Connection error or timeout — no response body was received.
             if not retried:
                 retried = True
+                time.sleep(_RETRY_BACKOFF_SECONDS)
                 continue
             raise EngineUnavailableError(
                 "xAI request failed to reach the API after one retry"

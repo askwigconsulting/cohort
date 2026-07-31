@@ -25,18 +25,30 @@ Two hazards the design handles:
     therefore stolen — removed, then re-created by the next waiter. ``stale`` is
     set far longer than any real critical section (rewriting a few-KB JSON file
     is milliseconds), so a live holder is never stolen from.
-  * **A steal racing the original holder** (it was merely slow, not dead). Each
-    holder writes a unique token into its lock-file and, on release, removes the
-    file *only if it still carries that token*. So a holder whose stale lock was
-    stolen and re-created by someone else never deletes the new owner's lock.
+  * **A steal or release racing the original holder** (it was merely slow, not
+    dead). Both the stale-steal and the release must remove a lock-file, and a
+    naive "check that it's mine/stale, then unlink it" is two syscalls with a gap:
+    between the check and the unlink the file can be stolen and re-created by
+    someone else, so the unlink deletes a *fresh* lock — leaving two holders. To
+    close that gap every removal goes through an **atomic capture**: the lock-file
+    is renamed (``os.replace``) into a process-unique staging name. Rename is
+    atomic, so among racing callers exactly one captures a given file; the losers'
+    renames fail and they simply retry. The winner then inspects the captured file
+    — now *private*, so the check is race-free — and unlinks it only if it is
+    genuinely the file it meant to remove (still stale for a steal; still carrying
+    our token for a release). If it captured a fresh lock that raced into the slot
+    it *reinstates* it (re-creating it only if the slot is still free) rather than
+    deleting it. Each holder's token, written once at create, is what a release
+    matches on.
 
 Residual risk (documented, not eliminated): if a holder stalls for longer than
 ``stale`` (e.g. a process suspended by the OS), another waiter steals the lock
-and both may run their critical sections concurrently for a window. The token
-check prevents cross-deletion of lock-files but not the concurrent execution
-itself. ``stale`` is chosen to make this effectively impossible for the tiny
-JSON rewrites guarded here; a workload that could legitimately hold the lock for
-tens of seconds must raise ``stale`` accordingly.
+and both may run their critical sections concurrently for a window. The atomic
+capture prevents cross-*deletion* of lock-files (no one ever removes a fresh lock
+they did not verify), but not the concurrent execution itself. ``stale`` is
+chosen to make this effectively impossible for the tiny JSON rewrites guarded
+here; a workload that could legitimately hold the lock for tens of seconds must
+raise ``stale`` accordingly.
 """
 
 from __future__ import annotations
@@ -77,33 +89,98 @@ def _is_stale(lock_path: Path, stale: float) -> bool:
     return age > stale
 
 
-def _steal_if_stale(lock_path: Path, stale: float) -> None:
-    """Best-effort removal of a lock presumed abandoned. Re-checks staleness
-    immediately before unlinking to narrow the window in which a lock that was
-    just refreshed gets stolen. Errors are swallowed — the exclusive create that
-    follows is the real arbiter of ownership."""
-    if not _is_stale(lock_path, stale):
-        return
+def _unlink(path: Path) -> None:
+    """Best-effort unlink; a vanished file counts as success."""
     try:
-        os.unlink(lock_path)
+        os.unlink(path)
     except OSError:
-        pass  # already gone / another waiter stole it first → fine
+        pass
+
+
+def _capture(lock_path: Path) -> Union[Path, None]:
+    """Atomically move the current lock-file aside into a process-unique staging
+    file and return that path, or ``None`` if there was nothing to capture.
+
+    ``os.replace`` is atomic, so among concurrent callers racing to remove the
+    same lock-file exactly one wins the capture; the losers get ``FileNotFoundError``
+    (the source is already gone) and are told, via ``None``, to retry rather than
+    delete anything. The returned staging file has a name no other process knows,
+    so the winner can inspect it — re-check staleness, compare its token — without
+    any further race before deciding to unlink it. The staging name reuses the
+    lock-file's directory so the rename stays on one filesystem."""
+    staging = lock_path.with_name(f"{lock_path.name}.stealing.{uuid.uuid4().hex}")
+    try:
+        os.replace(lock_path, staging)
+    except OSError:
+        return None  # nothing there, or a competitor captured it first
+    return staging
+
+
+def _reinstate(lock_path: Path, staging: Path) -> None:
+    """Put a captured lock-file back that turned out not to be ours to remove — a
+    fresh lock that raced into the slot, or a successor's lock — then drop our
+    staging copy. Restore it only via an exclusive create, so a lock that has
+    already reappeared in the slot is never clobbered. Best-effort; on any error
+    the staging copy is dropped last so it is not leaked."""
+    try:
+        content = staging.read_bytes()
+    except OSError:
+        return  # cannot read it back → leave staging rather than risk a bad delete
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except OSError:
+        pass  # slot re-taken (or vanished) → leave the current occupant alone
+    else:
+        try:
+            os.write(fd, content)
+        finally:
+            os.close(fd)
+    _unlink(staging)
+
+
+def _steal_if_stale(lock_path: Path, stale: float) -> None:
+    """Reclaim a lock presumed abandoned — atomically, never deleting a fresh lock.
+
+    A plain ``_is_stale`` then ``os.unlink`` is a check-then-act with a gap: two
+    waiters both pass the check and both unlink, the second deleting a *fresh* lock
+    a third party created in between (#230). Instead, once the lock *looks* stale
+    we atomically capture it (rename into a private staging file): exactly one
+    waiter wins, the losers retry. We then re-check staleness on the captured file
+    — now ours alone, so the check is race-free — and unlink it only if it is
+    still stale. If a live holder had re-created the lock in the gap we captured
+    that fresh file instead and reinstate it rather than delete it. The
+    ``O_EXCL`` create that follows remains the real arbiter of ownership."""
+    if not _is_stale(lock_path, stale):
+        return  # looks live → do not even attempt a steal (never churn a live lock)
+    staging = _capture(lock_path)
+    if staging is None:
+        return  # someone else captured/removed it first → retry the acquire loop
+    if _is_stale(staging, stale):
+        _unlink(staging)  # confirmed abandoned → gone
+    else:
+        _reinstate(lock_path, staging)  # a fresh lock raced in → put it back
 
 
 def _release(lock_path: Path, token: bytes) -> None:
-    """Remove our lock-file, but only if it still carries our token — so a holder
-    whose stale lock was stolen and re-created by another process never deletes
-    that new owner's lock. Best-effort; a release failure never propagates."""
-    try:
-        current = lock_path.read_bytes()
-    except OSError:
+    """Remove our lock-file, but only ever the file that still carries our token.
+
+    Reading the token and then unlinking by path is a check-then-act with a gap
+    (#230): between them our stale lock can be stolen and re-created by a
+    successor, whose fresh lock the unlink would then delete. Instead we atomically
+    capture the lock-file into a private staging file and inspect *that*: if it
+    still carries our token we drop it; if a successor had re-created it we
+    reinstate it untouched. Best-effort; a release failure never propagates."""
+    staging = _capture(lock_path)
+    if staging is None:
         return  # already gone
-    if current != token:
-        return  # not ours anymore (stolen and re-created) → leave it
     try:
-        os.unlink(lock_path)
+        current: Union[bytes, None] = staging.read_bytes()
     except OSError:
-        pass
+        current = None
+    if current == token:
+        _unlink(staging)  # still ours → remove
+    else:
+        _reinstate(lock_path, staging)  # not ours (stolen and re-created) → restore
 
 
 @contextmanager

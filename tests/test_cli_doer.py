@@ -136,6 +136,80 @@ def test_egress_optout_blocks_before_spawning_the_cli(
     assert _worktree_count(tmp_path) == 1  # no worktree created
 
 
+def test_egress_optout_derived_from_repo_when_kwarg_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
+) -> None:
+    """#229: a caller that omits project_context_text can't ship an opted-out repo — the
+    codex doer reads the repo's .cohort/project_context.md and the deny marker refuses
+    BEFORE the CLI is spawned."""
+    _init_git_repo(
+        tmp_path,
+        {
+            "a.py": "1\n",
+            ".cohort/project_context.md": "## Egress\n\ncohort:egress=deny\n",
+        },
+    )
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def must_not_spawn(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", must_not_spawn)
+    with pytest.raises(gates.EgressBlockedError):
+        cli_doer.run_doer("gpt", "t", repo_root=tmp_path)  # no project_context_text kwarg
+
+    assert spawned["called"] is False
+    assert _worktree_count(tmp_path) == 1  # refused before any worktree
+
+
+def test_grok_egress_optout_derived_from_repo_when_kwarg_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _grok_installed
+) -> None:
+    """#229: the grok doer's shared gate also derives the egress context from repo state
+    when the kwarg is omitted — an opted-out repo refuses before grok runs."""
+    _init_git_repo(
+        tmp_path,
+        {
+            "a.py": "1\n",
+            ".cohort/project_context.md": "## Egress\n\ncohort:egress=deny\n",
+        },
+    )
+    calls, spy = _spy_grok()
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(gates.EgressBlockedError):
+        cli_doer.run_grok_review("review", repo_root=tmp_path)  # no kwarg
+
+    assert calls["n"] == 0
+    assert _worktree_count(tmp_path) == 1
+
+
+def test_explicit_project_context_kwarg_overrides_repo_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
+) -> None:
+    """A non-empty project_context_text kwarg is kept verbatim (the override still works):
+    an allow-marked context passes even if it differs from the on-disk file."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer.subprocess.run",
+        _fake_codex({"src/app.py": "value = 2\n"}),
+    )
+    result = cli_doer.run_doer(
+        "gpt", "bump", repo_root=tmp_path,
+        project_context_text="## Egress\n\ncohort:egress=allow\n",
+    )
+    assert result.returncode == 0
+
+
+def test_default_wire_cap_is_50mb(tmp_path: Path) -> None:
+    """#233: the default total-wire-byte cap is 50MB — clears normal-to-large source
+    repos while still catching a runaway data/binary blob."""
+    assert cli_doer._DEFAULT_MAX_WIRE_BYTES == 50_000_000
+
+
 def test_secret_in_task_is_refused(tmp_path: Path, _codex_installed) -> None:
     _init_git_repo(tmp_path, {"a.py": "1\n"})
     with pytest.raises(gates.SecretFoundError):
@@ -185,13 +259,13 @@ def test_grok_sandbox_argv_confines_to_the_worktree(tmp_path):
 
 
 def test_grok_sandbox_argv_ro_binds_etc_and_never_writable_home(tmp_path):
-    """/etc is read-only bound, and NO writable (--bind) target is the real home or an
-    ancestor of it — the only persistent writable path is the worktree. Pure argv check,
-    runs without bwrap installed."""
+    """The /etc subset is read-only bound (never the whole of /etc), and NO writable
+    (--bind) target is the real home or an ancestor of it — the only persistent writable
+    path is the worktree. Pure argv check, runs without bwrap installed."""
     wt = tmp_path / "wt"
     argv = cli_doer._grok_sandbox_argv(wt, tmp_path / "home", ["grok", "-p", "x"])
     joined = " ".join(argv)
-    assert "--ro-bind /etc /etc" in joined  # system config is read-only
+    assert "--ro-bind /etc /etc" not in joined  # the whole-/etc bind is gone (#227)
 
     # Every writable bind must be the worktree, and never the real home or an ancestor.
     writable_targets = [
@@ -202,6 +276,43 @@ def test_grok_sandbox_argv_ro_binds_etc_and_never_writable_home(tmp_path):
     for dst in writable_targets:
         assert Path(dst) != home                       # not the real home
         assert not home.is_relative_to(Path(dst))      # not an ancestor of the real home
+
+
+def test_grok_sandbox_argv_narrows_etc_to_tls_and_resolver(tmp_path):
+    """#227: /etc is no longer bound wholesale; only the TLS + name-resolution subset is
+    bound read-only, each path only when it exists on the host. Bare `/etc /etc` is gone,
+    /etc/ssl (present on essentially every Linux host) is bound, and every /etc path bound
+    is from the allowed subset."""
+    wt = tmp_path / "wt"
+    argv = cli_doer._grok_sandbox_argv(wt, tmp_path / "home", ["grok", "-p", "x"])
+    joined = " ".join(argv)
+
+    assert "--ro-bind /etc /etc" not in joined  # the whole-/etc bind is removed
+    assert "--ro-bind /usr /usr" in joined       # /usr still read-only
+
+    allowed = {
+        "/etc/ssl", "/etc/resolv.conf", "/etc/hosts",
+        "/etc/nsswitch.conf", "/etc/ca-certificates", "/etc/pki",
+    }
+    etc_binds = [
+        argv[i + 1]
+        for i, tok in enumerate(argv)
+        if tok == "--ro-bind" and argv[i + 1].startswith("/etc")
+    ]
+    assert etc_binds, "expected at least the cert store to be bound"
+    assert all(p in allowed for p in etc_binds)  # only the TLS/resolver subset
+    if Path("/etc/ssl").exists():                # the cert store, on any real Linux host
+        assert "--ro-bind /etc/ssl /etc/ssl" in joined
+
+
+def test_grok_sandbox_argv_has_new_session_for_tiocsti(tmp_path):
+    """#225: the jail runs in its own session (--new-session) so a TTY can't be used to
+    inject keystrokes (TIOCSTI) back into Cohort, alongside the existing isolation flags."""
+    argv = cli_doer._grok_sandbox_argv(
+        tmp_path / "wt", tmp_path / "home", ["grok", "-p", "x"]
+    )
+    assert "--new-session" in argv
+    assert "--unshare-all" in argv and "--die-with-parent" in argv
 
 
 def test_grok_env_is_scrubbed_of_host_secrets(monkeypatch, tmp_path):
@@ -266,6 +377,41 @@ def test_run_grok_in_worktree_hands_grok_a_scrubbed_env_not_the_host(
     assert env["GROK_API_KEY"] == "xai-secret-value"    # key rides the (scrubbed) env
     assert "FAKE_SECRET" not in env                     # host secret dropped
     assert "xai-secret-value" not in " ".join(seen["cmd"])  # and never on argv
+
+
+def test_run_grok_in_worktree_is_non_interactive_and_own_session(tmp_path, monkeypatch):
+    """#225: the grok subprocess gets stdin=DEVNULL (no TTY to inject keystrokes into) and
+    start_new_session=True (a timeout kill reaps grandchildren)."""
+    monkeypatch.setattr(cli_doer.shutil, "which",
+                        lambda name: "/usr/bin/grok" if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    seen = {}
+
+    def capture(cmd, **kwargs):
+        seen["kwargs"] = kwargs
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    cli_doer.run_grok_in_worktree(tmp_path / "wt", "do a thing")
+
+    assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert seen["kwargs"]["start_new_session"] is True
+
+
+def test_run_codex_in_worktree_is_non_interactive_and_own_session(tmp_path, monkeypatch):
+    """#225: the codex subprocess gets stdin=DEVNULL and start_new_session=True too."""
+    monkeypatch.setattr("cohort.engines.cli_doer.shutil.which", lambda _n: "/usr/bin/codex")
+    seen = {}
+
+    def capture(cmd, **kwargs):
+        seen["kwargs"] = kwargs
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    cli_doer.run_codex_in_worktree(tmp_path / "wt", "do a thing")
+
+    assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
+    assert seen["kwargs"]["start_new_session"] is True
 
 
 def test_worktree_secret_scan_refuses_committed_secret_before_dispatch(

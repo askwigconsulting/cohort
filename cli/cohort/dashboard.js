@@ -120,7 +120,10 @@ function thumb(label, title, onClick) {
 function artifactCard(it) {
   const el = document.createElement("div");
   el.className = "artifact" + (it.active === false ? " off" : "");
-  el.tabIndex = 0; el.setAttribute("role", "button");
+  // No role="button": the card wraps real nested <button> elements (art-actions),
+  // and a button-in-a-button is invalid ARIA. tabIndex + the Enter/Space keydown
+  // handler below keep it keyboard-activatable without claiming a button role.
+  el.tabIndex = 0;
   el.title = "View " + it.kind + " · " + it.name;
 
   const head = document.createElement("div"); head.className = "art-head";
@@ -424,7 +427,8 @@ function renderScorecards(s) {
     el.appendChild(counts);
 
     const spark = document.createElement("div"); spark.className = "sparkline";
-    spark.title = "last 30 days";
+    spark.setAttribute("role", "list");
+    spark.setAttribute("aria-label", c.agent + " up/down feedback trend, last 30 days");
     const trend = c.trend || [];
     if (!trend.length) {
       const t = document.createElement("span"); t.className = "meta"; t.textContent = "quiet last 30 days";
@@ -435,6 +439,15 @@ function renderScorecards(s) {
         const dayNet = day.up - day.down;
         bar.style.height = Math.min(24, 4 + Math.abs(dayNet) * 4) + "px";
         bar.style.background = dayNet >= 0 ? "var(--ok)" : "var(--bad)";
+        // Redundant, non-color sign encoding (MED-1): positive days sit on the
+        // baseline and grow upward; negative days hang from the top and grow
+        // downward — see .sparkline/.spark-bar in dashboard.html.
+        bar.style.alignSelf = dayNet >= 0 ? "flex-end" : "flex-start";
+        const sign = dayNet > 0 ? "+" : dayNet < 0 ? "−" : "";
+        const label = "day " + sign + Math.abs(dayNet) + " net";
+        bar.title = label;
+        bar.setAttribute("aria-label", label);
+        bar.setAttribute("role", "listitem");
         spark.appendChild(bar);
       }
     }
