@@ -11,6 +11,42 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+- **External-engine doers hardened (audit r2).** Closed a **TIOCSTI jail-to-host escape**:
+  the grok bubblewrap argv gains `--new-session` and both the grok and codex doers now run
+  with `stdin=DEVNULL` + `start_new_session=True`, so a compromised sandboxed engine has no
+  controlling TTY to inject host shell commands through. Narrowed the grok jail's readable
+  `/etc`: instead of binding all of `/etc`, only the TLS + resolver paths are bound
+  (existence-guarded), so machine secrets under `/etc` are no longer exposed to a model over
+  the open network. The egress opt-out is now derived from `repo_root/.cohort/project_context.md`
+  when a caller omits the context (fail-closed), so a doer can't silently ship an opted-out
+  repo. (#225, #227, #229)
+
+### Fixed
+- **Dashboard `/api/state` no longer re-scans everything every poll, and one bad file can't
+  500 the whole dashboard (audit r2).** A short-TTL aggregate cache memoizes the office-wide
+  read-only scans (parity re-parse, cross-project activity/scorecards, `list_projects`) —
+  invalidated on every mutating action — instead of O(projects × files) work every 6s; and
+  per-project reads now skip+log a corrupt/non-UTF-8 file with a `do_GET` backstop that
+  degrades gracefully rather than failing the whole response. (#226)
+- **filelock stale-steal / token-release made atomic (audit r2).** Every lock removal now
+  goes through an atomic `os.replace` capture + verify + `O_EXCL` reinstate, so two waiters
+  can no longer delete each other's fresh lock in a stale-gated race. (#230)
+- **The agentic engine loop now has an overall wall-clock deadline** (default 600s, checked
+  each round) and a bounded retry backoff, so a slow vendor API can't pin a user-waited
+  consult/propose for ~90 minutes. (#231)
+
+### Changed
+- **Dashboard accessibility (audit r2):** the feedback sparkline no longer conveys up/down by
+  color alone (per-bar labels + direction), a `prefers-reduced-motion` path stops the
+  continuous animations, low-contrast `--faint` text now meets WCAG AA, focusable cards show a
+  visible focus ring, and the project switcher is labeled. (#232)
+- **Raised the external-engine wire-byte cap 5 MB → 50 MB** so `engine review/propose grok`
+  isn't refused on ordinary repos (the cap targets runaway data blobs, not normal source);
+  still fail-closed. Recorded the grok-cli-as-doer decision as an amendment to RFC 0004
+  (it reversed the RFC's "grok is API-direct, never a doer" decision), and corrected stale
+  in-code docstrings. (#233, #228)
+
 ## [0.12.0] — 2026-07-31 · CLI-first external engines
 
 ### Changed
