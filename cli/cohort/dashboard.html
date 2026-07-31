@@ -11,7 +11,11 @@
 <style>
   :root {
     --bg0:#070b14; --bg1:#0b1222; --card:rgba(255,255,255,.045);
-    --card-edge:rgba(255,255,255,.09); --ink:#e7ecf5; --dim:#8b96ab; --faint:#5b6478;
+    --card-edge:rgba(255,255,255,.09); --ink:#e7ecf5; --dim:#8b96ab;
+    /* --faint was #5b6478, ~3.32:1 on --bg0 (#070b14) — fails WCAG AA 4.5:1.
+       #717c94 is ~4.70:1 on --bg0 (WCAG relative-luminance formula, computed).
+       --dim is unchanged. */
+    --faint:#717c94;
     --vio:#7c5cff; --cyan:#22d3ee; --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   }
@@ -158,7 +162,8 @@
     padding:12px 13px; position:relative; cursor:pointer;
     transition:border-color .15s ease, transform .15s ease;
   }
-  .artifact:hover, .artifact:focus-visible { border-color:rgba(34,211,238,.45); transform:translateY(-1px); outline:none; }
+  .artifact:hover, .artifact:focus-visible { border-color:rgba(34,211,238,.45); transform:translateY(-1px); }
+  .artifact:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .artifact.off { opacity:.5; }
   .art-head { display:flex; align-items:center; gap:8px; min-width:0; }
   .art-name { font-weight:700; font-size:13.5px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -177,7 +182,8 @@
     background:var(--card); border:1px solid var(--card-edge); border-radius:14px;
     padding:13px 15px; cursor:pointer; transition:border-color .15s ease, transform .15s ease;
   }
-  .proj-card:hover, .proj-card:focus-visible { border-color:rgba(124,92,255,.5); transform:translateY(-1px); outline:none; }
+  .proj-card:hover, .proj-card:focus-visible { border-color:rgba(124,92,255,.5); transform:translateY(-1px); }
+  .proj-card:focus-visible { outline:2px solid var(--vio); outline-offset:2px; }
   .proj-card.focused { border-color:rgba(251,191,36,.6); box-shadow:inset 0 0 0 1px rgba(251,191,36,.25); }
   .proj-head { display:flex; align-items:center; gap:8px; justify-content:space-between; }
   .proj-name { font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -213,8 +219,13 @@
   .score-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .score-name { font-weight:700; font-size:13.5px; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .score-counts { margin-top:8px; display:flex; gap:6px; flex-wrap:wrap; }
-  .sparkline { margin-top:10px; display:flex; align-items:flex-end; gap:2px; height:26px; }
-  .spark-bar { width:4px; min-height:2px; border-radius:2px; flex:none; }
+  /* MED-1: bars are anchored to the container's bottom (positive, alignSelf:flex-end)
+     or top (negative, alignSelf:flex-start) — see dashboard.js — so sign reads from
+     position, not just color. A faint mid-line marks the shared baseline. */
+  .sparkline { margin-top:10px; display:flex; align-items:flex-end; gap:2px; height:26px; position:relative; }
+  .sparkline::after { content:""; position:absolute; left:0; right:0; top:50%; height:1px;
+                       background:var(--card-edge); pointer-events:none; }
+  .spark-bar { width:4px; min-height:2px; border-radius:2px; flex:none; position:relative; z-index:1; }
 
   /* ---- modal / toasts ------------------------------------------------------ */
   dialog {
@@ -244,6 +255,13 @@
   footer { margin-top:34px; text-align:center; color:var(--faint); font:500 11px/1.6 var(--mono); }
 
   .diag { font:600 10px/1 var(--mono); color:var(--warn); }
+
+  /* MED-2: stop every continuously-looping animation (pulse/flow/spin) for users
+     who've asked the OS not to show motion. One-shot transitions (e.g. the toast
+     `rise` entrance, hover transforms) are left alone — only `infinite` loops. */
+  @media (prefers-reduced-motion: reduce) {
+    .live i, .wire, .btn .spin { animation:none; }
+  }
 </style>
 </head>
 <body>
@@ -253,7 +271,7 @@
     <span class="chip" id="version">v—</span>
     <span class="chip live"><i></i>live</span>
     <span class="chip" id="repo-chip" hidden></span>
-    <select class="chip" id="project-switcher" title="Switch project" hidden></select>
+    <select class="chip" id="project-switcher" title="Switch project" aria-label="Switch project" hidden></select>
     <div class="spacer"></div>
     <button class="btn" id="btn-recompile" title="Compile canonical → staging → place into Claude"><span class="spin"></span>⟳ Recompile</button>
     <button class="btn" id="btn-snapshot" title="Capture a session record into .cohort/sessions/"><span class="spin"></span>✎ Snapshot</button>
