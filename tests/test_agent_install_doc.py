@@ -55,3 +55,32 @@ def test_agents_doc_states_the_egress_default_and_the_literal_opt_out_marker() -
     text = _AGENTS.read_text(encoding="utf-8")
     assert "cohort:egress=deny" in text
     assert "by default" in text
+
+
+# --------------------------------------------------------------------------- #
+# Privacy — audit r3 never covered this dimension in three runs
+# --------------------------------------------------------------------------- #
+
+
+def test_scaffolded_gitignore_excludes_the_engine_transcripts() -> None:
+    """Transcripts record what an external engine read and was sent — excerpts of the
+    repo's source plus the model's analysis. They are a local audit trail, not shared
+    context, and nothing else ignores them: without this a routine `git add -A` commits
+    them, and a repo that later goes public publishes the lot.
+    """
+    from cohort.project import GITIGNORE_CONTENT
+
+    ignored = {line.strip() for line in GITIGNORE_CONTENT.splitlines() if line.strip()}
+    assert "engine-transcripts/" in ignored
+    assert "state/" in ignored      # machine-local bookkeeping
+    assert "compiled/" in ignored   # derived output
+
+
+def test_scaffolded_gitignore_still_shares_the_context_it_is_meant_to_share() -> None:
+    """The inverse failure: over-ignoring would silently stop the repo sharing the things
+    Cohort exists to share, and nobody would notice until a teammate had no context."""
+    from cohort.project import GITIGNORE_CONTENT
+
+    ignored = {line.strip() for line in GITIGNORE_CONTENT.splitlines() if line.strip()}
+    for shared in ("project_context.md", "sessions/", "cohort.toml"):
+        assert shared not in ignored
