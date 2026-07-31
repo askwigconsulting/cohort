@@ -304,7 +304,10 @@ def test_approve_requires_a_name_or_all(home):
 
 def test_pulled_agent_is_not_quarantined(home, tmp_path):
     remote = _bare_remote(tmp_path)
-    _write_personal(home, "pulled-agent")  # an agent, not a gated kind
+    # `_write_personal` writes a body with no frontmatter, so it renders as no gated kind
+    # at all. NOT "an agent is not gated" — `agent` IS in GATED_KINDS; the old comment here
+    # asserted the opposite and sent audit r3 hunting a runtime bug that does not exist.
+    _write_personal(home, "pulled-agent")
     do_my_sync(home, remote=str(remote))
     home_b = tmp_path / "home-b"
     home_b.mkdir()
@@ -417,7 +420,31 @@ def test_sync_on_a_fresh_machine_does_not_attempt_a_recompile(home, tmp_path):
     report = do_my_sync(home, remote=str(remote))
 
     assert report["recompiled"] == []
+    assert report["recompile_failed"] is None  # nothing to place != placing failed
     assert not (home / ".claude").exists()
+
+
+def test_sync_reports_a_failed_recompile_instead_of_an_empty_list(
+    home, tmp_path, monkeypatch
+):
+    """Audit r3, H2: a recompile failure returned the *same* empty list as "nothing
+    installed", so a sync that placed nothing still read as fully successful. The sync
+    itself still succeeds — fetch and push already happened — but the failure is reported.
+    """
+    remote = _bare_remote(tmp_path)
+    _write_personal(home, "solo")
+    do_install(home=home, selection=["claude"], mode="copy", force=False,
+               source=REPO_ROOT, dry_run=False)
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("cohort.roster.recompile_global_ides", boom)
+    report = do_my_sync(home, remote=str(remote))
+
+    assert report["pushed"] is True            # the sync itself still succeeded
+    assert report["recompiled"] == []
+    assert "disk full" in report["recompile_failed"]
 
 
 def test_diverged_history_is_refused_for_the_user_to_reconcile(home, tmp_path):

@@ -25,8 +25,10 @@ or ``repr``.
 
 from __future__ import annotations
 
+import hashlib
 import posixpath
 import re
+from typing import NamedTuple
 
 # --------------------------------------------------------------------------- #
 # Exceptions
@@ -211,7 +213,36 @@ _SECRET_KEYWORDS: tuple[str, ...] = (
     "TOKEN",
 )
 _ASSIGNMENT_RE = re.compile(
-    r"\b([A-Za-z_][A-Za-z0-9_\-]*)\s*[:=]\s*['\"]?([^\s'\"]{6,})",
+    r"\b([A-Za-z_][A-Za-z0-9_\-]*)\s*([:=])\s*['\"]?([^\s'\"]{6,})",
+)
+
+# Trailing syntax that rides along on the captured value because the value pattern
+# stops only at whitespace or a quote — e.g. ``max_tokens=max_tokens)`` captures
+# ``max_tokens)``. Stripped before the value is classified so the self-reference and
+# annotation rules below see the bare token.
+_VALUE_TRAILER_CHARS = ",;)]}'\"`"
+
+# Type expressions that follow an annotation colon. An annotated *name* that happens to
+# contain a secret keyword (``token: bytes``, ``_SECRET_KEYWORDS: tuple[str, ...]``, a
+# docstring's ``max_tokens: Optional cap on ...``) is a declaration, not a credential —
+# the identifier is being typed, not assigned a value. Only consulted for the ``:``
+# separator, so ``GITHUB_TOKEN: ghp_...`` (a real credential in colon form) still trips.
+_DOTTED_REFERENCE_RE = re.compile(
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.(?P<last>[A-Za-z_][A-Za-z0-9_]*))+"
+)
+
+#
+# Anchored at BOTH ends: the value must be the type name itself, or the start of a
+# subscripted one (``tuple[str, ...]`` captures as ``tuple[``). Matching a mere *prefix*
+# was a false-negative hole — `password: Path-2026-Xy9z-secretvals` and
+# `api_key: int-8f2k1-zzz` both begin with a type name followed by a word boundary, and
+# YAML (the dominant secrets-config format) uses `:` for every assignment, so a prefix
+# rule silently exempted real credentials in exactly the files most likely to hold them.
+_TYPE_ANNOTATION_VALUE_RE = re.compile(
+    r"(?:str|bytes|bytearray|int|float|bool|complex|list|dict|set|frozenset|tuple"
+    r"|object|None|Any|Optional|Union|Literal|Mapping|MutableMapping|Sequence"
+    r"|Iterable|Iterator|Callable|Awaitable|Coroutine|Path|datetime|Decimal|UUID)"
+    r"(?:\[.*)?"
 )
 
 # RHS shapes that are unambiguously *code*, not a credential value, even when the
@@ -231,6 +262,35 @@ def _assignment_keyword(identifier: str) -> str | None:
         if keyword in upper:
             return keyword
     return None
+
+
+def _is_self_reference(identifier: str, value: str) -> bool:
+    """True if the assignment merely passes a name to itself, e.g. ``max_tokens=max_tokens``.
+
+    A keyword argument forwarded under its own name (``max_tokens=max_tokens``,
+    ``token=token``) is a *variable reference*, never a literal credential — the value is
+    resolved at runtime and no secret appears in the text. Restricted to an exact
+    identifier match so an ordinary bare-word value (``DATABASE_PASSWORD=hunter2secret``)
+    is untouched.
+    """
+    return value == identifier
+
+
+def _is_dotted_reference(identifier: str, value: str) -> bool:
+    """True if the value forwards ``identifier`` through an attribute, e.g. ``token=srv.token``.
+
+    ``request(..., token=srv.token)`` reads an attribute at runtime; the text contains no
+    credential. Requires a **full** match against a chain of Python identifiers joined by
+    dots — so anything carrying credential punctuation (``sk-...``, base64url) is untouched.
+
+    It additionally requires the **final segment to equal the assigned name**, which is what
+    makes this a *forwarding* pattern rather than "any dotted word". Without that, a
+    ``name.surname`` password (``PASSWORD=jonathan.smith``) is structurally identical to
+    ``token=srv.token`` and was silently exempted — a real credential shape, and a
+    false-negative this scanner previously caught.
+    """
+    match = _DOTTED_REFERENCE_RE.fullmatch(value)
+    return match is not None and match.group("last") == identifier
 
 
 def _looks_secret_shaped(value: str) -> bool:
@@ -283,33 +343,183 @@ def scan_for_secrets(text: str) -> list[str]:
     Returns:
         A sorted, de-duplicated list of finding labels; empty if nothing matched.
     """
-    labels: set[str] = set()
+    return sorted({finding.label for finding in scan_for_secret_findings(text)})
 
-    if _AWS_ACCESS_KEY_RE.search(text):
-        labels.add("aws-access-key-id")
-    if _PRIVATE_KEY_RE.search(text):
-        labels.add("private-key-block")
-    if _BEARER_RE.search(text):
-        labels.add("bearer-token")
-    if _GITHUB_TOKEN_RE.search(text) or _GITHUB_FINE_GRAINED_PAT_RE.search(text):
-        labels.add("github-token")
-    if _SLACK_TOKEN_RE.search(text):
-        labels.add("slack-token")
-    if _AI_API_KEY_RE.search(text):
-        labels.add("ai-api-key")
-    if _GOOGLE_API_KEY_RE.search(text):
-        labels.add("google-api-key")
-    if _JWT_RE.search(text):
-        labels.add("jwt")
-    if _CONNECTION_STRING_CREDENTIAL_RE.search(text):
-        labels.add("connection-string-credential")
+
+# Each high-signal pattern paired with the label it raises. Two patterns share the
+# ``github-token`` label (classic and fine-grained PATs), which is why this is a tuple of
+# pairs rather than a mapping.
+_HIGH_SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("aws-access-key-id", _AWS_ACCESS_KEY_RE),
+    ("private-key-block", _PRIVATE_KEY_RE),
+    ("bearer-token", _BEARER_RE),
+    ("github-token", _GITHUB_TOKEN_RE),
+    ("github-token", _GITHUB_FINE_GRAINED_PAT_RE),
+    ("slack-token", _SLACK_TOKEN_RE),
+    ("ai-api-key", _AI_API_KEY_RE),
+    ("google-api-key", _GOOGLE_API_KEY_RE),
+    ("jwt", _JWT_RE),
+    ("connection-string-credential", _CONNECTION_STRING_CREDENTIAL_RE),
+)
+
+
+class SecretFinding(NamedTuple):
+    """One credential-shaped hit: its kind, and a digest of the matched value.
+
+    The digest — never the value — is what makes a finding *addressable*: a repo can
+    declare a specific known-fake fixture suppressed (see
+    :func:`scan_for_secret_findings` callers) without exempting a whole path, so a
+    *different* credential appearing in that same file still trips the gate.
+
+    Attributes:
+        label: The finding kind, e.g. ``"aws-access-key-id"``. Never carries a value.
+        digest: :func:`secret_digest` of the matched text.
+    """
+
+    label: str
+    digest: str
+
+
+def secret_digest(value: str) -> str:
+    """Return a short, stable, non-reversible digest of a matched secret value.
+
+    Truncated to 16 hex chars (64 bits) — ample against accidental collision between the
+    handful of fixtures a repo declares, short enough to stay readable in a committed
+    allowlist. A digest is not a value: publishing it discloses nothing about a
+    high-entropy credential, and the values a repo declares are fakes by construction.
+    """
+    return hashlib.sha256(value.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+
+
+def scan_for_secret_findings(text: str) -> list[SecretFinding]:
+    """Scan ``text`` and return every distinct :class:`SecretFinding`.
+
+    The value-carrying counterpart to :func:`scan_for_secrets`, which reduces these to
+    bare labels. Detection is identical; this form additionally reports *which* value
+    raised each finding, as a digest.
+
+    Args:
+        text: The payload to scan.
+
+    Returns:
+        A sorted, de-duplicated list of findings; empty if nothing matched.
+    """
+    findings: set[SecretFinding] = set()
+
+    for label, pattern in _HIGH_SIGNAL_PATTERNS:
+        for match in pattern.finditer(text):
+            findings.add(SecretFinding(label, secret_digest(match.group(0))))
 
     for match in _ASSIGNMENT_RE.finditer(text):
-        keyword = _assignment_keyword(match.group(1))
-        if keyword is not None and _looks_secret_shaped(match.group(2)):
-            labels.add(f"generic-assignment:{keyword}")
+        identifier, separator, raw_value = match.group(1), match.group(2), match.group(3)
+        keyword = _assignment_keyword(identifier)
+        if keyword is None:
+            continue
+        # The value pattern stops only at whitespace or a quote, so closing syntax rides
+        # along; strip it before classifying, and re-apply the documented >=6 char floor
+        # so a value that was only long enough *with* its punctuation stops counting.
+        value = raw_value.rstrip(_VALUE_TRAILER_CHARS)
+        if len(value) < 6:
+            continue
+        if _is_self_reference(identifier, value) or _is_dotted_reference(
+            identifier, value
+        ):
+            continue
+        if separator == ":" and _TYPE_ANNOTATION_VALUE_RE.fullmatch(value):
+            continue
+        if not _looks_secret_shaped(value):
+            continue
+        findings.add(
+            SecretFinding(f"generic-assignment:{keyword}", secret_digest(value))
+        )
 
-    return sorted(labels)
+    return sorted(findings)
+
+
+# Repo-relative location of the committed suppression manifest. It must be *committed*
+# (not git-ignored): the doers scan a detached checkout of HEAD, so only tracked files
+# exist there, and being tracked is exactly what puts every suppression in front of a
+# human reviewer in the PR diff.
+SECRET_ALLOWLIST_PATH = ".cohort/secret-scan-allow.txt"
+
+# One manifest entry: `<digest>  <repo-relative-path>` with an optional `# note`. Both
+# fields are required — a digest alone would suppress a value everywhere in the repo, and
+# a path alone is the blind spot this design exists to avoid.
+_ALLOWLIST_ENTRY_RE = re.compile(
+    r"^\s*([0-9a-f]{16})\s+(\S+)\s*(?:#.*)?$"
+)
+
+
+class SecretSuppression(NamedTuple):
+    """A declared, committed exemption for one known-fake value in one file.
+
+    Attributes:
+        digest: :func:`secret_digest` of the exact value to suppress.
+        path: Repo-relative path the suppression applies to.
+    """
+
+    digest: str
+    path: str
+
+
+def parse_secret_allowlist(text: str) -> frozenset[SecretSuppression]:
+    """Parse the committed suppression manifest into a set of exemptions.
+
+    The manifest declares credential-shaped content a repo *knows* is fake — a scanner's
+    own regression fixtures, the AWS documentation example key, a docstring quoting
+    ``postgres://svc:S3cret@db/prod``. Each entry binds a **value digest to a path**, so
+    the exemption cannot travel: a real credential dropped into an exempted file has a
+    different digest and still blocks the gate. This is the property a bare path
+    allowlist gives up.
+
+    Format — one entry per line, blank lines and ``#`` comments ignored::
+
+        # why this fixture is fake
+        a1b2c3d4e5f60718  tests/test_gates.py  # AWS documentation example key
+
+    Fails **closed** on anything it cannot parse: a malformed line is skipped, so it
+    suppresses nothing and the finding it was meant to cover still blocks. A typo can
+    only ever make the gate stricter, never weaker.
+
+    Args:
+        text: Full text of the manifest file.
+
+    Returns:
+        The declared suppressions; empty if the manifest is absent or unparseable.
+    """
+    entries: set[SecretSuppression] = set()
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _ALLOWLIST_ENTRY_RE.match(line)
+        if match is None:
+            continue
+        entries.add(SecretSuppression(match.group(1), _normalize_path(match.group(2))))
+    return frozenset(entries)
+
+
+def unsuppressed_findings(
+    findings: list[SecretFinding],
+    path: str,
+    allowlist: frozenset[SecretSuppression],
+) -> list[SecretFinding]:
+    """Drop findings in ``path`` that the manifest declares known-fake.
+
+    Args:
+        findings: Findings raised by :func:`scan_for_secret_findings` for one file.
+        path: Repo-relative path of that file.
+        allowlist: Declared suppressions, from :func:`parse_secret_allowlist`.
+
+    Returns:
+        The findings that remain — every one of which must block the gate.
+    """
+    normalized = _normalize_path(path)
+    return [
+        finding
+        for finding in findings
+        if SecretSuppression(finding.digest, normalized) not in allowlist
+    ]
 
 
 def assert_no_secrets(text: str) -> None:

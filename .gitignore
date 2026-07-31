@@ -20,7 +20,16 @@ htmlcov/
 # Cohort dogfooding artifacts — running Cohort against its own repo writes these
 # (project context, sessions, reports, the placed office). They are local state,
 # not source; canonical lives under canonical/. Force-add if ever intentional.
-/.cohort/
+#
+# Ignore the *contents* rather than the directory itself, so the one file below can be
+# un-ignored: git will not descend into an ignored directory, and a negation for a file
+# inside `/.cohort/` would therefore never take effect.
+/.cohort/*
+# The secret-scan suppression manifest is the deliberate exception — it MUST be tracked.
+# The external-engine gate reads it out of a detached checkout of HEAD, so an untracked
+# manifest would be invisible to the gate, and being committed is exactly what puts every
+# suppression in front of a reviewer in the PR diff.
+!/.cohort/secret-scan-allow.txt
 /.claude/
 
 # Dashboard server runtime log (written by `cohort dashboard`) — local state, not source.

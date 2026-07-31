@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -76,6 +77,16 @@ class Manifest:
         """
         if not path.parent.exists():
             return
+        # Keep the last known-good manifest beside the live one. `os.replace` already
+        # rules out a torn write, but it cannot help with schema drift, a hand-edit, or
+        # filesystem damage — and this file is what a `reverse` replays, so losing it
+        # strands every placed artifact with no record of what to undo (audit r3, H3).
+        # Best-effort: a failed backup must never block the write it protects.
+        if path.exists():
+            try:
+                shutil.copy2(path, path.with_suffix(".json.bak"))
+            except OSError:
+                pass
         tmp = path.with_suffix(".json.tmp")
         payload = json.dumps(self.to_dict(), indent=2)
         with open(tmp, "w", encoding="utf-8") as fh:
@@ -93,11 +104,44 @@ class Manifest:
                 os.close(dir_fd)
 
 
+class ManifestCorruptError(Exception):
+    """The manifest exists but cannot be parsed. Callers must fail closed.
+
+    Deliberately distinct from "absent" (which is a legitimate state — nothing installed
+    yet, and :func:`load_manifest` returns None for it). A manifest that exists but is
+    unreadable means Cohort no longer knows what it placed, so guessing is the one thing
+    it must not do: a wrong guess writes or reverses the wrong files.
+    """
+
+
 def load_manifest(path: Path) -> Optional[Manifest]:
-    """Load a manifest from ``path``, or None if it does not exist."""
+    """Load a manifest from ``path``, or None if it does not exist.
+
+    Raises:
+        ManifestCorruptError: the file exists but is not a readable manifest — invalid
+            JSON, truncated, or missing required keys. Previously this surfaced as a raw
+            ``JSONDecodeError``/``KeyError`` traceback out of whichever command happened
+            to touch it (audit r3, H3); it is now a typed, fail-closed error that names
+            the file and the recovery, including the ``.json.bak`` written beside it.
+    """
     if not path.exists():
         return None
-    return Manifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    try:
+        return Manifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except (ValueError, KeyError, TypeError, OSError, UnicodeDecodeError) as exc:
+        backup = path.with_suffix(".json.bak")
+        recovery = (
+            f"a previous version is at {backup}, so `cp {backup} {path}` may restore it"
+            if backup.exists()
+            else "no .json.bak was found beside it"
+        )
+        raise ManifestCorruptError(
+            f"{path} exists but could not be read as a manifest "
+            f"({type(exc).__name__}). Cohort will not guess what it placed, so this "
+            f"refuses rather than risk writing or reversing the wrong files. "
+            f"Recovery: {recovery}; otherwise re-run `cohort init --force` to rebuild "
+            f"the install record."
+        ) from exc
 
 
 @contextmanager

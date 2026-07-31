@@ -9,12 +9,43 @@ are all exercised.
 from __future__ import annotations
 
 import subprocess
+import time
 import types
 from pathlib import Path
 
 import pytest
 
 from cohort.engines import cli_doer, gates, patch_proposal
+
+
+class _FakePopen:
+    """A ``subprocess.Popen`` stand-in recording the kwargs the launch seam passes.
+
+    The confinement flags (``stdin=DEVNULL``, ``start_new_session=True``) are set at the
+    Popen call, so that is where they must be asserted — the seam above it now owns the
+    timeout-and-group-kill behaviour instead.
+    """
+
+    def __init__(self, seen: dict, *, returncode: int = 0, stdout: str = "", stderr: str = ""):
+        self._seen = seen
+        self._returncode = returncode
+        self._out = (stdout, stderr)
+
+    def __call__(self, cmd, **kwargs):
+        self._seen["cmd"] = cmd
+        self._seen["kwargs"] = kwargs
+        self.pid = 4242
+        self.returncode = self._returncode
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def communicate(self, timeout=None):
+        return self._out
 
 
 def _init_git_repo(root: Path, files: dict[str, str]) -> None:
@@ -39,20 +70,21 @@ def _worktree_count(root: Path) -> int:
 
 
 def _fake_codex(edit: dict[str, str], returncode: int = 0):
-    """A subprocess.run stand-in: for the codex call, write ``edit`` into the worktree
-    (named by ``-C``); for git calls, run the real git."""
-    real_run = subprocess.run
+    """A ``_launch_vendor_cli`` stand-in: write ``edit`` into the worktree (named by
+    ``-C``) as codex would, and report ``returncode``.
 
-    def run(cmd, **kwargs):
-        if cmd[:2] == ["codex", "exec"]:
-            wt = Path(cmd[cmd.index("-C") + 1])
-            for rel, content in edit.items():
-                (wt / rel).parent.mkdir(parents=True, exist_ok=True)
-                (wt / rel).write_text(content, encoding="utf-8")
-            return types.SimpleNamespace(returncode=returncode, stdout="edited", stderr="")
-        return real_run(cmd, **kwargs)
+    Patched at the vendor-launch seam rather than at ``subprocess.run``, so git calls run
+    for real without the fake having to tell git and codex apart — and so a test can never
+    accidentally spawn the real vendor CLI."""
 
-    return run
+    def launch(cmd, **kwargs):
+        wt = Path(cmd[cmd.index("-C") + 1])
+        for rel, content in edit.items():
+            (wt / rel).parent.mkdir(parents=True, exist_ok=True)
+            (wt / rel).write_text(content, encoding="utf-8")
+        return types.SimpleNamespace(returncode=returncode, stdout="edited", stderr="")
+
+    return launch
 
 
 @pytest.fixture
@@ -65,7 +97,7 @@ def test_codex_doer_edits_the_worktree_leaving_source_untouched(
 ) -> None:
     _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run",
+        "cohort.engines.cli_doer._launch_vendor_cli",
         _fake_codex({"src/app.py": "value = 2\n"}),
     )
 
@@ -86,14 +118,12 @@ def test_codex_doer_command_is_sandbox_confined_to_the_worktree(
     real_run = subprocess.run
 
     def capture(cmd, **kwargs):
-        if cmd[:2] == ["codex", "exec"]:
-            seen["cmd"] = cmd
-            wt = Path(cmd[cmd.index("-C") + 1])
-            (wt / "a.py").write_text("x=2\n", encoding="utf-8")
-            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-        return real_run(cmd, **kwargs)
+        seen["cmd"] = cmd
+        wt = Path(cmd[cmd.index("-C") + 1])
+        (wt / "a.py").write_text("x=2\n", encoding="utf-8")
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", capture)
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, model="gpt-5.6-sol")
 
     cmd = seen["cmd"]
@@ -107,7 +137,7 @@ def test_codex_doer_reports_footprint_violations(
 ) -> None:
     _init_git_repo(tmp_path, {"src/app.py": "1\n"})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run",
+        "cohort.engines.cli_doer._launch_vendor_cli",
         _fake_codex({"src/app.py": "2\n", "other/sneaky.py": "3\n"}),
     )
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, footprint=["src"])
@@ -194,7 +224,7 @@ def test_explicit_project_context_kwarg_overrides_repo_state(
     an allow-marked context passes even if it differs from the on-disk file."""
     _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run",
+        "cohort.engines.cli_doer._launch_vendor_cli",
         _fake_codex({"src/app.py": "value = 2\n"}),
     )
     result = cli_doer.run_doer(
@@ -369,7 +399,7 @@ def test_run_grok_in_worktree_hands_grok_a_scrubbed_env_not_the_host(
         seen["env"] = kwargs.get("env")
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", capture)
     cli_doer.run_grok_in_worktree(tmp_path / "wt", "do a thing")
 
     env = seen["env"]
@@ -387,11 +417,7 @@ def test_run_grok_in_worktree_is_non_interactive_and_own_session(tmp_path, monke
     monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
     seen = {}
 
-    def capture(cmd, **kwargs):
-        seen["kwargs"] = kwargs
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.Popen", _FakePopen(seen))
     cli_doer.run_grok_in_worktree(tmp_path / "wt", "do a thing")
 
     assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
@@ -403,15 +429,37 @@ def test_run_codex_in_worktree_is_non_interactive_and_own_session(tmp_path, monk
     monkeypatch.setattr("cohort.engines.cli_doer.shutil.which", lambda _n: "/usr/bin/codex")
     seen = {}
 
-    def capture(cmd, **kwargs):
-        seen["kwargs"] = kwargs
-        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", capture)
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.Popen", _FakePopen(seen))
     cli_doer.run_codex_in_worktree(tmp_path / "wt", "do a thing")
 
     assert seen["kwargs"]["stdin"] is subprocess.DEVNULL
     assert seen["kwargs"]["start_new_session"] is True
+
+
+def test_a_timed_out_vendor_cli_takes_its_whole_process_group_with_it(tmp_path):
+    """Audit r3, M5. A real kernel-level check, not a mock.
+
+    ``subprocess.run(timeout=…)`` kills only the direct child, so helpers an agentic CLI
+    spawned outlived the wall-clock cap — still spending against the vendor API, and still
+    writing into a worktree Cohort was about to delete. Here the "CLI" spawns a grandchild
+    that would survive its parent, and the group kill must reap it.
+    """
+    marker = tmp_path / "grandchild-still-alive"
+    # Parent spawns a detached grandchild that keeps touching a file, then sleeps past the
+    # timeout. Killing only the parent would leave the grandchild writing.
+    script = (
+        f"(while true; do touch {marker}; sleep 0.05; done) & "
+        "sleep 30"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        cli_doer._launch_vendor_cli(
+            ["/bin/sh", "-c", script], timeout=1.0, env={"PATH": "/usr/bin:/bin"}
+        )
+
+    # Give any survivor a clear window to prove it is still running.
+    marker.unlink(missing_ok=True)
+    time.sleep(0.6)
+    assert not marker.exists(), "a grandchild outlived the doer timeout"
 
 
 def test_worktree_secret_scan_refuses_committed_secret_before_dispatch(
@@ -435,6 +483,183 @@ def test_worktree_secret_scan_refuses_committed_secret_before_dispatch(
 
     assert spawned["called"] is False          # CLI never saw the secret
     assert _worktree_count(tmp_path) == 1       # worktree cleaned up on refusal
+
+
+def test_worktree_secret_scan_error_prints_the_lines_that_would_declare_it(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """The refusal names the exact manifest lines to add, so unblocking never requires
+    guessing a digest — which is what pushes people toward exempting a whole path."""
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", subprocess.run)
+    with pytest.raises(gates.SecretFoundError) as excinfo:
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+
+    message = str(excinfo.value)
+    assert gates.SECRET_ALLOWLIST_PATH in message
+    assert "AKIAIOSFODNN7EXAMPLE" not in message          # never echoes the value
+    expected = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    assert f"{expected}  config.py" in message
+
+
+def test_declared_fixture_clears_the_worktree_scan_and_dispatch_proceeds(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """A committed manifest declaring the exact fake value lets the dispatch through."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(
+        tmp_path,
+        {
+            "config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n',
+            gates.SECRET_ALLOWLIST_PATH: f"{digest}  config.py  # AWS doc example\n",
+        },
+    )
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        spawned["called"] = True
+        return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
+
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", spy)
+    cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    assert spawned["called"] is True
+
+
+def _declare_on_feature_branch(tmp_path, digest: str, rel: str) -> None:
+    """Commit a suppression on a side branch — i.e. declared, but reviewed by nobody."""
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "unblock-me"], cwd=tmp_path, check=True,
+        capture_output=True,
+    )
+    manifest = tmp_path / gates.SECRET_ALLOWLIST_PATH
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(f"{digest}  {rel}  # looks fine to me\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-Af"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "declare"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+
+def test_an_unattended_caller_cannot_authorise_its_own_egress(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """Audit r3, H1. The refusal prints paste-ready declaration lines *into the caller's
+    context*, so an agent at supervised/autopilot could commit them and re-dispatch with
+    nobody looking. A branch-local declaration therefore needs a live human; without a TTY
+    (an agent's shell, CI, a hook) the answer is no.
+    """
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    _declare_on_feature_branch(tmp_path, digest, "config.py")
+
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    # pytest gives no TTY, which is exactly the unattended case.
+    with pytest.raises(gates.SecretFoundError) as excinfo:
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+
+    assert spawned["called"] is False
+    assert "was not confirmed" in str(excinfo.value)
+
+
+def test_a_human_confirming_unblocks_a_branch_local_declaration(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """The other half: a developer adding a fake fixture is the ordinary case, so an
+    interactive confirmation must actually work — otherwise the gate just re-blocks the
+    engines on the repo whose fixtures they are."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    _declare_on_feature_branch(tmp_path, digest, "config.py")
+
+    asked = {"n": 0}
+
+    def yes(entries):
+        asked["n"] += 1
+        return True
+
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer._confirm_unreviewed_suppressions", yes
+    )
+    real_run = subprocess.run
+    spawned = {"called": False}
+
+    def spy(cmd, **kwargs):
+        spawned["called"] = True
+        return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
+
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", spy)
+    cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+
+    assert spawned["called"] is True
+    assert asked["n"] == 1
+
+
+def test_confirmation_cannot_wave_through_an_undeclared_secret(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """Confirmation authorises *declared* fixtures only. A credential nothing declares is
+    not a human's to wave through at the prompt — it is simply a secret in the repo."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    _declare_on_feature_branch(tmp_path, digest, "config.py")
+    # A second, undeclared credential lands in the same file.
+    (tmp_path / "config.py").write_text(
+        'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\nGITHUB_TOKEN = "ghp_' + "b" * 36 + '"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "more"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer._confirm_unreviewed_suppressions",
+        lambda entries: True,  # even an eager "yes"
+    )
+    with pytest.raises(gates.SecretFoundError) as excinfo:
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    assert "github-token" in str(excinfo.value)
+
+
+def test_declared_fixture_does_not_exempt_a_different_secret_in_that_file(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """The blind spot a path allowlist would create: a *real* key added beside a declared
+    fake one has a different digest, so the gate still refuses."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(
+        tmp_path,
+        {
+            "config.py": (
+                'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'
+                'AWS_SECRET_ACCESS_KEY = "totallyRealKey9876543210"\n'
+            ),
+            gates.SECRET_ALLOWLIST_PATH: f"{digest}  config.py  # AWS doc example\n",
+        },
+    )
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    with pytest.raises(gates.SecretFoundError):
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    assert spawned["called"] is False
 
 
 @pytest.mark.skipif(cli_doer._bwrap() is None, reason="bwrap not installed")
@@ -498,7 +723,7 @@ def test_doer_allows_when_total_wire_bytes_within_cap(
     101-byte cap runs. Paired with the over-cap test, one byte of cap decides it."""
     _init_git_repo(tmp_path, {"data.txt": "x" * 100})
     monkeypatch.setattr(
-        "cohort.engines.cli_doer.subprocess.run", _fake_codex({"data.txt": "y\n"})
+        "cohort.engines.cli_doer._launch_vendor_cli", _fake_codex({"data.txt": "y\n"})
     )
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, max_wire_bytes=101)
     assert result.returncode == 0
@@ -549,13 +774,13 @@ def _grok_installed(monkeypatch):
     monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
 
 
-def _spy_grok(stdout: str = "grok's analysis", returncode: int = 0):
+def _spy_grok(stdout: str = "grok's analysis", returncode: int = 0, stderr: str = ""):
     """A run_grok_in_worktree stand-in that records it ran and returns fixed stdout."""
     calls = {"n": 0}
 
     def run(worktree, task, **kwargs):
         calls["n"] += 1
-        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     return calls, run
 
@@ -593,6 +818,45 @@ def test_run_grok_review_returns_stdout_and_discards_the_worktree(
     assert result.transcript == "the code looks fine"
     assert result.returncode == 0
     assert _worktree_count(tmp_path) == 1  # worktree discarded (read path keeps no diff)
+
+
+def test_run_grok_review_raises_when_the_cli_exits_nonzero(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """A failed CLI must not read as a completed review. Regression: the sandbox could not
+    execute a grok installed under ~/.local, and the failure surfaced to the user as a
+    successful review with an empty body."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    _, spy = _spy_grok(stdout="", returncode=1, stderr="bwrap: execvp grok: No such file")
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(cli_doer.DoerFailedError) as excinfo:
+        cli_doer.run_grok_review("review this", repo_root=tmp_path)
+
+    assert "execvp grok" in str(excinfo.value)   # the diagnosis reaches the user
+    assert _worktree_count(tmp_path) == 1        # worktree still discarded
+
+
+def test_run_grok_review_raises_when_the_cli_succeeds_but_says_nothing(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """grok-cli exits 0 on some API-level errors, so a blank answer is a failure too —
+    an empty review is never a legitimate result."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    _, spy = _spy_grok(stdout="   \n", returncode=0)
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(cli_doer.DoerFailedError):
+        cli_doer.run_grok_review("review this", repo_root=tmp_path)
+
+
+def test_doer_failed_is_distinct_from_unavailable_and_from_a_gate_refusal() -> None:
+    """The three cases get different handling — fall back, error out, refuse — so they
+    must not be catchable as one another by accident."""
+    assert issubclass(cli_doer.DoerFailedError, cli_doer.DoerError)
+    assert not issubclass(cli_doer.DoerFailedError, cli_doer.DoerUnavailableError)
+    assert not issubclass(cli_doer.DoerUnavailableError, cli_doer.DoerFailedError)
+    assert not issubclass(cli_doer.DoerFailedError, gates.GateError)
 
 
 def test_run_grok_review_secret_in_task_refuses_before_grok(

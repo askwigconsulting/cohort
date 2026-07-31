@@ -216,8 +216,14 @@ function artifactCard(it) {
   el.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
   return el;
 }
+/* A <button>, not a click-wired <div>: the browser then gives keyboard focus, Enter/Space
+   activation and the "button" role for free. As a <div> these cards were mouse-only —
+   Tab never reached them and a screen reader announced nothing actionable. */
 function ghostCard(label, onClick) {
-  const g = document.createElement("div"); g.className = "artifact ghost"; g.textContent = label;
+  const g = document.createElement("button");
+  g.type = "button";
+  g.className = "artifact ghost";
+  g.textContent = label;
   g.addEventListener("click", onClick);
   return g;
 }
@@ -624,8 +630,17 @@ let POLL_FAILS = 0, DISCONNECTED = false;
 const POLL_FAIL_LIMIT = 3;
 function setLive(connected) {
   const chip = $("live-chip");
-  if (connected) { chip.classList.remove("down"); $("live-label").textContent = "live"; chip.title = "Live — polling for updates"; }
-  else { chip.classList.add("down"); $("live-label").textContent = "disconnected — reload"; chip.title = "Lost contact with the dashboard — click to reload"; }
+  if (connected) {
+    chip.classList.remove("down"); $("live-label").textContent = "live";
+    chip.title = "Live — polling for updates";
+    // Informational only: not focusable, and not announced as a control.
+    chip.removeAttribute("tabindex"); chip.removeAttribute("role");
+  } else {
+    chip.classList.add("down"); $("live-label").textContent = "disconnected — reload";
+    chip.title = "Lost contact with the dashboard — activate to reload";
+    // Now it is the reload affordance, so make it a real, reachable control.
+    chip.setAttribute("tabindex", "0"); chip.setAttribute("role", "button");
+  }
 }
 function markConnected() {
   POLL_FAILS = 0;
@@ -763,6 +778,13 @@ $("edit-form").addEventListener("submit", async (e) => {
 
 $("project-switcher").addEventListener("change", (e) => { FOCUS = e.target.value; refresh(); });
 // When disconnected, the live chip is the reload affordance (HIGH-3).
-$("live-chip").addEventListener("click", () => { if (DISCONNECTED) location.reload(); });
+/* Once disconnected this chip IS the documented reload control, so it must be operable
+   without a mouse. Keyboard access is granted only while it is actually actionable, so a
+   merely-informational "live" chip does not become a confusing tab stop. */
+function reloadIfDisconnected() { if (DISCONNECTED) location.reload(); }
+$("live-chip").addEventListener("click", reloadIfDisconnected);
+$("live-chip").addEventListener("keydown", (e) => {
+  if (DISCONNECTED && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); location.reload(); }
+});
 refresh();
 setInterval(() => { if (!PENDING) refresh(); }, 6000);

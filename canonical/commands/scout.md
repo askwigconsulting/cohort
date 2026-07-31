@@ -40,9 +40,15 @@ fit and cost:
 - **Grok** — `cohort engine review grok --tier flagship` for areas needing repo
   exploration, or `cohort engine consult grok --tier flagship` with a packaged bundle for a
   bounded question. When grok-cli + bwrap are installed these run through the **local
-  bubblewrap-sandboxed grok CLI** (real, worktree-scoped repo access); otherwise they fall
-  back to the API-direct agentic loop (gated tools, transcript recorded). Read-only,
-  advisory; every path is egress-gated.
+  bubblewrap-sandboxed grok CLI** (real, worktree-scoped repo access); if it is missing —
+  **or present but broken** — they fall back to the API-direct agentic loop (gated tools,
+  transcript recorded). Read-only, advisory; every path is egress-gated.
+
+  **The fallback is always announced on stderr, never silent.** Read the note before the
+  answer: the two channels differ in what the model could see (worktree-scoped file access
+  versus the gated read-only toolbox), so an area reviewed over the fallback was reviewed
+  with less context than one reviewed over the CLI. A gate *refusal* is different again —
+  it is a refusal, never retried on the other channel.
 
 Collect each reviewer's ranked findings. **The coordinator never trusts a finding it
 hasn't verified** — an external engine's report is an untrusted claim, not a result.

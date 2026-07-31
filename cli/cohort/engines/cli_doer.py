@@ -57,9 +57,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import signal
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 from cohort.engines import gates
@@ -68,6 +71,11 @@ from cohort.engines import patch_proposal
 # A hard wall-clock cap on an external doer run — an agentic CLI that has not finished
 # in this long is stuck or looping; kill it (the worktree is cleaned up on timeout).
 _DOER_TIMEOUT_SECONDS: float = 900.0
+
+# Every git query Cohort runs around a doer is a fast, local, read-only plumbing call, so a
+# short cap is right: past this it is stalled (an NFS hang, a held index.lock), not slow.
+# Bounding these matters because they sit on paths a user is waiting on.
+_GIT_TIMEOUT_SECONDS: float = 30.0
 
 # A hard ceiling on the TOTAL bytes a doer dispatch may expose to the vendor — the task
 # text plus every tracked worktree file the CLI reads and sends. gates.assert_payload_within
@@ -181,7 +189,139 @@ def _assert_worktree_within_wire_budget(
     )
 
 
-def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
+def _split_secret_allowlist(
+    repo_root: Path, worktree: Path
+) -> tuple[frozenset[gates.SecretSuppression], frozenset[gates.SecretSuppression]]:
+    """Split declared suppressions into ``(reviewed, unreviewed)``.
+
+    **Reviewed** entries are reachable from the **default branch**, so they have already
+    been through whatever review that branch enforces. They apply silently.
+
+    **Unreviewed** entries are committed on this branch only. They are not rejected — a
+    developer adding a fake fixture is the ordinary case, and refusing outright merely
+    re-blocks the engines on the very repo whose fixtures they are (which is exactly what
+    a stricter first cut did). They instead require a live human decision.
+
+    The threat this separation targets is narrower than "someone committed a suppression".
+    The refusal message prints paste-ready declaration lines *into the caller's context*,
+    so an agent at supervised or autopilot can commit them and re-dispatch with nobody
+    looking — and egress is irreversible. A human at a keyboard confirming once is a fine
+    authorisation; an agent silently authorising itself is not. So the gate asks, and an
+    unattended caller (no TTY: CI, a hook, an agent's shell) is refused by default.
+    """
+    reviewed = gates.parse_secret_allowlist(
+        default_branch_file(repo_root, gates.SECRET_ALLOWLIST_PATH) or ""
+    )
+    try:
+        # Committed-on-this-branch, so it still shows up in a PR diff — the manifest is
+        # never read from an uncommitted edit.
+        local_text = (worktree / gates.SECRET_ALLOWLIST_PATH).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return reviewed, frozenset()
+    return reviewed, frozenset(gates.parse_secret_allowlist(local_text) - reviewed)
+
+
+def _confirm_unreviewed_suppressions(
+    entries: list[tuple[str, gates.SecretFinding]]
+) -> bool:
+    """Ask a human, on a TTY, to authorise suppressions not yet on the default branch.
+
+    Returns False without prompting when stdin is not a terminal. That is the whole point:
+    an agent's shell, a CI job, and a git hook all run without one, so none of them can
+    authorise an irreversible egress on their own. A human gets one prompt.
+    """
+    if not sys.stdin.isatty():
+        return False
+    print(
+        "\nThese credential-shaped values are declared fake in "
+        f"{gates.SECRET_ALLOWLIST_PATH}, but that declaration is NOT yet on the default "
+        "branch, so nobody else has reviewed it:",
+        file=sys.stderr,
+    )
+    for rel, finding in entries:
+        print(f"  {finding.label:34s} {rel}", file=sys.stderr)
+    print(
+        "\nConfirm ONLY if you have checked these are fake. Approving a real credential "
+        "here sends it to the vendor, and that cannot be undone.",
+        file=sys.stderr,
+    )
+    try:
+        answer = input("Send these files to the vendor? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("y", "yes")
+
+
+def _default_branch_ref(repo_root: Path) -> str | None:
+    """Resolve the repo's default-branch ref, preferring the remote's own declaration.
+
+    ``origin/HEAD`` is what the remote says its default is, so it cannot be pointed
+    somewhere else by a local branch. Falls back to a local ``main``/``master`` only when no
+    remote HEAD is configured (a repo cloned without one, or a purely local repo).
+    """
+    for args in (
+        ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+        ["rev-parse", "--verify", "--quiet", "refs/heads/main"],
+        ["rev-parse", "--verify", "--quiet", "refs/heads/master"],
+    ):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), *args],
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode == 0 and proc.stdout.strip():
+            # symbolic-ref yields the ref name; rev-parse yields a hash. Either is a
+            # valid revision to read a blob out of.
+            return proc.stdout.strip()
+    return None
+
+
+def committed_file(repo_root: Path, rel: str, ref: str = "HEAD") -> str | None:
+    """Return ``rel`` as committed at ``ref``, or None if unavailable.
+
+    Used where there is no worktree to read from (the API reviewer). Reading the *live*
+    file instead would let an uncommitted edit widen what may egress, which is the gap
+    audit r3 flagged as M2.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def default_branch_file(repo_root: Path, rel: str) -> str | None:
+    """Return ``rel`` as committed on the default branch, or None if unavailable."""
+    ref = _default_branch_ref(repo_root)
+    if ref is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _assert_worktree_files_have_no_secrets(
+    worktree: Path,
+    repo_root: Path,
+    *,
+    confirm: Callable[[list[tuple[str, gates.SecretFinding]]], bool] | None = None,
+) -> None:
     """Secret-scan the committed files the worktree will expose to the vendor CLI.
 
     The outbound task string is gated separately, but the vendor CLI then *reads the
@@ -195,8 +335,11 @@ def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
         gates.SecretFoundError: a tracked file carries credential-shaped content. The
             message lists only non-secret finding labels, never a matched value.
     """
+    # Resolved at call time, not bound as a default, so the prompt stays substitutable.
+    confirm = confirm or _confirm_unreviewed_suppressions
     tracked = _tracked_worktree_files(worktree)
-    labels: set[str] = set()
+    reviewed, unreviewed = _split_secret_allowlist(repo_root, worktree)
+    blocking: list[tuple[str, gates.SecretFinding]] = []
     for rel in tracked:
         try:
             raw = (worktree / rel).read_bytes()
@@ -210,16 +353,76 @@ def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
         # Decode latin-1 (lossless byte->char), not utf-8-with-errors-ignored: an
         # ASCII-shaped credential embedded in a binary blob stays visible to the scanner
         # instead of being dropped with the surrounding invalid bytes.
-        labels.update(gates.scan_for_secrets(raw.decode("latin-1")))
-    if labels:
+        findings = gates.scan_for_secret_findings(raw.decode("latin-1"))
+        if not findings:
+            continue
+        blocking.extend(
+            (rel, finding)
+            for finding in gates.unsuppressed_findings(findings, rel, reviewed)
+        )
+
+    # Of what the reviewed manifest did not clear, separate the findings this branch has
+    # *declared* (but nobody else has seen) from the ones nothing declares at all. Only
+    # the former are a human's to wave through; the latter are undeclared secrets.
+    pending = [
+        (rel, finding)
+        for rel, finding in blocking
+        if not gates.unsuppressed_findings([finding], rel, unreviewed)
+    ]
+    undeclared = [item for item in blocking if item not in pending]
+
+    if pending and not undeclared:
+        if confirm(pending):
+            return
+        raise gates.SecretFoundError(
+            "dispatch refused: "
+            + ", ".join(sorted({finding.label for _, finding in pending}))
+            + f" are declared fake in {gates.SECRET_ALLOWLIST_PATH}, but that declaration "
+            "is not on the default branch and was not confirmed.\n\nEither merge the "
+            "manifest change, or re-run this from an interactive terminal to confirm it. "
+            "An unattended caller — CI, a hook, an agent's shell — cannot authorise its "
+            "own egress, because egress cannot be undone."
+        )
+
+    blocking = undeclared or blocking
+    if blocking:
+        labels = sorted({finding.label for _, finding in blocking})
+        # Print the exact manifest lines that would clear each finding. Without this the
+        # only way to unblock is to guess digests, which pushes people toward exempting
+        # whole paths — the blind spot this design exists to avoid.
+        declarations = "\n".join(
+            f"  {finding.digest}  {rel}"
+            for rel, finding in sorted(blocking, key=lambda item: (item[0], item[1]))
+        )
         raise gates.SecretFoundError(
             "worktree files contain credential-shaped content: "
-            + ", ".join(sorted(labels))
+            + ", ".join(labels)
+            + f"\n\nIf — and only if — a human has confirmed these values are fake, declare "
+            f"them in {gates.SECRET_ALLOWLIST_PATH}:\n"
+            + declarations
+            + "\n\nAn entry already on the default branch applies silently. One committed "
+            "only on this branch still works, but must be confirmed interactively — an "
+            "unattended caller cannot authorise its own irreversible egress."
         )
 
 
 class DoerError(Exception):
     """Base class for CLI-doer failures."""
+
+
+class DoerFailedError(DoerError):
+    """The vendor CLI was invoked but produced no usable result.
+
+    Distinct from :class:`DoerUnavailableError` (the CLI is not installed) and from a
+    gate refusal (which is a deliberate *refusal* and must never be retried elsewhere).
+    This is the third case: a CLI that is present and permitted, but broken here — it
+    exited non-zero, could not be executed inside the sandbox, or returned nothing.
+
+    It exists because the alternative is worse than an error: a CLI that fails while
+    exiting 0 with empty output otherwise reads as "the engine reviewed your repo and had
+    nothing to say". A caller may treat this as grounds to fall back to the vendor's API
+    transport **with a printed note** — never silently.
+    """
 
 
 class DoerUnavailableError(DoerError):
@@ -301,26 +504,84 @@ def run_codex_in_worktree(
     # config-dir override ride the passthrough allow-list.
     env = _scrubbed_env(home=Path.home(), passthrough=_CODEX_ENV_PASSTHROUGH)
     # This doer is non-interactive: close stdin (DEVNULL) so a TTY the child inherits can
-    # never be used to inject keystrokes (TIOCSTI), and start_new_session=True detaches it
-    # into its own process group/session so a timeout kill reaps grandchildren too.
-    return subprocess.run(
+    # never be used to inject keystrokes (TIOCSTI), and start_new_session=True puts it in
+    # its own process group.
+    #
+    # KNOWN GAP (audit r3, M5): on timeout, subprocess.run kills only the DIRECT child, so
+    # helpers codex spawned can outlive the wall-clock cap — still burning API spend, and
+    # still writing into a worktree Cohort is about to delete. start_new_session makes a
+    # group kill *possible* but does not perform one. Closing this needs the child pid
+    # (i.e. Popen), so it is tracked separately rather than bolted on here.
+    return _launch_vendor_cli(cmd, timeout=timeout, env=env)
+
+
+def _launch_vendor_cli(
+    cmd: list[str], *, timeout: float, env: dict[str, str]
+) -> subprocess.CompletedProcess:
+    """Run a vendor CLI non-interactively and, on timeout, kill its **whole process group**.
+
+    The single seam through which every vendor CLI is spawned, so confinement and teardown
+    are decided in one place rather than per call site.
+
+    ``subprocess.run(timeout=…)`` kills only the *direct child*. An agentic CLI spawns
+    helpers, so past the wall-clock cap those helpers kept running — still spending against
+    the vendor API, and still writing into a worktree Cohort was about to delete
+    (audit r3, M5). ``start_new_session=True`` was already set and the comment claimed it
+    "reaps grandchildren"; it does not, it only puts the tree in its own process group so
+    that a group kill becomes *possible*. This performs it.
+
+    stdin is ``DEVNULL``: these doers are non-interactive, and a TTY the child inherited
+    could otherwise be used to inject keystrokes back into Cohort (TIOCSTI).
+    """
+    with subprocess.Popen(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=timeout,
         env=env,
         stdin=subprocess.DEVNULL,
         start_new_session=True,
-    )
+    ) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            # Drain whatever the tree produced before it died — on a timeout that output
+            # is the only diagnostic there is.
+            stdout, stderr = proc.communicate()
+            raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the process group led by ``proc``, falling back to the child alone.
+
+    The group exists because the process was started with ``start_new_session=True``. An
+    already-reaped group, or a platform without ``killpg``, is not an error: the goal is
+    that nothing outlives the cap, and an already-dead tree satisfies it.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, AttributeError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 def _git(worktree: Path, *args: str) -> str:
-    """Run a read-only-ish git query inside the worktree and return stdout."""
+    """Run a read-only-ish git query inside the worktree and return stdout.
+
+    Bounded: these run after a doer on a path the user is waiting on, so a stalled git
+    (a held ``index.lock``, an NFS hang) must not hang the CLI forever — the same rule
+    ``gitutil`` and ``update`` already follow.
+    """
     return subprocess.run(
         ["git", "-C", str(worktree), *args],
         capture_output=True,
         text=True,
         check=True,
+        timeout=_GIT_TIMEOUT_SECONDS,
     ).stdout
 
 
@@ -471,18 +732,12 @@ def run_grok_in_worktree(
     # allow-list: grok-cli receives ONLY this dict, never the host environment's secrets.
     env = _scrubbed_env(home=Path.home(), passthrough=_GROK_ENV_PASSTHROUGH)
     # This doer is non-interactive: close stdin (DEVNULL) so a TTY cannot inject keystrokes
-    # into grok (TIOCSTI — belt-and-braces with the jail's --new-session), and
-    # start_new_session=True detaches bwrap into its own session so a timeout kill reaps
-    # grok and any grandchildren it spawned.
-    return subprocess.run(
-        argv,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    # into grok (TIOCSTI — belt-and-braces with the jail's --new-session).
+    #
+    # Unlike codex (see M5 note in run_codex_in_worktree), grok's tree is largely reaped
+    # anyway by bwrap's --die-with-parent when the jail leader dies — but that guarantee
+    # rests on bwrap, not on Cohort.
+    return _launch_vendor_cli(argv, timeout=timeout, env=env)
 
 
 def _egress_gate_text(repo_root: Path, project_context_text: str) -> str:
@@ -558,7 +813,7 @@ def _grok_gated_worktree(
         # gate those files (not just the task string) before dispatch: bound the TOTAL
         # exposed bytes (task + tracked files) first, then secret-scan those same files.
         _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
-        _assert_worktree_files_have_no_secrets(worktree)
+        _assert_worktree_files_have_no_secrets(worktree, repo_root)
     except BaseException:
         patch_proposal.cleanup_worktree(repo_root, worktree)
         raise
@@ -665,6 +920,14 @@ def run_grok_review(
     try:
         proc = run_grok_in_worktree(worktree, task, model=model, timeout=timeout)
         stdout = proc.stdout or ""
+        # A review whose CLI failed must not read as "reviewed, nothing to say". grok-cli
+        # exits 0 on some API-level errors, so a blank answer is treated as failure too:
+        # an empty review is never a legitimate result.
+        if proc.returncode != 0 or not stdout.strip():
+            raise DoerFailedError(
+                f"the grok CLI produced no usable review (exit {proc.returncode}); "
+                f"stderr: {(proc.stderr or '').strip()[:500] or '<empty>'}"
+            )
         return GrokReviewResult(
             engine="grok",
             analysis=stdout,
@@ -717,7 +980,7 @@ def run_codex_doer(
         # gate those files (not just the task string) before dispatch: bound the TOTAL
         # exposed bytes (task + tracked files) first, then secret-scan those same files.
         _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
-        _assert_worktree_files_have_no_secrets(worktree)
+        _assert_worktree_files_have_no_secrets(worktree, repo_root)
         proc = run_codex_in_worktree(worktree, task, model=model, timeout=timeout)
 
         # Capture what the engine wrote as a reviewable diff.

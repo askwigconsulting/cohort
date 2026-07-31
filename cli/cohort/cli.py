@@ -33,10 +33,11 @@ def _force_utf8_io() -> None:
 _force_utf8_io()
 
 import json as _json
+import os
 import re
 import time
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import Optional
 
 import typer
 
@@ -700,6 +701,15 @@ def _print_update_human(result: UpdateResult) -> None:
     if result.status == "dry_run":
         typer.echo("Dry run — nothing changed. Re-run `cohort update` to apply.")
         return
+    if not result.rollback_point_recorded:
+        # The update landed, but the undo did not get recorded. Say so now rather than
+        # letting `cohort rollback` report "no recorded update" at the moment it is needed.
+        typer.echo(
+            "⚠ could not write the update history, so a bare `cohort rollback` has no "
+            "point to return to. Roll back with an explicit ref instead: "
+            f"`cohort rollback --to {result.current or '<previous-sha>'}`.",
+            err=True,
+        )
     if result.pip_reinstalled:
         typer.echo("Reinstalled the cohort package (pyproject.toml changed).")
     if result.recompiled_ides:
@@ -934,14 +944,43 @@ def _is_grok_engine(engine: str) -> bool:
     return engine.strip().lower() in cli_doer._GROK_ENGINE_ALIASES
 
 
-def _run_grok_cli_review_or_exit(
+def _warn_if_doer_exited_nonzero(result) -> None:
+    """Warn loudly when a write doer produced changes but exited non-zero.
+
+    The read path treats a non-zero exit as a hard failure (``DoerFailedError``); the write
+    path cannot, because the engine's partial work is still on disk and still worth
+    reviewing. But it must not read as success either: a doer that crashed, was denied by
+    its sandbox, or hit a tool error mid-edit leaves a diff that *looks* complete and is
+    not (audit r3, M1). Naming it is the difference between "here is a proposal" and "here
+    is however far it got before it died".
+    """
+    if result.returncode == 0:
+        return
+    typer.echo(
+        f"⚠ the engine exited {result.returncode} AFTER writing these files — this diff "
+        "may be a partial edit, not a finished change. Review it as unfinished work.",
+        err=True,
+    )
+    tail = (getattr(result, "stdout_tail", "") or "").strip()
+    if tail:
+        typer.echo(f"  last output: {_display_safe(tail[-300:])}", err=True)
+
+
+def _run_grok_cli_review_or_fallback(
     task: str,
     *,
     repo_root: Path,
     model: str,
     project_context_text: str,
-) -> NoReturn:
-    """Run the local grok CLI as a repo-read-only reviewer, print its analysis, then exit.
+    api_channel: str,
+) -> None:
+    """Run the local grok CLI as a repo-read-only reviewer and print its analysis.
+
+    Args:
+        api_channel: How the **API** transport would see this repo, for the fallback note —
+            e.g. "no local file access" for a prompt-only consult, or "gated read-only repo
+            access" for a review. Stated by the caller because it differs per command, and
+            a human consenting to a channel switch must not be told the wrong one.
 
     Repo-read-only means the worktree is discarded so the repo is never modified — grok
     itself still runs write-capable inside the bubblewrap jail; its edits land in the
@@ -950,8 +989,16 @@ def _run_grok_cli_review_or_exit(
     Shared by ``engine consult`` and ``engine review`` when the grok CLI is preferred over
     the xAI API. Every gate fires inside :func:`cli_doer.run_grok_review` *before* grok is
     invoked; a gate refusal exits non-zero here and is **never** retried against the API —
-    a gate failure is a refusal, not a reason to switch channels. Always terminates via
-    ``typer.Exit``.
+    a gate failure is a refusal, not a reason to switch channels.
+
+    Two outcomes, and the difference matters:
+
+    * The CLI produced a review — print it and exit 0.
+    * The CLI was present but **broken** here (:class:`cli_doer.DoerFailedError`) — print
+      why, and **return**, so the caller falls through to the xAI API transport. This is
+      the CLI-first/API-fallback rule: a broken channel is a reason to switch, and the
+      switch is always announced. Returning (rather than exiting) is the whole point of
+      this function's contract, so callers must not assume it terminates.
     """
     from .engines import cli_doer
     from .engines import gates as engine_gates
@@ -973,6 +1020,18 @@ def _run_grok_cli_review_or_exit(
     except engine_gates.GateError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
+    except cli_doer.DoerFailedError as exc:
+        # Present but broken here — announce the downgrade and let the caller reach the
+        # API. Never silent: the two channels differ in what the model can see, so the
+        # reader must know which one answered them. The caller supplies that description
+        # because it differs per command — `consult` really does send only the prompt,
+        # while `review` runs the gated read-only toolbox over this repo.
+        typer.echo(
+            f"note: the grok CLI failed ({exc}); falling back to "
+            f"xAI API-direct ({api_channel})",
+            err=True,
+        )
+        return
     except cli_doer.DoerUnavailableError as exc:
         # The availability check passed but the CLI vanished mid-run — surface it, do not
         # silently fall back to the API.
@@ -1003,7 +1062,8 @@ def engine_consult(
     tier: Optional[str] = typer.Option(
         None,
         "--tier",
-        help="Model tier to request: flagship (default) | cheap. "
+        help="Model tier to request; defaults to 'flagship'. Tiers vary by engine — "
+        "pass an unknown one to list this engine's. "
         "Mutually exclusive with --model.",
     ),
     model: Optional[str] = typer.Option(
@@ -1112,13 +1172,16 @@ def engine_consult(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
         )
-        _run_grok_cli_review_or_exit(
+        # Returns only when the CLI was present but broken; it has already explained the
+        # downgrade, so fall through to the API without claiming the CLI was missing.
+        _run_grok_cli_review_or_fallback(
             prompt,
             repo_root=repo_root,
             model=chosen_model,
             project_context_text=project_context_text,
+            api_channel="no local file access",  # consult sends only the prompt
         )
-    if _is_grok_engine(engine):
+    elif _is_grok_engine(engine):
         typer.echo(
             "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
             err=True,
@@ -1155,16 +1218,38 @@ def _next_transcript_path(repo_root: Path, override: Optional[Path]) -> Path:
     An explicit ``override`` wins. Otherwise the next zero-padded index in the
     ``.cohort/engine-transcripts`` directory is chosen — deterministic (no wall-clock),
     so a caller/test controls the name and successive runs never collide.
+
+    The slot is **reserved atomically** (``O_CREAT | O_EXCL``) rather than merely computed.
+    Scanning for the highest index and returning ``highest + 1`` is a check-then-act race:
+    two concurrent reviews both see the same highest, both pick the same name, and the
+    second silently overwrites the first (audit r3, M6 — observed for real, five parallel
+    reviews produced four transcripts). These files are the record of what was sent to a
+    vendor, so losing one loses the evidence exactly when the fan-out is widest.
+
+    An empty reserved file left behind by a run that then fails is the deliberate
+    trade: a stray empty transcript is recoverable, a silently overwritten one is not.
     """
     if override is not None:
         return override
     tdir = repo_root / ".cohort" / "engine-transcripts"
+    tdir.mkdir(parents=True, exist_ok=True)
     highest = 0
-    if tdir.is_dir():
-        for existing in tdir.glob("*.jsonl"):
-            if existing.stem.isdigit():
-                highest = max(highest, int(existing.stem))
-    return tdir / f"{highest + 1:04d}.jsonl"
+    for existing in tdir.glob("*.jsonl"):
+        if existing.stem.isdigit():
+            highest = max(highest, int(existing.stem))
+    candidate = highest + 1
+    while True:
+        path = tdir / f"{candidate:04d}.jsonl"
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            return path
+        except FileExistsError:
+            # Another run took this slot between our scan and our create; step past it.
+            candidate += 1
+        except OSError:
+            # Cannot reserve (read-only dir, permissions). Fall back to the computed name
+            # rather than failing the review over its transcript.
+            return path
 
 
 @engine_app.command("review")
@@ -1178,7 +1263,8 @@ def engine_review(
     tier: Optional[str] = typer.Option(
         None,
         "--tier",
-        help="Model tier: flagship (default) | cheap. Mutually exclusive with --model.",
+        help="Model tier; defaults to 'flagship'. Tiers vary by engine — pass an "
+        "unknown one to list this engine's. Mutually exclusive with --model.",
     ),
     model: Optional[str] = typer.Option(
         None,
@@ -1289,15 +1375,21 @@ def engine_review(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
         )
-        _run_grok_cli_review_or_exit(
+        # Returns only when the CLI was present but broken; it has already explained the
+        # downgrade, so fall through to the API without claiming the CLI was missing.
+        _run_grok_cli_review_or_fallback(
             task,
             repo_root=repo_root,
             model=chosen_model,
             project_context_text=project_context_text,
+            # review's API path runs the read-only toolbox over this repo — file contents
+            # DO reach xAI, gated per read. Saying "no local file access" here was false.
+            api_channel="gated read-only repo access, not worktree-scoped",
         )
-    if _is_grok_engine(engine):
+    elif _is_grok_engine(engine):
         typer.echo(
-            "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
+            "note: grok CLI/bwrap not found — using xAI API-direct (gated read-only repo "
+            "access, not worktree-scoped)",
             err=True,
         )
 
@@ -1484,6 +1576,7 @@ def engine_propose(
             )
             typer.echo(f"worktree: {result.worktree}")
             raise typer.Exit(code=1)
+        _warn_if_doer_exited_nonzero(result)
         for path in result.changed_files:
             typer.echo(f"  changed: {_display_safe(path)}")
         typer.echo(f"worktree: {result.worktree}")
@@ -1513,8 +1606,13 @@ def engine_propose(
         )
         raise typer.Exit(code=0)
     if _is_grok_engine(engine):
+        # --agentic runs the read-only toolbox over this repo, so file contents DO reach
+        # xAI (gated per read); the one-shot path sends only the packaged task. Naming the
+        # wrong one here misdescribes the egress at the moment the human consents to it.
         typer.echo(
-            "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
+            "note: grok CLI/bwrap not found — using xAI API-direct ("
+            + ("gated read-only repo access" if agentic else "no local file access")
+            + ")",
             err=True,
         )
 
@@ -1676,6 +1774,8 @@ def engine_work(
         typer.echo(f"worktree: {result.worktree}")
         raise typer.Exit(code=1)
 
+    _warn_if_doer_exited_nonzero(result)
+
     for path in result.changed_files:
         typer.echo(f"  changed: {_display_safe(path)}")
     if result.footprint_violations:
@@ -1810,6 +1910,15 @@ def my_office_sync(
             bits.append("pushed")
         typer.echo(f"my-office sync: {', '.join(bits) or 'up to date'} · {r['remote']}"
                    + (" · recompiled" if r.get("recompiled") else ""))
+        if r.get("recompile_failed"):
+            # The sync itself succeeded, but nothing pulled was placed — say so, because
+            # an empty `recompiled` otherwise reads exactly like "nothing installed".
+            typer.echo(
+                "  ⚠ the sync succeeded but placing the pulled artifacts into your IDEs "
+                f"failed ({r['recompile_failed']}). Your IDE files are STALE — run "
+                "`cohort update --recompile` (or `cohort relink`) to place them.",
+                err=True,
+            )
         if r.get("quarantine_state_unreadable"):
             typer.echo(
                 "  ⚠ quarantine state is unreadable — every pulled hook/memory is "
@@ -1891,7 +2000,7 @@ def my_office_approve(
     """
     from . import quarantine
     from .install_model import CohortPaths
-    from .myoffice import _recompile_if_installed
+    from .myoffice import _RecompileFailed, _recompile_if_installed
 
     if not approve_all and not name:
         typer.echo("error: give an artifact name, or pass --all", err=True)
@@ -1913,8 +2022,17 @@ def my_office_approve(
             err=True,
         )
         raise typer.Exit(code=1)
-    recompiled = _recompile_if_installed(Path.home()) if cleared else False
-    report = {"action": "my-office-approve", "approved": cleared, "recompiled": recompiled}
+    recompiled: object = False
+    recompile_failed: Optional[str] = None
+    if cleared:
+        try:
+            recompiled = _recompile_if_installed(Path.home())
+        except _RecompileFailed as exc:
+            # Approval already happened; report the placement failure rather than
+            # reporting an approval that quietly did not reach the IDEs.
+            recompile_failed = str(exc)
+    report = {"action": "my-office-approve", "approved": cleared,
+              "recompiled": recompiled, "recompile_failed": recompile_failed}
 
     def human(r: dict) -> None:
         if not r["approved"]:
@@ -2002,7 +2120,7 @@ def office_approve(
     """
     from . import quarantine
     from .install_model import CohortPaths
-    from .myoffice import _recompile_if_installed
+    from .myoffice import _RecompileFailed, _recompile_if_installed
 
     if not approve_all and not name:
         typer.echo("error: give an artifact name, or pass --all", err=True)
@@ -2023,8 +2141,17 @@ def office_approve(
             err=True,
         )
         raise typer.Exit(code=1)
-    recompiled = _recompile_if_installed(Path.home()) if cleared else False
-    report = {"action": "office-approve", "approved": cleared, "recompiled": recompiled}
+    recompiled: object = False
+    recompile_failed: Optional[str] = None
+    if cleared:
+        try:
+            recompiled = _recompile_if_installed(Path.home())
+        except _RecompileFailed as exc:
+            # Approval already happened; report the placement failure rather than
+            # reporting an approval that quietly did not reach the IDEs.
+            recompile_failed = str(exc)
+    report = {"action": "office-approve", "approved": cleared,
+              "recompiled": recompiled, "recompile_failed": recompile_failed}
 
     def human(r: dict) -> None:
         if not r["approved"]:

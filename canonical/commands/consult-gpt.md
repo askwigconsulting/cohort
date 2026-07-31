@@ -53,8 +53,16 @@ Run the consult with the sandbox pinned read-only — never `workspace-write`, n
 `danger` flag:
 
 ```
-codex exec --sandbox read-only "<prompt>"
+codex exec --sandbox read-only "<prompt>" < /dev/null
 ```
+
+**Always redirect stdin and always set a generous timeout.** `codex exec` appends piped
+stdin to the prompt, so without `< /dev/null` it can sit waiting on an inherited stdin
+that never closes — and a consult that is merely *slow* looks identical to one that has
+hung. Give the call a real budget (several minutes) rather than a shell default: a
+flagship consult on a hard problem legitimately takes longer than a short tool timeout
+allows. If a consult ever appears to hang, check those two things **before** concluding
+the CLI is broken — a bare `codex exec` round-trip completes in seconds.
 
 **Model choice:** consults use the CLI's default flagship model — never downgrade to a
 cheaper GPT for cost. The consult exists to put the strongest available skeptic against

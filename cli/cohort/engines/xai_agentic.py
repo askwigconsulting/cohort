@@ -50,6 +50,7 @@ from cohort.engines.xai import (
     EngineUnavailableError,
     _RETRY_BACKOFF_SECONDS,
     _build_request,
+    _read_bounded,
     _resolve_api_key,
     _retry_after_seconds,
 )
@@ -120,6 +121,74 @@ class ReadOnlyToolbox:
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
+        # The same declared, digest-bound suppressions the CLI-doer gate honours (#233).
+        # Without them a repo that legitimately contains credential-shaped fixtures —
+        # any secret scanner, this one included — hides its most security-relevant files
+        # from its own reviewer: `read_file` refuses them and `grep` skips them silently,
+        # so the review looks complete while missing exactly what it was asked to check.
+        #
+        # Read from the DEFAULT BRANCH, matching the CLI-doer gate exactly. Reading the
+        # live tree was wrong: this toolbox is an egress gate, so "grants no read a local
+        # writer already had" conflated local *read* access with sending bytes to a vendor.
+        # It mattered more once a broken vendor CLI began falling back to this path
+        # automatically — the weaker gate would have become the common one.
+        from .cli_doer import committed_file, default_branch_file
+
+        reviewed = gates.parse_secret_allowlist(
+            default_branch_file(self.root, gates.SECRET_ALLOWLIST_PATH) or ""
+        )
+        # Entries committed on this branch but not yet reviewed elsewhere are honoured
+        # only with a live human's confirmation, matching the doer gate. Read from HEAD,
+        # never the live file, so an uncommitted edit cannot widen egress (M2).
+        unreviewed = frozenset(
+            gates.parse_secret_allowlist(
+                committed_file(self.root, gates.SECRET_ALLOWLIST_PATH) or ""
+            )
+            - reviewed
+        )
+        self._secret_allowlist = reviewed
+        self._unreviewed_suppressions = unreviewed
+        self._unreviewed_confirmed: bool | None = None
+
+    def _undeclared_secret_labels(self, rel: str, raw: bytes) -> list[str]:
+        """Labels for credential-shaped content in ``rel`` that it has not declared.
+
+        Takes **bytes** and decodes latin-1, matching the CLI-doer gate exactly. Scanning
+        the UTF-8 text instead produced a *different digest* for the same value whenever
+        non-ASCII bytes sat nearby, so one gate's printed declaration line would not
+        unblock the other (audit r3, M7). Fail-closed either way, but confusing — and a
+        manifest that works on one path and not the other invites exempting more than
+        intended.
+        """
+        findings = gates.scan_for_secret_findings(raw.decode("latin-1"))
+        if not findings:
+            return []
+        remaining = gates.unsuppressed_findings(findings, rel, self._secret_allowlist)
+        if remaining and self._unreviewed_suppressions:
+            # Ask once per run, only about findings a branch-local declaration would
+            # clear, and only if a human is actually there to answer.
+            pending = gates.unsuppressed_findings(
+                remaining, rel, self._unreviewed_suppressions
+            )
+            if not pending and self._confirm_unreviewed_once(rel, remaining):
+                return []
+            remaining = pending or remaining
+        return sorted({finding.label for finding in remaining})
+
+    def _confirm_unreviewed_once(self, rel: str, findings: list) -> bool:
+        """Confirm branch-local suppressions once, then reuse the answer for this run.
+
+        Caching matters: a reviewer reads many files, and re-prompting per file would
+        train the reader to type "y" without looking — which is the failure this whole
+        mechanism exists to avoid.
+        """
+        from .cli_doer import _confirm_unreviewed_suppressions
+
+        if self._unreviewed_confirmed is None:
+            self._unreviewed_confirmed = _confirm_unreviewed_suppressions(
+                [(rel, finding) for finding in findings]
+            )
+        return self._unreviewed_confirmed
 
     # -- path policy (fail-closed) ------------------------------------------ #
 
@@ -210,12 +279,13 @@ class ReadOnlyToolbox:
             text = raw[:_MAX_READ_BYTES].decode("utf-8")
         except UnicodeDecodeError:
             return f"refused: {path!r} is not UTF-8 text (binary file)"
-        # Content-level egress gate: a secret in any file, expected or not, is refused.
-        labels = gates.scan_for_secrets(text)
+        # Content-level egress gate: a secret in any file, expected or not, is refused —
+        # unless the repo has declared that exact value fake in its committed manifest.
+        labels = self._undeclared_secret_labels(self._rel(target), raw[:_MAX_READ_BYTES])
         if labels:
             return (
                 f"refused: {path!r} contains credential-shaped content "
-                f"({', '.join(sorted(set(labels)))}); not returned"
+                f"({', '.join(labels)}); not returned"
             )
         lines = text.splitlines()
         start = max(1, start_line)
@@ -244,10 +314,11 @@ class ReadOnlyToolbox:
             if self._gate(rel) is not None:
                 continue  # refused paths are invisible to search
             try:
-                content = file.read_text(encoding="utf-8")
+                raw = file.read_bytes()
+                content = raw.decode("utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if gates.scan_for_secrets(content):
+            if self._undeclared_secret_labels(rel, raw):
                 continue  # never surface a line from a secret-bearing file
             for lineno, line in enumerate(content.splitlines(), 1):
                 if pattern in line:
@@ -379,7 +450,7 @@ def _post_chat(spec: EngineSpec, key: str, body: dict[str, Any]) -> dict[str, An
             with urllib.request.urlopen(
                 _build_request(endpoint, key, body), timeout=_TIMEOUT
             ) as resp:
-                raw = resp.read()
+                raw = _read_bounded(resp)
             return json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):

@@ -76,8 +76,22 @@ ENGINES: dict[str, EngineSpec] = {
         # `grok-build-0.1` respectively (confirmed against the response `model` field),
         # so the "flagship" alias was quietly serving the second tier. Name the real
         # ids the account lists so the tier we request is the tier we get.
+        #
+        # Every id below was probed live against /v1/models and /v1/chat/completions
+        # (2026-07-31) and confirmed to serve back its own name. Two ids people reach
+        # for do NOT work and are deliberately absent:
+        #   * `grok-4-heavy` — not on the account at all ("Model not found").
+        #   * `grok-4.20-multi-agent-0309` — listed by /v1/models, but chat/completions
+        #     refuses it ("Multi Agent requests are not allowed on chat completions");
+        #     reaching it needs a different transport, so naming it as a tier here would
+        #     hand callers a model that fails at dispatch.
+        # `reasoning` is the third distinct tier the audit's model rotation needs (#240).
         model_tiers=MappingProxyType(
-            {"cheap": "grok-4.3", "flagship": "grok-4.5"}
+            {
+                "cheap": "grok-4.3",
+                "flagship": "grok-4.5",
+                "reasoning": "grok-4.20-0309-reasoning",
+            }
         ),
     ),
 }

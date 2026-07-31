@@ -85,9 +85,17 @@ structural and testable.
   approving pins the reviewed bytes (a re-pull with new content re-quarantines);
   the pull-delta window excludes local authoring (committed after the merge). The
   quarantine is derived from the overlay's sibling `state/` dir, preserving compile
-  hermeticity. Cleared by an explicit `cohort my-office review` + `approve`. Skills
-  are out of scope (advisory text, not an execute-on-event sink); agents/commands
-  likewise. Supersedes the incomplete "exclude hooks at sync time" of #103/PR #106.
+  hermeticity. Cleared by an explicit `cohort my-office review` + `approve`.
+  Supersedes the incomplete "exclude hooks at sync time" of #103/PR #106.
+
+  **Scope was later widened, and this paragraph lagged behind it.** The gated set is
+  `quarantine.GATED_KINDS` — today `hook`, `memory`, **`skill`** and **`agent`** — not
+  just hooks and memories. This text still said skills and agents were out of scope
+  ("advisory text, not an execute-on-event sink"), which describes a control narrower
+  than the one the code enforces; an operator reading it would expect a pulled agent to
+  activate immediately. `GATED_KINDS` is the authority, and it is what `_gated_identity`
+  consults. Surfaced by audit r3 (ops), which reasonably read the drift as a possible
+  runtime bug; the code is right and the prose was wrong.
 - **[R] Model tier is an abstract cost/latency hint, resolved per renderer (#143).**
   Canonical agents may declare `model: fast|default|top`; canonical never names a
   concrete model ID, so it stays IDE-agnostic and doesn't rot when model names
