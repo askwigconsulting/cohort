@@ -254,6 +254,21 @@ class DoerError(Exception):
     """Base class for CLI-doer failures."""
 
 
+class DoerFailedError(DoerError):
+    """The vendor CLI was invoked but produced no usable result.
+
+    Distinct from :class:`DoerUnavailableError` (the CLI is not installed) and from a
+    gate refusal (which is a deliberate *refusal* and must never be retried elsewhere).
+    This is the third case: a CLI that is present and permitted, but broken here — it
+    exited non-zero, could not be executed inside the sandbox, or returned nothing.
+
+    It exists because the alternative is worse than an error: a CLI that fails while
+    exiting 0 with empty output otherwise reads as "the engine reviewed your repo and had
+    nothing to say". A caller may treat this as grounds to fall back to the vendor's API
+    transport **with a printed note** — never silently.
+    """
+
+
 class DoerUnavailableError(DoerError):
     """The requested vendor CLI is not installed, or the engine has no CLI doer.
 
@@ -697,6 +712,14 @@ def run_grok_review(
     try:
         proc = run_grok_in_worktree(worktree, task, model=model, timeout=timeout)
         stdout = proc.stdout or ""
+        # A review whose CLI failed must not read as "reviewed, nothing to say". grok-cli
+        # exits 0 on some API-level errors, so a blank answer is treated as failure too:
+        # an empty review is never a legitimate result.
+        if proc.returncode != 0 or not stdout.strip():
+            raise DoerFailedError(
+                f"the grok CLI produced no usable review (exit {proc.returncode}); "
+                f"stderr: {(proc.stderr or '').strip()[:500] or '<empty>'}"
+            )
         return GrokReviewResult(
             engine="grok",
             analysis=stdout,

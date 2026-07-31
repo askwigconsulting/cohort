@@ -36,7 +36,7 @@ import json as _json
 import re
 import time
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import Optional
 
 import typer
 
@@ -934,14 +934,14 @@ def _is_grok_engine(engine: str) -> bool:
     return engine.strip().lower() in cli_doer._GROK_ENGINE_ALIASES
 
 
-def _run_grok_cli_review_or_exit(
+def _run_grok_cli_review_or_fallback(
     task: str,
     *,
     repo_root: Path,
     model: str,
     project_context_text: str,
-) -> NoReturn:
-    """Run the local grok CLI as a repo-read-only reviewer, print its analysis, then exit.
+) -> None:
+    """Run the local grok CLI as a repo-read-only reviewer and print its analysis.
 
     Repo-read-only means the worktree is discarded so the repo is never modified — grok
     itself still runs write-capable inside the bubblewrap jail; its edits land in the
@@ -950,8 +950,16 @@ def _run_grok_cli_review_or_exit(
     Shared by ``engine consult`` and ``engine review`` when the grok CLI is preferred over
     the xAI API. Every gate fires inside :func:`cli_doer.run_grok_review` *before* grok is
     invoked; a gate refusal exits non-zero here and is **never** retried against the API —
-    a gate failure is a refusal, not a reason to switch channels. Always terminates via
-    ``typer.Exit``.
+    a gate failure is a refusal, not a reason to switch channels.
+
+    Two outcomes, and the difference matters:
+
+    * The CLI produced a review — print it and exit 0.
+    * The CLI was present but **broken** here (:class:`cli_doer.DoerFailedError`) — print
+      why, and **return**, so the caller falls through to the xAI API transport. This is
+      the CLI-first/API-fallback rule: a broken channel is a reason to switch, and the
+      switch is always announced. Returning (rather than exiting) is the whole point of
+      this function's contract, so callers must not assume it terminates.
     """
     from .engines import cli_doer
     from .engines import gates as engine_gates
@@ -973,6 +981,16 @@ def _run_grok_cli_review_or_exit(
     except engine_gates.GateError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
+    except cli_doer.DoerFailedError as exc:
+        # Present but broken here — announce the downgrade and let the caller reach the
+        # API. Never silent: the API transport sees only the prompt, not the repo, so the
+        # reader must know which channel answered them.
+        typer.echo(
+            f"note: the grok CLI failed ({exc}); falling back to xAI API-direct "
+            "(no local file access)",
+            err=True,
+        )
+        return
     except cli_doer.DoerUnavailableError as exc:
         # The availability check passed but the CLI vanished mid-run — surface it, do not
         # silently fall back to the API.
@@ -1112,13 +1130,15 @@ def engine_consult(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
         )
-        _run_grok_cli_review_or_exit(
+        # Returns only when the CLI was present but broken; it has already explained the
+        # downgrade, so fall through to the API without claiming the CLI was missing.
+        _run_grok_cli_review_or_fallback(
             prompt,
             repo_root=repo_root,
             model=chosen_model,
             project_context_text=project_context_text,
         )
-    if _is_grok_engine(engine):
+    elif _is_grok_engine(engine):
         typer.echo(
             "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
             err=True,
@@ -1289,13 +1309,15 @@ def engine_review(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
         )
-        _run_grok_cli_review_or_exit(
+        # Returns only when the CLI was present but broken; it has already explained the
+        # downgrade, so fall through to the API without claiming the CLI was missing.
+        _run_grok_cli_review_or_fallback(
             task,
             repo_root=repo_root,
             model=chosen_model,
             project_context_text=project_context_text,
         )
-    if _is_grok_engine(engine):
+    elif _is_grok_engine(engine):
         typer.echo(
             "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
             err=True,

@@ -622,13 +622,13 @@ def _grok_installed(monkeypatch):
     monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
 
 
-def _spy_grok(stdout: str = "grok's analysis", returncode: int = 0):
+def _spy_grok(stdout: str = "grok's analysis", returncode: int = 0, stderr: str = ""):
     """A run_grok_in_worktree stand-in that records it ran and returns fixed stdout."""
     calls = {"n": 0}
 
     def run(worktree, task, **kwargs):
         calls["n"] += 1
-        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+        return types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
     return calls, run
 
@@ -666,6 +666,45 @@ def test_run_grok_review_returns_stdout_and_discards_the_worktree(
     assert result.transcript == "the code looks fine"
     assert result.returncode == 0
     assert _worktree_count(tmp_path) == 1  # worktree discarded (read path keeps no diff)
+
+
+def test_run_grok_review_raises_when_the_cli_exits_nonzero(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """A failed CLI must not read as a completed review. Regression: the sandbox could not
+    execute a grok installed under ~/.local, and the failure surfaced to the user as a
+    successful review with an empty body."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    _, spy = _spy_grok(stdout="", returncode=1, stderr="bwrap: execvp grok: No such file")
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(cli_doer.DoerFailedError) as excinfo:
+        cli_doer.run_grok_review("review this", repo_root=tmp_path)
+
+    assert "execvp grok" in str(excinfo.value)   # the diagnosis reaches the user
+    assert _worktree_count(tmp_path) == 1        # worktree still discarded
+
+
+def test_run_grok_review_raises_when_the_cli_succeeds_but_says_nothing(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """grok-cli exits 0 on some API-level errors, so a blank answer is a failure too —
+    an empty review is never a legitimate result."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    _, spy = _spy_grok(stdout="   \n", returncode=0)
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(cli_doer.DoerFailedError):
+        cli_doer.run_grok_review("review this", repo_root=tmp_path)
+
+
+def test_doer_failed_is_distinct_from_unavailable_and_from_a_gate_refusal() -> None:
+    """The three cases get different handling — fall back, error out, refuse — so they
+    must not be catchable as one another by accident."""
+    assert issubclass(cli_doer.DoerFailedError, cli_doer.DoerError)
+    assert not issubclass(cli_doer.DoerFailedError, cli_doer.DoerUnavailableError)
+    assert not issubclass(cli_doer.DoerUnavailableError, cli_doer.DoerFailedError)
+    assert not issubclass(cli_doer.DoerFailedError, gates.GateError)
 
 
 def test_run_grok_review_secret_in_task_refuses_before_grok(
