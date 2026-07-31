@@ -406,8 +406,14 @@ def run_codex_in_worktree(
     # config-dir override ride the passthrough allow-list.
     env = _scrubbed_env(home=Path.home(), passthrough=_CODEX_ENV_PASSTHROUGH)
     # This doer is non-interactive: close stdin (DEVNULL) so a TTY the child inherits can
-    # never be used to inject keystrokes (TIOCSTI), and start_new_session=True detaches it
-    # into its own process group/session so a timeout kill reaps grandchildren too.
+    # never be used to inject keystrokes (TIOCSTI), and start_new_session=True puts it in
+    # its own process group.
+    #
+    # KNOWN GAP (audit r3, M5): on timeout, subprocess.run kills only the DIRECT child, so
+    # helpers codex spawned can outlive the wall-clock cap — still burning API spend, and
+    # still writing into a worktree Cohort is about to delete. start_new_session makes a
+    # group kill *possible* but does not perform one. Closing this needs the child pid
+    # (i.e. Popen), so it is tracked separately rather than bolted on here.
     return subprocess.run(
         cmd,
         capture_output=True,
@@ -420,12 +426,18 @@ def run_codex_in_worktree(
 
 
 def _git(worktree: Path, *args: str) -> str:
-    """Run a read-only-ish git query inside the worktree and return stdout."""
+    """Run a read-only-ish git query inside the worktree and return stdout.
+
+    Bounded: these run after a doer on a path the user is waiting on, so a stalled git
+    (a held ``index.lock``, an NFS hang) must not hang the CLI forever — the same rule
+    ``gitutil`` and ``update`` already follow.
+    """
     return subprocess.run(
         ["git", "-C", str(worktree), *args],
         capture_output=True,
         text=True,
         check=True,
+        timeout=_GIT_TIMEOUT_SECONDS,
     ).stdout
 
 
@@ -576,9 +588,11 @@ def run_grok_in_worktree(
     # allow-list: grok-cli receives ONLY this dict, never the host environment's secrets.
     env = _scrubbed_env(home=Path.home(), passthrough=_GROK_ENV_PASSTHROUGH)
     # This doer is non-interactive: close stdin (DEVNULL) so a TTY cannot inject keystrokes
-    # into grok (TIOCSTI — belt-and-braces with the jail's --new-session), and
-    # start_new_session=True detaches bwrap into its own session so a timeout kill reaps
-    # grok and any grandchildren it spawned.
+    # into grok (TIOCSTI — belt-and-braces with the jail's --new-session).
+    #
+    # Unlike codex (see M5 note in run_codex_in_worktree), grok's tree is largely reaped
+    # anyway by bwrap's --die-with-parent when the jail leader dies — but that guarantee
+    # rests on bwrap, not on Cohort.
     return subprocess.run(
         argv,
         capture_output=True,

@@ -934,6 +934,28 @@ def _is_grok_engine(engine: str) -> bool:
     return engine.strip().lower() in cli_doer._GROK_ENGINE_ALIASES
 
 
+def _warn_if_doer_exited_nonzero(result) -> None:
+    """Warn loudly when a write doer produced changes but exited non-zero.
+
+    The read path treats a non-zero exit as a hard failure (``DoerFailedError``); the write
+    path cannot, because the engine's partial work is still on disk and still worth
+    reviewing. But it must not read as success either: a doer that crashed, was denied by
+    its sandbox, or hit a tool error mid-edit leaves a diff that *looks* complete and is
+    not (audit r3, M1). Naming it is the difference between "here is a proposal" and "here
+    is however far it got before it died".
+    """
+    if result.returncode == 0:
+        return
+    typer.echo(
+        f"⚠ the engine exited {result.returncode} AFTER writing these files — this diff "
+        "may be a partial edit, not a finished change. Review it as unfinished work.",
+        err=True,
+    )
+    tail = (getattr(result, "stdout_tail", "") or "").strip()
+    if tail:
+        typer.echo(f"  last output: {_display_safe(tail[-300:])}", err=True)
+
+
 def _run_grok_cli_review_or_fallback(
     task: str,
     *,
@@ -1522,6 +1544,7 @@ def engine_propose(
             )
             typer.echo(f"worktree: {result.worktree}")
             raise typer.Exit(code=1)
+        _warn_if_doer_exited_nonzero(result)
         for path in result.changed_files:
             typer.echo(f"  changed: {_display_safe(path)}")
         typer.echo(f"worktree: {result.worktree}")
@@ -1719,6 +1742,8 @@ def engine_work(
         typer.echo(f"worktree: {result.worktree}")
         raise typer.Exit(code=1)
 
+    _warn_if_doer_exited_nonzero(result)
+
     for path in result.changed_files:
         typer.echo(f"  changed: {_display_safe(path)}")
     if result.footprint_violations:
@@ -1853,6 +1878,15 @@ def my_office_sync(
             bits.append("pushed")
         typer.echo(f"my-office sync: {', '.join(bits) or 'up to date'} · {r['remote']}"
                    + (" · recompiled" if r.get("recompiled") else ""))
+        if r.get("recompile_failed"):
+            # The sync itself succeeded, but nothing pulled was placed — say so, because
+            # an empty `recompiled` otherwise reads exactly like "nothing installed".
+            typer.echo(
+                "  ⚠ the sync succeeded but placing the pulled artifacts into your IDEs "
+                f"failed ({r['recompile_failed']}). Your IDE files are STALE — run "
+                "`cohort update --recompile` (or `cohort relink`) to place them.",
+                err=True,
+            )
         if r.get("quarantine_state_unreadable"):
             typer.echo(
                 "  ⚠ quarantine state is unreadable — every pulled hook/memory is "
@@ -1934,7 +1968,7 @@ def my_office_approve(
     """
     from . import quarantine
     from .install_model import CohortPaths
-    from .myoffice import _recompile_if_installed
+    from .myoffice import _RecompileFailed, _recompile_if_installed
 
     if not approve_all and not name:
         typer.echo("error: give an artifact name, or pass --all", err=True)
@@ -1956,8 +1990,17 @@ def my_office_approve(
             err=True,
         )
         raise typer.Exit(code=1)
-    recompiled = _recompile_if_installed(Path.home()) if cleared else False
-    report = {"action": "my-office-approve", "approved": cleared, "recompiled": recompiled}
+    recompiled: object = False
+    recompile_failed: Optional[str] = None
+    if cleared:
+        try:
+            recompiled = _recompile_if_installed(Path.home())
+        except _RecompileFailed as exc:
+            # Approval already happened; report the placement failure rather than
+            # reporting an approval that quietly did not reach the IDEs.
+            recompile_failed = str(exc)
+    report = {"action": "my-office-approve", "approved": cleared,
+              "recompiled": recompiled, "recompile_failed": recompile_failed}
 
     def human(r: dict) -> None:
         if not r["approved"]:
@@ -2045,7 +2088,7 @@ def office_approve(
     """
     from . import quarantine
     from .install_model import CohortPaths
-    from .myoffice import _recompile_if_installed
+    from .myoffice import _RecompileFailed, _recompile_if_installed
 
     if not approve_all and not name:
         typer.echo("error: give an artifact name, or pass --all", err=True)
@@ -2066,8 +2109,17 @@ def office_approve(
             err=True,
         )
         raise typer.Exit(code=1)
-    recompiled = _recompile_if_installed(Path.home()) if cleared else False
-    report = {"action": "office-approve", "approved": cleared, "recompiled": recompiled}
+    recompiled: object = False
+    recompile_failed: Optional[str] = None
+    if cleared:
+        try:
+            recompiled = _recompile_if_installed(Path.home())
+        except _RecompileFailed as exc:
+            # Approval already happened; report the placement failure rather than
+            # reporting an approval that quietly did not reach the IDEs.
+            recompile_failed = str(exc)
+    report = {"action": "office-approve", "approved": cleared,
+              "recompiled": recompiled, "recompile_failed": recompile_failed}
 
     def human(r: dict) -> None:
         if not r["approved"]:

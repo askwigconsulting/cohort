@@ -231,10 +231,19 @@ def do_my_sync(
             # to run `my-office review` rather than seeing an empty quarantine list.
             state_unreadable = True
 
-    recompiled = _recompile_if_installed(home)
+    # The sync itself has succeeded by here (fetch and push both raise on failure), so a
+    # recompile failure must not undo it — but it must be *reported*. `recompiled: []`
+    # alone is ambiguous: it also means "nothing installed" (audit r3, H2).
+    recompile_failed: str | None = None
+    try:
+        recompiled = _recompile_if_installed(home)
+    except _RecompileFailed as exc:
+        recompiled = []
+        recompile_failed = str(exc)
     # We only reach here past a successful fetch and push (both raise on failure).
     return {"action": "my-sync", "dry_run": False, "remote": safe_url,
             "fetched": True, "pulled": pulled, "pushed": pushed, "recompiled": recompiled,
+            "recompile_failed": recompile_failed,
             "quarantined": [f"{a.kind} {a.name}" for a in newly_quarantined],
             "quarantine_state_unreadable": state_unreadable}
 
@@ -260,5 +269,13 @@ def _recompile_if_installed(home: Path) -> list[str]:
     try:
         recompile_global_ides(home, source, manifest.ides)
         return list(manifest.ides)
-    except Exception:  # noqa: BLE001 - sync succeeded; a recompile hiccup isn't fatal
-        return []
+    except Exception as exc:  # noqa: BLE001 - sync succeeded; a recompile hiccup isn't fatal
+        # Report the failure rather than returning the same empty list that means "nothing
+        # was installed". Swallowing it left the remote layer current, the local IDE
+        # artifacts stale, and the exit code green (audit r3, H2) — the caller cannot tell
+        # "nothing to place" from "placing broke" if both look like [].
+        raise _RecompileFailed(f"{type(exc).__name__}: {exc}") from exc
+
+
+class _RecompileFailed(Exception):
+    """The post-sync IDE recompile failed. Reported, never silently swallowed."""

@@ -38,6 +38,10 @@ from cohort.engines import gates, patch
 from cohort.engines import xai, xai_agentic
 from cohort.engines.patch import PatchResult, PatchProposal
 
+# Worktree plumbing is local and fast; past this it is stalled (a held index.lock, an NFS
+# hang), not slow. These sit on a path the user waits on, so they must terminate.
+_GIT_TIMEOUT_SECONDS: float = 30.0
+
 # A proposal that rewrites a large number of files is not blocked, but it is flagged:
 # a wide blast radius warrants closer human review before merge.
 _MANY_FILES_THRESHOLD: int = 10
@@ -137,8 +141,9 @@ def cleanup_worktree(repo_root: Path, worktree: Path) -> None:
             cwd=repo_root,
             capture_output=True,
             check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         pass
     # Remove the temp parent even if `git worktree remove` failed or was a no-op.
     parent = worktree.parent
@@ -153,8 +158,9 @@ def cleanup_worktree(repo_root: Path, worktree: Path) -> None:
             cwd=repo_root,
             capture_output=True,
             check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         pass
 
 
@@ -173,8 +179,9 @@ def _create_worktree(repo_root: Path) -> Path:
             cwd=repo_root,
             check=True,
             capture_output=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
         )
-    except (subprocess.CalledProcessError, OSError) as exc:
+    except (subprocess.CalledProcessError, subprocess.SubprocessError, OSError) as exc:
         # The mkdtemp parent has no worktree registered, so a plain rmtree suffices.
         shutil.rmtree(parent, ignore_errors=True)
         raise ProposalError(
