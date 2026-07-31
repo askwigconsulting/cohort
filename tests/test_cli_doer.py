@@ -480,6 +480,47 @@ def test_declared_fixture_clears_the_worktree_scan_and_dispatch_proceeds(
     assert spawned["called"] is True
 
 
+def test_suppression_only_on_a_feature_branch_does_not_unblock_dispatch(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """A suppression must not be able to authorise its own egress (audit r3, H1).
+
+    The refusal prints paste-ready declaration lines, so committing them is something the
+    blocked party can do alone — and egress is irreversible. Only entries reachable from the
+    default branch count, because that is where review actually happened.
+    """
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    # Declare it — but only on a side branch, exactly as a blocked party would.
+    subprocess.run(
+        ["git", "checkout", "-q", "-b", "unblock-me"], cwd=tmp_path, check=True,
+        capture_output=True,
+    )
+    manifest = tmp_path / gates.SECRET_ALLOWLIST_PATH
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(f"{digest}  config.py  # looks fine to me\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-Af"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "declare"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    with pytest.raises(gates.SecretFoundError) as excinfo:
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+
+    assert spawned["called"] is False
+    assert "default branch" in str(excinfo.value)  # the refusal explains why
+
+
 def test_declared_fixture_does_not_exempt_a_different_secret_in_that_file(
     tmp_path, monkeypatch, _codex_installed
 ):

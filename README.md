@@ -138,6 +138,40 @@ for the permission-scoped recipes, why the output lands in a gitignored, untrust
 `.cohort/reports/research/` folder, and why this is a user-configured IDE exception rather than
 a new Cohort write path.
 
+## What leaves your machine
+
+Cohort itself sends nothing anywhere — no telemetry, no phone-home. But the commands that
+bring a **second model** into the room (`/consult-gpt`, `/consult-grok`, `/scout`, `/crew`,
+`cohort engine consult|review|propose`) send code to that vendor, and **they do so by
+default, without asking each time**. A second model with real context gives better answers,
+so the prompt-per-consult was deliberately removed.
+
+| Command | Goes to | What it sends |
+|---|---|---|
+| `/consult-gpt`, `cohort engine consult` | OpenAI (Codex CLI) / xAI | the prompt you packaged — no repo access |
+| `cohort engine review` | xAI | files it chooses to read, one gated read at a time |
+| `cohort engine propose --agentic` | xAI | the same gated reads, plus the patch it proposes |
+| `/crew` external doers | OpenAI / xAI | the committed contents of a throwaway worktree |
+
+Everything above is scanned for credential-shaped content first and refuses to send on a
+hit. Nothing untracked is ever included — a git-ignored `.env` is never checked out into the
+worktree an engine sees.
+
+**To turn it off for a repo**, put this literal marker on its own line in
+`.cohort/project_context.md`:
+
+```
+cohort:egress=deny
+```
+
+That exact string is what the code checks. A sentence like "do not send this code to
+external models" reads as prose and **will not** stop anything — the marker is deliberately
+structured so an ambiguous or negated sentence can never be misread as permission. Adding an
+`## Egress` heading also switches the repo to deny-by-default.
+
+Use it for client code, NDA work, or anything unreleased. If you are not sure whether a repo
+should egress, add the marker — it is one line to remove later.
+
 ## Scope model
 
 | | The office | My office | This project |
@@ -172,10 +206,15 @@ by name at any time.
 - **compiled / staged** — the per-IDE files rendered from canonical (`~/.cohort/compiled/<ide>/`);
   derived output, never hand-edited.
 - **placed** — a staged file linked or copied into the IDE's own directory (`~/.claude/…`).
-- **manifest** — the per-tier record of everything Cohort placed (`state/manifest.json`); what makes
+- **manifest** — the per-scope record of everything Cohort placed (`state/manifest.json`); what makes
   installs reversible.
-- **scope** (a.k.a. **tier** in code and PRs) — where an artifact lives: `global` (the machine-wide
-  office) or `project` (one repo).
+- **scope** — where an artifact lives: `global` (the machine-wide office) or `project` (one repo).
+  Internal code and some older PRs call this a "tier"; **prefer *scope***, because "tier" also
+  names two unrelated things and the collision is a genuine trip hazard:
+  - **model tier** for an *agent* — `fast` / `default` / `top` (an agent's `model:` field).
+  - **model tier** for an *external engine* — `flagship` / `cheap` / `reasoning`, and the only
+    meaning the `--tier` flag ever carries (`cohort engine consult|review|propose --tier`).
+    Pass an unknown one to list what a given engine actually offers.
 - **layer** — within the global scope, whether an artifact comes from **the office** (the shared
   source clone) or **my office** (`~/.cohort/my/`, the personal overlay).
 - **kind** — what an artifact is: agent, skill, command, hook, memory, or context.

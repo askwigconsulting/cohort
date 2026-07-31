@@ -126,17 +126,15 @@ class ReadOnlyToolbox:
         # from its own reviewer: `read_file` refuses them and `grep` skips them silently,
         # so the review looks complete while missing exactly what it was asked to check.
         #
-        # Read from the live tree (a reviewer has no detached checkout to read from).
-        # Widening this requires writing the *exact digest* of the value to be exposed,
-        # which presupposes already knowing it — so it grants no read a local writer did
-        # not already have.
-        try:
-            manifest = (self.root / gates.SECRET_ALLOWLIST_PATH).read_text(
-                encoding="utf-8"
-            )
-        except (OSError, UnicodeDecodeError):
-            manifest = ""
-        self._secret_allowlist = gates.parse_secret_allowlist(manifest)
+        # Read from the DEFAULT BRANCH, matching the CLI-doer gate exactly. Reading the
+        # live tree was wrong: this toolbox is an egress gate, so "grants no read a local
+        # writer already had" conflated local *read* access with sending bytes to a vendor.
+        # It mattered more once a broken vendor CLI began falling back to this path
+        # automatically — the weaker gate would have become the common one.
+        from .cli_doer import default_branch_file
+
+        manifest = default_branch_file(self.root, gates.SECRET_ALLOWLIST_PATH)
+        self._secret_allowlist = gates.parse_secret_allowlist(manifest or "")
 
     def _undeclared_secret_labels(self, rel: str, text: str) -> list[str]:
         """Labels for credential-shaped content in ``text`` that ``rel`` has not declared."""

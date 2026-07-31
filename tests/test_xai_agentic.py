@@ -8,6 +8,7 @@ poster so the whole loop (tool dispatch, transcript, bounds) is tested offline.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -70,11 +71,38 @@ def test_refuses_content_that_trips_the_secret_scanner(repo: Path) -> None:
 
 
 def _declare(repo: Path, value: str, rel: str) -> None:
-    """Commit a manifest entry declaring ``value`` in ``rel`` a known-fake fixture."""
+    """Declare ``value`` in ``rel`` a known-fake fixture, **on the default branch**.
+
+    The manifest must be committed to the default branch to count — a suppression may not
+    authorise its own egress — so this initialises the repo if needed and commits there.
+    """
+    # Unconditional: the `repo` fixture plants a *fake* `.git/` (to exercise the
+    # git-internals path refusal), so an existence check would skip the real init.
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, capture_output=True)
     manifest = repo / gates.SECRET_ALLOWLIST_PATH
     manifest.parent.mkdir(parents=True, exist_ok=True)
     with manifest.open("a", encoding="utf-8") as handle:
         handle.write(f"{gates.secret_digest(value)}  {rel}\n")
+    subprocess.run(
+        ["git", "add", "-f", gates.SECRET_ALLOWLIST_PATH],
+        cwd=repo, check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q",
+         "-m", "declare fixture"],
+        cwd=repo, check=True, capture_output=True,
+    )
+
+
+def test_an_uncommitted_manifest_grants_nothing(repo: Path) -> None:
+    """Writing the manifest without committing it to the default branch must not widen
+    what the reviewer may send (audit r3, M2) — this toolbox is an egress gate, so local
+    write access is not the same as permission to move bytes off the machine."""
+    manifest = repo / gates.SECRET_ALLOWLIST_PATH
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    digest = gates.secret_digest("wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY")
+    manifest.write_text(f"{digest}  config.py\n", encoding="utf-8")
+    assert ReadOnlyToolbox(repo).read_file("config.py").startswith("refused:")
 
 
 def test_declared_fixture_becomes_readable_by_the_reviewer(repo: Path) -> None:

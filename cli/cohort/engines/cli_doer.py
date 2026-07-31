@@ -69,6 +69,11 @@ from cohort.engines import patch_proposal
 # in this long is stuck or looping; kill it (the worktree is cleaned up on timeout).
 _DOER_TIMEOUT_SECONDS: float = 900.0
 
+# Every git query Cohort runs around a doer is a fast, local, read-only plumbing call, so a
+# short cap is right: past this it is stalled (an NFS hang, a held index.lock), not slow.
+# Bounding these matters because they sit on paths a user is waiting on.
+_GIT_TIMEOUT_SECONDS: float = 30.0
+
 # A hard ceiling on the TOTAL bytes a doer dispatch may expose to the vendor — the task
 # text plus every tracked worktree file the CLI reads and sends. gates.assert_payload_within
 # bounds only the prompt; this bounds the whole egress so a runaway worktree (a checked-in
@@ -181,21 +186,71 @@ def _assert_worktree_within_wire_budget(
     )
 
 
-def _load_secret_allowlist(worktree: Path) -> frozenset[gates.SecretSuppression]:
+def _load_secret_allowlist(repo_root: Path) -> frozenset[gates.SecretSuppression]:
     """Read the repo's committed secret-scan suppression manifest, if it has one.
 
-    Read from the *worktree* (a detached checkout of HEAD), not the live working tree, so
-    an uncommitted edit to the manifest can never widen what a dispatch is allowed to
-    send. An absent or unreadable manifest yields no suppressions — fail closed.
+    Read from the **default branch**, not the worktree and not the live tree, because a
+    suppression must never be able to authorise its own egress. Committing is not review:
+    the refusal message prints paste-ready declaration lines, so anyone (or any agent) who
+    hits the gate can commit them and re-dispatch without a second person ever looking —
+    and egress is irreversible. Requiring the entry to be reachable from the default branch
+    means it has already been through whatever review that branch enforces.
+
+    Anything unreadable, or a repo with no resolvable default branch, yields no
+    suppressions — fail closed.
     """
-    try:
-        text = (worktree / gates.SECRET_ALLOWLIST_PATH).read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
+    text = default_branch_file(repo_root, gates.SECRET_ALLOWLIST_PATH)
+    if text is None:
         return frozenset()
     return gates.parse_secret_allowlist(text)
 
 
-def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
+def _default_branch_ref(repo_root: Path) -> str | None:
+    """Resolve the repo's default-branch ref, preferring the remote's own declaration.
+
+    ``origin/HEAD`` is what the remote says its default is, so it cannot be pointed
+    somewhere else by a local branch. Falls back to a local ``main``/``master`` only when no
+    remote HEAD is configured (a repo cloned without one, or a purely local repo).
+    """
+    for args in (
+        ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+        ["rev-parse", "--verify", "--quiet", "refs/heads/main"],
+        ["rev-parse", "--verify", "--quiet", "refs/heads/master"],
+    ):
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), *args],
+                capture_output=True,
+                text=True,
+                timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode == 0 and proc.stdout.strip():
+            # symbolic-ref yields the ref name; rev-parse yields a hash. Either is a
+            # valid revision to read a blob out of.
+            return proc.stdout.strip()
+    return None
+
+
+def default_branch_file(repo_root: Path, rel: str) -> str | None:
+    """Return ``rel`` as committed on the default branch, or None if unavailable."""
+    ref = _default_branch_ref(repo_root)
+    if ref is None:
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _assert_worktree_files_have_no_secrets(worktree: Path, repo_root: Path) -> None:
     """Secret-scan the committed files the worktree will expose to the vendor CLI.
 
     The outbound task string is gated separately, but the vendor CLI then *reads the
@@ -210,7 +265,7 @@ def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
             message lists only non-secret finding labels, never a matched value.
     """
     tracked = _tracked_worktree_files(worktree)
-    allowlist = _load_secret_allowlist(worktree)
+    allowlist = _load_secret_allowlist(repo_root)
     blocking: list[tuple[str, gates.SecretFinding]] = []
     for rel in tracked:
         try:
@@ -244,9 +299,12 @@ def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
         raise gates.SecretFoundError(
             "worktree files contain credential-shaped content: "
             + ", ".join(labels)
-            + f"\n\nIf — and only if — you have confirmed these values are fake, declare "
-            f"them in {gates.SECRET_ALLOWLIST_PATH} and commit it:\n"
+            + f"\n\nIf — and only if — a human has confirmed these values are fake, declare "
+            f"them in {gates.SECRET_ALLOWLIST_PATH}:\n"
             + declarations
+            + "\n\nSuppressions are only honoured once they are merged to the default "
+            "branch. Committing them on this branch will not unblock the dispatch — that "
+            "is deliberate, so that a suppression cannot authorise its own egress."
         )
 
 
@@ -605,7 +663,7 @@ def _grok_gated_worktree(
         # gate those files (not just the task string) before dispatch: bound the TOTAL
         # exposed bytes (task + tracked files) first, then secret-scan those same files.
         _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
-        _assert_worktree_files_have_no_secrets(worktree)
+        _assert_worktree_files_have_no_secrets(worktree, repo_root)
     except BaseException:
         patch_proposal.cleanup_worktree(repo_root, worktree)
         raise
@@ -772,7 +830,7 @@ def run_codex_doer(
         # gate those files (not just the task string) before dispatch: bound the TOTAL
         # exposed bytes (task + tracked files) first, then secret-scan those same files.
         _assert_worktree_within_wire_budget(worktree, task, max_wire_bytes=max_wire_bytes)
-        _assert_worktree_files_have_no_secrets(worktree)
+        _assert_worktree_files_have_no_secrets(worktree, repo_root)
         proc = run_codex_in_worktree(worktree, task, model=model, timeout=timeout)
 
         # Capture what the engine wrote as a reviewable diff.
