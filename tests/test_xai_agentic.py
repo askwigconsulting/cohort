@@ -180,6 +180,38 @@ def test_loop_stops_at_max_iterations(repo: Path) -> None:
     assert result.iterations == 3
 
 
+def test_loop_stops_when_wall_clock_budget_exhausted(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A fake monotonic clock that advances a large step per read, so the cumulative
+    # wall-clock budget is blown after a couple of rounds even though max_iterations is
+    # nowhere near reached — proving the deadline, not the iteration cap, stopped it.
+    clock = {"t": 0.0}
+
+    def fake_monotonic() -> float:
+        now = clock["t"]
+        clock["t"] += 40.0
+        return now
+
+    monkeypatch.setattr(xai_agentic.time, "monotonic", fake_monotonic)
+
+    def poster(spec, key, body):
+        return _assistant_toolcall("list_dir", {"path": "."})  # never returns a final
+
+    result = run_agentic(
+        "slow loop",
+        root=repo,
+        _poster=poster,
+        max_iterations=100,
+        max_wall_seconds=100.0,
+    )
+    assert result.stopped_reason == "wall_clock"
+    assert "wall-clock budget exhausted" in result.text
+    # deadline = 0 + 100; rounds ran at t=40 and t=80 (<100), the check at t=120 tripped.
+    assert result.iterations == 2
+    assert len(result.transcript) == 2
+
+
 def test_transcript_is_written_to_disk_when_a_path_is_given(repo: Path, tmp_path: Path) -> None:
     calls = iter([
         _assistant_toolcall("find_files", {"glob": "**/*.py"}),

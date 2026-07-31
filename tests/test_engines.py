@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from cohort.engines import ENGINES, EngineSpec, UnknownEngineError, get_engine
+from cohort.engines import xai as xai_module
 from cohort.engines.xai import (
     EngineAuthError,
     EnginePayloadError,
@@ -140,6 +141,50 @@ def test_xai_client_retries_once_on_connection_error(
 
     assert consult("hi") == "ok"
     assert recorder.calls == 2
+
+
+def test_xai_client_backs_off_before_retrying_5xx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The single 5xx retry must pause a bounded backoff first, not re-POST immediately.
+    monkeypatch.setenv("GROK_API_KEY", _SECRET)
+    recorder = _Recorder([_http_error(503), _FakeResponse(_completion("recovered"))])
+    _patch_urlopen(monkeypatch, recorder)
+    slept: list[float] = []
+    monkeypatch.setattr(xai_module.time, "sleep", lambda s: slept.append(s))
+
+    assert consult("hi") == "recovered"
+    assert recorder.calls == 2
+    assert slept == [xai_module._RETRY_BACKOFF_SECONDS]
+    assert 0 < xai_module._RETRY_BACKOFF_SECONDS <= 2  # bounded, not exponential
+
+
+def test_xai_client_backs_off_before_retrying_connection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GROK_API_KEY", _SECRET)
+    recorder = _Recorder(
+        [urllib.error.URLError("connection refused"), _FakeResponse(_completion("ok"))]
+    )
+    _patch_urlopen(monkeypatch, recorder)
+    slept: list[float] = []
+    monkeypatch.setattr(xai_module.time, "sleep", lambda s: slept.append(s))
+
+    assert consult("hi") == "ok"
+    assert slept == [xai_module._RETRY_BACKOFF_SECONDS]
+
+
+def test_xai_client_success_path_does_not_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("GROK_API_KEY", _SECRET)
+    recorder = _Recorder([_FakeResponse(_completion("hi back"))])
+    _patch_urlopen(monkeypatch, recorder)
+    slept: list[float] = []
+    monkeypatch.setattr(xai_module.time, "sleep", lambda s: slept.append(s))
+
+    assert consult("hi") == "hi back"
+    assert slept == []  # no retry, no backoff
 
 
 def test_xai_client_does_not_retry_on_400(monkeypatch: pytest.MonkeyPatch) -> None:
