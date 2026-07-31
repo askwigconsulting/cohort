@@ -228,13 +228,21 @@ _VALUE_TRAILER_CHARS = ",;)]}'\"`"
 # the identifier is being typed, not assigned a value. Only consulted for the ``:``
 # separator, so ``GITHUB_TOKEN: ghp_...`` (a real credential in colon form) still trips.
 _DOTTED_REFERENCE_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+"
+    r"[A-Za-z_][A-Za-z0-9_]*(?:\.(?P<last>[A-Za-z_][A-Za-z0-9_]*))+"
 )
 
+#
+# Anchored at BOTH ends: the value must be the type name itself, or the start of a
+# subscripted one (``tuple[str, ...]`` captures as ``tuple[``). Matching a mere *prefix*
+# was a false-negative hole — `password: Path-2026-Xy9z-secretvals` and
+# `api_key: int-8f2k1-zzz` both begin with a type name followed by a word boundary, and
+# YAML (the dominant secrets-config format) uses `:` for every assignment, so a prefix
+# rule silently exempted real credentials in exactly the files most likely to hold them.
 _TYPE_ANNOTATION_VALUE_RE = re.compile(
-    r"^(?:str|bytes|bytearray|int|float|bool|complex|list|dict|set|frozenset|tuple"
+    r"(?:str|bytes|bytearray|int|float|bool|complex|list|dict|set|frozenset|tuple"
     r"|object|None|Any|Optional|Union|Literal|Mapping|MutableMapping|Sequence"
-    r"|Iterable|Iterator|Callable|Awaitable|Coroutine|Path|datetime|Decimal|UUID)\b"
+    r"|Iterable|Iterator|Callable|Awaitable|Coroutine|Path|datetime|Decimal|UUID)"
+    r"(?:\[.*)?"
 )
 
 # RHS shapes that are unambiguously *code*, not a credential value, even when the
@@ -268,16 +276,21 @@ def _is_self_reference(identifier: str, value: str) -> bool:
     return value == identifier
 
 
-def _is_dotted_reference(value: str) -> bool:
-    """True if the whole value is a dotted attribute reference, e.g. ``srv.token``.
+def _is_dotted_reference(identifier: str, value: str) -> bool:
+    """True if the value forwards ``identifier`` through an attribute, e.g. ``token=srv.token``.
 
     ``request(..., token=srv.token)`` reads an attribute at runtime; the text contains no
     credential. Requires a **full** match against a chain of Python identifiers joined by
-    dots, and at least one dot — so a bare word (``hunter2secret``) and anything carrying
-    credential punctuation (``sk-...``, base64url) are untouched. A dotted *call*
-    (``cfg.get(...)``) is already covered by :data:`_CODE_SHAPED_VALUE_RE`.
+    dots — so anything carrying credential punctuation (``sk-...``, base64url) is untouched.
+
+    It additionally requires the **final segment to equal the assigned name**, which is what
+    makes this a *forwarding* pattern rather than "any dotted word". Without that, a
+    ``name.surname`` password (``PASSWORD=jonathan.smith``) is structurally identical to
+    ``token=srv.token`` and was silently exempted — a real credential shape, and a
+    false-negative this scanner previously caught.
     """
-    return _DOTTED_REFERENCE_RE.fullmatch(value) is not None
+    match = _DOTTED_REFERENCE_RE.fullmatch(value)
+    return match is not None and match.group("last") == identifier
 
 
 def _looks_secret_shaped(value: str) -> bool:
@@ -408,9 +421,11 @@ def scan_for_secret_findings(text: str) -> list[SecretFinding]:
         value = raw_value.rstrip(_VALUE_TRAILER_CHARS)
         if len(value) < 6:
             continue
-        if _is_self_reference(identifier, value) or _is_dotted_reference(value):
+        if _is_self_reference(identifier, value) or _is_dotted_reference(
+            identifier, value
+        ):
             continue
-        if separator == ":" and _TYPE_ANNOTATION_VALUE_RE.match(value):
+        if separator == ":" and _TYPE_ANNOTATION_VALUE_RE.fullmatch(value):
             continue
         if not _looks_secret_shaped(value):
             continue

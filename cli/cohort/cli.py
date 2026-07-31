@@ -940,8 +940,15 @@ def _run_grok_cli_review_or_fallback(
     repo_root: Path,
     model: str,
     project_context_text: str,
+    api_channel: str,
 ) -> None:
     """Run the local grok CLI as a repo-read-only reviewer and print its analysis.
+
+    Args:
+        api_channel: How the **API** transport would see this repo, for the fallback note —
+            e.g. "no local file access" for a prompt-only consult, or "gated read-only repo
+            access" for a review. Stated by the caller because it differs per command, and
+            a human consenting to a channel switch must not be told the wrong one.
 
     Repo-read-only means the worktree is discarded so the repo is never modified — grok
     itself still runs write-capable inside the bubblewrap jail; its edits land in the
@@ -983,11 +990,13 @@ def _run_grok_cli_review_or_fallback(
         raise typer.Exit(code=1)
     except cli_doer.DoerFailedError as exc:
         # Present but broken here — announce the downgrade and let the caller reach the
-        # API. Never silent: the API transport sees only the prompt, not the repo, so the
-        # reader must know which channel answered them.
+        # API. Never silent: the two channels differ in what the model can see, so the
+        # reader must know which one answered them. The caller supplies that description
+        # because it differs per command — `consult` really does send only the prompt,
+        # while `review` runs the gated read-only toolbox over this repo.
         typer.echo(
-            f"note: the grok CLI failed ({exc}); falling back to xAI API-direct "
-            "(no local file access)",
+            f"note: the grok CLI failed ({exc}); falling back to "
+            f"xAI API-direct ({api_channel})",
             err=True,
         )
         return
@@ -1138,6 +1147,7 @@ def engine_consult(
             repo_root=repo_root,
             model=chosen_model,
             project_context_text=project_context_text,
+            api_channel="no local file access",  # consult sends only the prompt
         )
     elif _is_grok_engine(engine):
         typer.echo(
@@ -1318,10 +1328,14 @@ def engine_review(
             repo_root=repo_root,
             model=chosen_model,
             project_context_text=project_context_text,
+            # review's API path runs the read-only toolbox over this repo — file contents
+            # DO reach xAI, gated per read. Saying "no local file access" here was false.
+            api_channel="gated read-only repo access, not worktree-scoped",
         )
     elif _is_grok_engine(engine):
         typer.echo(
-            "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
+            "note: grok CLI/bwrap not found — using xAI API-direct (gated read-only repo "
+            "access, not worktree-scoped)",
             err=True,
         )
 
@@ -1537,8 +1551,13 @@ def engine_propose(
         )
         raise typer.Exit(code=0)
     if _is_grok_engine(engine):
+        # --agentic runs the read-only toolbox over this repo, so file contents DO reach
+        # xAI (gated per read); the one-shot path sends only the packaged task. Naming the
+        # wrong one here misdescribes the egress at the moment the human consents to it.
         typer.echo(
-            "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
+            "note: grok CLI/bwrap not found — using xAI API-direct ("
+            + ("gated read-only repo access" if agentic else "no local file access")
+            + ")",
             err=True,
         )
 

@@ -333,6 +333,29 @@ def test_scan_still_detects_a_real_credential_in_colon_form() -> None:
     ]
 
 
+def test_scan_still_detects_a_dotted_password_that_is_not_a_forwarded_name() -> None:
+    """Audit regression (r3, critical-path): exempting *any* dotted value silently passed
+    `name.surname` passwords, which are structurally identical to `token=srv.token`. The
+    exemption requires the final segment to equal the assigned name."""
+    assert scan_for_secrets("PASSWORD=jonathan.smith") == [
+        "generic-assignment:PASSWORD"
+    ]
+    assert scan_for_secrets("api_key=acme.prod.key9") == ["generic-assignment:API_KEY"]
+
+
+def test_scan_still_detects_a_credential_that_merely_starts_with_a_type_name() -> None:
+    """Audit regression (r3, critical-path): the annotation exemption matched a *prefix*,
+    so any value beginning with a type name plus a word boundary slipped through — and
+    YAML, the dominant secrets-config format, uses `:` for every assignment."""
+    assert scan_for_secrets("password: Path-2026-Xy9z-secretvals") == [
+        "generic-assignment:PASSWORD"
+    ]
+    assert scan_for_secrets("api_key: int-8f2k1-zzz") == ["generic-assignment:API_KEY"]
+    assert scan_for_secrets("db_password: list-of-secrets-here") == [
+        "generic-assignment:PASSWORD"
+    ]
+
+
 def test_scan_still_detects_a_bare_word_credential_value() -> None:
     """Only an *exact* self-reference is exempt — an ordinary bare value still trips."""
     assert scan_for_secrets("DATABASE_PASSWORD=hunter2secret") == [

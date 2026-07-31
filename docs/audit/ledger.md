@@ -23,20 +23,31 @@ baked into its history.
 
 | Dimension | Last run | Tiers seen | FP rate | Notes |
 |---|---|---|---|---|
-| critical-path | 2026-07-29 (r1) | opus (r1) | 0/5 | swept every run |
+| critical-path | 2026-07-31 (r3) | opus (r1), fable (r3) | 0/5 | swept every run; r3 caught two scanner regressions by *executing* both versions |
 | security | 2026-07-29 (r1) | opus (r1) | 0/6 | |
 | correctness | 2026-07-29 (r1) | opus (r1) | 1/8 struck (#7 office-quarantine "inert" — wrong, it's wired) | |
 | concurrency | 2026-07-29 (r1) | opus (r1) | 0/7 | |
 | honesty | 2026-07-29 (r1) | opus (r1) | 0/2 | |
 | tests | 2026-07-29 (r1) | opus (r1) | 0/4 | |
 | supply-chain | 2026-07-29 (r1) | opus (r1) | 0/5 | |
-| performance | — never | — | — | **deferred to r2** |
-| resilience | — never | — | — | **deferred to r2** |
-| naming | — never | — | — | **deferred to r2** |
-| docs | — never | — | — | **deferred to r2** |
-| ops | — never | — | — | **deferred to r2** |
-| accessibility | — never | — | — | **deferred to r2 (dashboard UI)** |
-| vendor-reachability | — never | — | — | **always-on from r3**; added 2026-07-31 after grok was found unreachable despite correct code |
+| performance | 2026-07-31 (r3) | grok-4.3 (r3) | **whole review struck** | **treat as UNREVIEWED** — cheap tier reported "no findings" resting on a false claim about freshly-changed code; re-run at a higher tier |
+| resilience | 2026-07-31 (r3) | grok-4.5 (r3) | 0/6 | strongest external review of the run |
+| naming | 2026-07-31 (r3) | gpt-codex (r3) | 0/2 | |
+| docs | — never | grok-4.20-0309-reasoning (r3, **no answer**) | — | **still UNREVIEWED** — the reasoning tier hit max_iterations and returned nothing |
+| ops | 2026-07-31 (r3) | grok-4.5 (r3) | 1/7 downgraded (#5 quarantine "contradiction" is a false *comment*, not a runtime bug — grok correctly hedged) | |
+| accessibility | 2026-07-31 (r3) | gpt-codex (r3) | 0/6 | |
+| vendor-reachability | 2026-07-31 (r3) | opus (r3) | 0/6 | **always-on**; added after grok was found unreachable despite correct code |
+| go-to-market | 2026-07-31 (r3) | grok-4.5 (r3) | — | always-on; single-vendor this run — **protocol requires two, not met** |
+| business-ops | 2026-07-31 (r3) | fable (r3) | 0/8 | first run; found the business context itself is undeclared |
+
+### Tier signal so far
+
+Early, but two data points worth carrying forward: **grok-4.5 produced the strongest
+external reviews** (resilience, ops — dense, line-accurate, correctly hedged). **grok-4.3
+produced a false negative** on code changed hours earlier, and **grok-4.20-0309-reasoning
+could not finish** a normal review within the default iteration budget. Do not route a
+dimension to `cheap` when the target includes recently-changed code, and do not route to
+`reasoning` at all until the iteration budget is raised.
 
 ## Model phase
 
@@ -47,7 +58,24 @@ spots. Record the phase each run and read the *next* one from here.
 | Run | Phase |
 |---|---|
 | r1 (2026-07-29) | balanced (retroactive — routing predates the rotation) |
-| **next run** | **complex-heavy** |
+| r3 (2026-07-31) | complex-heavy — 50% grok / 25% GPT / 25% Claude, all grok API-direct |
+| **next run** | **simple-heavy** — but keep `performance` and `docs` at a capable tier; both were lost this run to cheap/reasoning tiers (see above) |
+
+## Run 3 — 2026-07-31 — the path to 1.0.0
+
+Full report: [`r3-2026-07-31.md`](r3-2026-07-31.md). Coordinator: Opus (Fable mode).
+10 reviewers, 3 vendors. **No round-two refutation panel was run** — coordinator
+verification substituted for it, and findings not independently verified are marked
+REPORTED in the report.
+
+Headline: four defects were found in *the branch's own new code* and fixed before the report
+closed — including that the same session's "zero-loss" scanner precision fixes were **not**
+zero-loss (`PASSWORD=jonathan.smith` and `password: Path-2026-Xy9z-secretvals` both passed
+on the branch and were caught on master). Regression tests now pin them.
+
+Six HIGH findings stand for 1.0.0; the two cheapest are documentation — a user-facing
+statement of what egresses by default and how to stop it (H4), and declaring the business
+context this ledger has never held (M9).
 
 ## Run 1 — 2026-07-29
 
