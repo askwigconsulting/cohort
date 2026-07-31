@@ -20,9 +20,10 @@ quick — security-sensitive code, an architecture bet, a pre-merge audit. Revie
 2. **Route by fit and cost.** Put the strongest models on the most ambiguous/high-stakes
    areas, the cheapest on mechanical ones — that is the whole point of a mixed panel.
    Claude tiers (Fable → Opus → Sonnet → Haiku) read the repo directly; **ChatGPT** joins
-   via `/consult-gpt` (read-only Codex); **Grok** via `cohort engine review` (an agentic
-   read-only loop that explores through gated tools) or `cohort engine consult` for a
-   bounded, bundled question. Keep **≤20 reviewers in flight**.
+   via `/consult-gpt` (read-only Codex); **Grok** via `cohort engine review` / `consult` —
+   the local bubblewrap-sandboxed grok CLI (real repo access) when grok-cli + bwrap are
+   installed, else the API-direct agentic loop through gated tools. Keep **≤20 reviewers in
+   flight**.
 3. **Round 1 finds; Round 2 refutes.** The improvement between rounds is the value: feed
    Round 1's synthesis back with a mandate to *break* each finding. Survives → CONFIRMED;
    fails → struck with the reason; overstated → REFINED. Then deepen and hunt what was

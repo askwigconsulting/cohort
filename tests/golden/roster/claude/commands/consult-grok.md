@@ -8,19 +8,24 @@ direct) for an independent opinion on a hard problem — a design choice, a tric
 a plan worth cross-examining. Grok joins the office on the office's terms: **advisory
 only**. It recommends; Claude weighs; the human decides.
 
-## 1. API-direct — returns text, never executes
+## 1. Prefers the local sandboxed CLI, falls back to API-direct
 
-Grok is reached API-direct, not through a local agent or shell tool. Package the
-context and the question, write the prompt to a temporary file, and call:
+When grok-cli **and** bubblewrap are installed, the consult runs through the local grok CLI
+inside a throwaway, bubblewrap-sandboxed worktree — so grok reads *this repo's committed
+files* to answer, not only the packaged prompt (real local context). Any writes it makes are
+confined to that worktree and discarded; it stays **read-only and advisory**. When
+grok-cli/bwrap isn't present, grok is reached **API-direct** instead — text only, no local
+access — with a printed note. Either way, package the context and the question, write the
+prompt to a temporary file, and call:
 
 ```
 cohort engine consult grok --prompt-file <f>
 ```
 
-Never pass the prompt as an inline shell argument — write it to a file first, then
-pass the file path. The engine returns **text only**: it has no write access to this
-repo and executes no local tools of its own. Model choice defaults to the `grok-4-latest`
-flagship.
+Never pass the prompt as an inline shell argument — write it to a file first, then pass the
+file path. The consult is **advisory** in both modes — it recommends, Claude weighs, the
+human decides — and nothing is written to this repo. Model choice defaults to the
+`grok-4-latest` flagship.
 
 ## 2. Egress — allowed by default, opt-out per repo
 

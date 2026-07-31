@@ -31,13 +31,19 @@ This is the invariant, not a preference:
   well-scoped, **haiku** mechanical.
 - **External engines (Grok, ChatGPT) never touch the main working tree.** They reach the
   code only inside an isolated, throwaway worktree, two ways:
-  - **Gated patch proposal** — `cohort engine propose <engine> [--agentic]` has the engine
-    return (or explore-then-return) a candidate diff that Cohort — never the engine —
-    parses and applies in a worktree behind the egress/secret/footprint gates. This is
-    Grok's path (grok-cli is broken against the live API and unsandboxed).
-  - **OS-sandboxed CLI doer** — `cohort engine work gpt` runs Codex's own agentic CLI under
-    its `workspace-write` sandbox, pinned to a fresh worktree, so every edit and test-run
-    it makes is OS-confined there. Codex only; an engine with no sandbox is refused.
+  - **OS-sandboxed CLI doer (preferred when the CLI is installed)** — the engine's own
+    agentic CLI edits a fresh worktree directly, with real file access, every write
+    OS/kernel-confined there: `cohort engine work gpt` runs Codex under its own
+    `workspace-write` sandbox;
+    `cohort engine work grok` runs grok-cli under a Cohort-imposed **bubblewrap** jail
+    (grok-cli has no sandbox of its own). An engine with no available sandbox is refused —
+    never run unconfined.
+  - **Gated patch proposal (API fallback)** — `cohort engine propose <engine> [--agentic]`
+    has the engine return (or explore-then-return) a candidate diff that Cohort — never the
+    engine — parses and applies in a worktree behind the egress/secret/footprint gates. This
+    is the API-direct path used when the local CLI isn't present; with grok-cli + bwrap
+    installed, `engine propose/review/consult grok` **prefer the sandboxed CLI automatically**
+    (local file access), and fall back to this API path with a printed note otherwise.
   Either way the coordinator verifies the diff and integrates, and it still passes the
   unchanged human PR review.
 

@@ -11,6 +11,22 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- **External engines prefer the local sandboxed CLI over the API-direct path.** When an
+  engine's CLI is installed, agents now run it locally (real, worktree-scoped repo access)
+  instead of packaging a payload to the vendor API — because a CLI-driven engine can read
+  and edit the actual repo, while the API only ever sees what's sent. Codex was already
+  CLI-first; grok was the gap. `cohort engine review / consult / propose grok` now prefer
+  the **bubblewrap-sandboxed local grok CLI** (a new read-only `run_grok_review` runs grok
+  in a throwaway worktree and keeps only its answer; propose emits the worktree diff,
+  never auto-applied) and fall back to the xAI API-direct path **with a printed note** when
+  `grok`/`bwrap` aren't present. The read and write paths share one gate helper, so both
+  run the identical egress/secret/wire-byte gates before grok — and the API path is
+  reachable only when the CLI is absent: a gate refusal on the CLI path never falls back to
+  the API. A `--footprint` violation on the CLI propose path now exits non-zero, matching
+  the API path's rejection. Security-reviewed; the "grok-cli is broken/unsandboxed"
+  guidance (a pre-0.10.0 leftover) is removed.
+
 ## [0.11.0] — 2026-07-30 · Generative brainstorming
 
 ### Added
