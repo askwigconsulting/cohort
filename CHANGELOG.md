@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-07-31 · CLI-first external engines
+
 ### Changed
 - **External engines prefer the local sandboxed CLI over the API-direct path.** When an
   engine's CLI is installed, agents now run it locally (real, worktree-scoped repo access)
@@ -564,7 +566,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/askwigconsulting/cohort/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/askwigconsulting/cohort/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/askwigconsulting/cohort/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/askwigconsulting/cohort/compare/v0.8.0...v0.9.0
