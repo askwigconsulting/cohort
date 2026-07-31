@@ -585,6 +585,12 @@ def reverse_full(manifest: Manifest, paths: CohortPaths, purge: bool = False) ->
         paths.backups.rmdir()
     if paths.manifest.exists():
         paths.manifest.unlink()
+    # The last-known-good copy persist() keeps beside the manifest is derived state, so a
+    # bare uninstall must take it too — otherwise it strands a lone file and ~/.cohort
+    # never becomes empty.
+    manifest_backup = paths.manifest.with_suffix(".json.bak")
+    if manifest_backup.exists():
+        manifest_backup.unlink()
     # Derived staging is a non-op artifact (written by compile, not a recorded
     # mkdir), so it is torn down here so bare uninstall leaves no ~/.cohort.
     if paths.compiled.exists():
