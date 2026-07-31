@@ -323,6 +323,12 @@ def test_grok_sandbox_argv_narrows_etc_to_tls_and_resolver(tmp_path):
     allowed = {
         "/etc/ssl", "/etc/resolv.conf", "/etc/hosts",
         "/etc/nsswitch.conf", "/etc/ca-certificates", "/etc/pki",
+        # Added deliberately (#244 follow-up), not by drift: on Fedora/RHEL the OpenSSL
+        # config is indirected through here, and node reads it at startup — without it the
+        # jailed CLI dies before running ("system library:process_include ...
+        # /etc/crypto-policies/back-ends/opensslcnf.config"). Non-secret policy config, and
+        # this allow-list exists precisely so a widening has to be argued for here.
+        "/etc/crypto-policies",
     }
     etc_binds = [
         argv[i + 1]
@@ -818,6 +824,80 @@ def test_run_grok_review_returns_stdout_and_discards_the_worktree(
     assert result.transcript == "the code looks fine"
     assert result.returncode == 0
     assert _worktree_count(tmp_path) == 1  # worktree discarded (read path keeps no diff)
+
+
+def _grok_turns(*contents: str) -> str:
+    """grok-cli's JSONL transcript shape."""
+    import json as _json
+
+    lines = [_json.dumps({"role": "user", "content": "review this"})]
+    lines += [_json.dumps({"role": "assistant", "content": c}) for c in contents]
+    return "\n".join(lines) + "\n"
+
+
+def test_vendor_binary_binds_expose_a_user_local_install_to_the_jail(tmp_path, monkeypatch):
+    """#244: the jail binds /usr but not the real home, so an `npm install -g --prefix
+    ~/.local` grok — the documented shape — was invisible and died at execvp. npm installs
+    the launcher as a symlink into a package tree, so binding the bin dir alone is not
+    enough."""
+    prefix = tmp_path / ".local"
+    bindir = prefix / "bin"
+    pkg = prefix / "lib" / "node_modules" / "@vendor" / "grok-cli" / "dist"
+    bindir.mkdir(parents=True)
+    pkg.mkdir(parents=True)
+    (pkg / "index.js").write_text("//", encoding="utf-8")
+    (bindir / "grok").symlink_to(pkg / "index.js")
+    monkeypatch.setattr(cli_doer.shutil, "which", lambda _n: str(bindir / "grok"))
+
+    binds = cli_doer._vendor_binary_binds("grok")
+
+    assert str(bindir) in binds                                    # launcher resolvable
+    assert str(prefix / "lib" / "node_modules") in binds           # and the code it runs
+    assert binds.count("--ro-bind") == 2                           # read-only, nothing more
+
+
+def test_vendor_binary_binds_skip_a_system_install_already_covered_by_usr(monkeypatch):
+    monkeypatch.setattr(cli_doer.shutil, "which", lambda _n: "/usr/bin/grok")
+    assert cli_doer._vendor_binary_binds("grok") == []
+
+
+def test_vendor_binary_binds_are_empty_when_the_cli_is_absent(monkeypatch):
+    monkeypatch.setattr(cli_doer.shutil, "which", lambda _n: None)
+    assert cli_doer._vendor_binary_binds("grok") == []
+
+
+def test_a_transcript_that_is_only_a_vendor_error_is_not_a_review(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """grok-cli exits 0 and reports API failures as an ordinary assistant turn, so a
+    well-formed transcript can contain nothing but `Sorry, I encountered an error: ... 410`.
+    Handing that to the user as their review is the silent-failure class again — reachable
+    once #244 made the CLI actually run."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    error = 'Sorry, I encountered an error: Grok API error: 410 "Live search is deprecated."'
+    _, spy = _spy_grok(stdout=_grok_turns(error), returncode=0)
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    with pytest.raises(cli_doer.DoerFailedError) as excinfo:
+        cli_doer.run_grok_review("review this", repo_root=tmp_path)
+    assert "410" in str(excinfo.value)  # the vendor's reason reaches the user
+
+
+def test_a_transcript_that_recovered_after_an_error_is_still_a_review(
+    tmp_path, monkeypatch, _grok_installed
+):
+    """Only an *entirely* failed run is a failure — a transient error followed by real
+    analysis is a review, and discarding it would throw away work already paid for."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    stdout = _grok_turns(
+        "Sorry, I encountered an error: Grok API error: 429 rate limited",
+        "The code looks fine; `value` is unused.",
+    )
+    _, spy = _spy_grok(stdout=stdout, returncode=0)
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+
+    result = cli_doer.run_grok_review("review this", repo_root=tmp_path)
+    assert "value` is unused" in result.analysis
 
 
 def test_run_grok_review_raises_when_the_cli_exits_nonzero(

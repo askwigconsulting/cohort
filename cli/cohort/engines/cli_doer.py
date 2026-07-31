@@ -55,6 +55,7 @@ the fallback contained write path.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import signal
@@ -629,6 +630,89 @@ def _assert_grok_sandbox_available() -> None:
         )
 
 
+# grok-cli reports an API failure as an ordinary assistant turn and still exits 0, so exit
+# status alone cannot distinguish "reviewed your repo" from "the vendor refused". This is its
+# error convention.
+_GROK_CLI_ERROR_PREFIX = "Sorry, I encountered an error:"
+
+
+def _grok_cli_error(stdout: str) -> str | None:
+    """Return grok-cli's error text if its transcript is *only* an error, else None.
+
+    grok-cli emits JSONL turns and exits 0 even when the API rejected the request — so a
+    review can come back as a well-formed transcript whose entire content is
+    ``Sorry, I encountered an error: ... 410 ...``. Without this the caller hands that string
+    to the user as their review (audit r3's silent-failure class, reachable again once #244
+    made the CLI actually run).
+
+    Requires *every* assistant turn to be an error, so a run that hit a transient problem and
+    then produced real analysis is still a review, not a failure.
+    """
+    assistant_turns: list[str] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            turn = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(turn, dict) and turn.get("role") == "assistant":
+            content = turn.get("content")
+            if isinstance(content, str) and content.strip():
+                assistant_turns.append(content.strip())
+    if not assistant_turns:
+        return None
+    if all(t.startswith(_GROK_CLI_ERROR_PREFIX) for t in assistant_turns):
+        return assistant_turns[-1][:300]
+    return None
+
+
+def _vendor_binary_binds(name: str) -> list[str]:
+    """Read-only bwrap binds making the vendor CLI ``name`` reachable inside the jail.
+
+    ``/usr`` is already bound, so a system-wide install needs nothing. The case this exists
+    for is the **documented** one: ``npm install -g --prefix ~/.local`` puts the launcher in
+    ``~/.local/bin`` and the code it executes in ``~/.local/lib/node_modules/…`` — both
+    inside the real home, which the jail deliberately does not mount. Binding only the
+    launcher is not enough, because npm installs it as a symlink into that package tree.
+
+    Returns binds for the launcher's directory and, when the resolved target lives elsewhere,
+    the nearest ``node_modules`` root above it. Everything already under ``/usr`` is skipped,
+    and a path that cannot be resolved contributes nothing — a missing bind fails loudly at
+    ``execvp`` rather than silently widening the jail.
+    """
+    exe = shutil.which(name)
+    if exe is None:
+        return []
+    binds: list[str] = []
+    seen: set[str] = set()
+
+    def add(path: Path) -> None:
+        resolved = str(path)
+        # /usr is bound wholesale already; re-binding a subpath of it is noise.
+        if resolved in seen or resolved.startswith("/usr/") or not path.is_dir():
+            return
+        seen.add(resolved)
+        binds.extend(["--ro-bind", resolved, resolved])
+
+    launcher = Path(exe)
+    add(launcher.parent)
+    try:
+        target = launcher.resolve()
+    except OSError:
+        return binds
+    # npm's launcher symlinks into a package tree; bind that tree's root, not the whole
+    # prefix, so sibling data under ~/.local stays invisible.
+    for parent in target.parents:
+        if parent.name == "node_modules":
+            add(parent)
+            break
+    else:
+        add(target.parent)
+    return binds
+
+
 def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> list[str]:
     """A bubblewrap invocation that runs ``inner`` with ``worktree`` as the ONLY
     persistent writable path.
@@ -681,6 +765,10 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
         "/etc/nsswitch.conf",
         "/etc/ca-certificates",
         "/etc/pki",
+        # Fedora/RHEL indirect the OpenSSL config through here; node reads it at startup and
+        # dies before running without it ("system library:process_include ...
+        # /etc/crypto-policies/back-ends/opensslcnf.config"). Non-secret policy config.
+        "/etc/crypto-policies",
     ):
         if Path(p).exists():
             argv += ["--ro-bind", p, p]
@@ -690,6 +778,12 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
         if Path(p).exists():
             argv += ["--ro-bind", p, p]
     argv += ["--tmpfs", str(sandbox_home)]  # ephemeral, writable HOME (grok-cli scratch)
+    # The grok binary itself must be reachable inside the jail. /usr is bound above, which
+    # covers a system-wide install — but the documented install prefix is ``~/.local``, and
+    # the real home is deliberately NOT mounted, so a user-local grok was invisible and the
+    # jail died with ``execvp grok: No such file or directory`` (#244). Bind exactly what it
+    # needs, read-only, and nothing more.
+    argv += _vendor_binary_binds("grok")
     grok_cfg = Path.home() / ".grok"
     if grok_cfg.is_dir():
         argv += ["--ro-bind", str(grok_cfg), str(sandbox_home / ".grok")]
@@ -927,6 +1021,11 @@ def run_grok_review(
             raise DoerFailedError(
                 f"the grok CLI produced no usable review (exit {proc.returncode}); "
                 f"stderr: {(proc.stderr or '').strip()[:500] or '<empty>'}"
+            )
+        vendor_error = _grok_cli_error(stdout)
+        if vendor_error:
+            raise DoerFailedError(
+                f"the grok CLI reported a vendor error instead of a review: {vendor_error}"
             )
         return GrokReviewResult(
             engine="grok",
