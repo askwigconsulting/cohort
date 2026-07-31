@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from cohort.engines import xai_agentic
+from cohort.engines import gates, xai_agentic
 from cohort.engines.xai_agentic import ReadOnlyToolbox, ToolCall, run_agentic
 from conftest import requires_symlinks
 
@@ -67,6 +67,54 @@ def test_refuses_content_that_trips_the_secret_scanner(repo: Path) -> None:
     out = ReadOnlyToolbox(repo).read_file("config.py")
     assert out.startswith("refused:")
     assert "wJalrXUtnFEMIK" not in out
+
+
+def _declare(repo: Path, value: str, rel: str) -> None:
+    """Commit a manifest entry declaring ``value`` in ``rel`` a known-fake fixture."""
+    manifest = repo / gates.SECRET_ALLOWLIST_PATH
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    with manifest.open("a", encoding="utf-8") as handle:
+        handle.write(f"{gates.secret_digest(value)}  {rel}\n")
+
+
+def test_declared_fixture_becomes_readable_by_the_reviewer(repo: Path) -> None:
+    """A repo whose fixtures are credential-shaped by construction — any secret scanner —
+    must not hide its own source from its own reviewer (#233)."""
+    _declare(repo, "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "config.py")
+    out = ReadOnlyToolbox(repo).read_file("config.py")
+    assert not out.startswith("refused:")
+    assert "AWS_SECRET_ACCESS_KEY" in out
+
+
+def test_declared_fixture_does_not_expose_a_different_secret_in_that_file(
+    repo: Path,
+) -> None:
+    """Declaring one fake value does not turn the file into a blind spot."""
+    _declare(repo, "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "config.py")
+    with (repo / "config.py").open("a", encoding="utf-8") as handle:
+        handle.write('GITHUB_TOKEN = "ghp_realLookingValue1234567890"\n')
+    out = ReadOnlyToolbox(repo).read_file("config.py")
+    assert out.startswith("refused:")
+    assert "ghp_realLookingValue" not in out
+
+
+def test_declaration_in_one_file_does_not_unlock_the_same_value_elsewhere(
+    repo: Path,
+) -> None:
+    _declare(repo, "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "config.py")
+    (repo / "other.py").write_text(
+        'AWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"\n',
+        encoding="utf-8",
+    )
+    assert ReadOnlyToolbox(repo).read_file("other.py").startswith("refused:")
+
+
+def test_grep_surfaces_declared_files_it_would_otherwise_skip_silently(repo: Path) -> None:
+    """grep skipping is *silent*, so an undeclared fixture makes a review look complete
+    while missing the file it was asked about."""
+    assert "config.py" not in ReadOnlyToolbox(repo).grep("AWS_SECRET_ACCESS_KEY")
+    _declare(repo, "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "config.py")
+    assert "config.py" in ReadOnlyToolbox(repo).grep("AWS_SECRET_ACCESS_KEY")
 
 
 @pytest.mark.parametrize("path", ["../outside.txt", "/etc/passwd", "src/../../escape"])

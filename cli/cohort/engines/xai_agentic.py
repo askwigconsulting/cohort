@@ -120,6 +120,31 @@ class ReadOnlyToolbox:
 
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
+        # The same declared, digest-bound suppressions the CLI-doer gate honours (#233).
+        # Without them a repo that legitimately contains credential-shaped fixtures —
+        # any secret scanner, this one included — hides its most security-relevant files
+        # from its own reviewer: `read_file` refuses them and `grep` skips them silently,
+        # so the review looks complete while missing exactly what it was asked to check.
+        #
+        # Read from the live tree (a reviewer has no detached checkout to read from).
+        # Widening this requires writing the *exact digest* of the value to be exposed,
+        # which presupposes already knowing it — so it grants no read a local writer did
+        # not already have.
+        try:
+            manifest = (self.root / gates.SECRET_ALLOWLIST_PATH).read_text(
+                encoding="utf-8"
+            )
+        except (OSError, UnicodeDecodeError):
+            manifest = ""
+        self._secret_allowlist = gates.parse_secret_allowlist(manifest)
+
+    def _undeclared_secret_labels(self, rel: str, text: str) -> list[str]:
+        """Labels for credential-shaped content in ``text`` that ``rel`` has not declared."""
+        findings = gates.scan_for_secret_findings(text)
+        if not findings:
+            return []
+        remaining = gates.unsuppressed_findings(findings, rel, self._secret_allowlist)
+        return sorted({finding.label for finding in remaining})
 
     # -- path policy (fail-closed) ------------------------------------------ #
 
@@ -210,12 +235,13 @@ class ReadOnlyToolbox:
             text = raw[:_MAX_READ_BYTES].decode("utf-8")
         except UnicodeDecodeError:
             return f"refused: {path!r} is not UTF-8 text (binary file)"
-        # Content-level egress gate: a secret in any file, expected or not, is refused.
-        labels = gates.scan_for_secrets(text)
+        # Content-level egress gate: a secret in any file, expected or not, is refused —
+        # unless the repo has declared that exact value fake in its committed manifest.
+        labels = self._undeclared_secret_labels(self._rel(target), text)
         if labels:
             return (
                 f"refused: {path!r} contains credential-shaped content "
-                f"({', '.join(sorted(set(labels)))}); not returned"
+                f"({', '.join(labels)}); not returned"
             )
         lines = text.splitlines()
         start = max(1, start_line)
@@ -247,7 +273,7 @@ class ReadOnlyToolbox:
                 content = file.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if gates.scan_for_secrets(content):
+            if self._undeclared_secret_labels(rel, content):
                 continue  # never surface a line from a secret-bearing file
             for lineno, line in enumerate(content.splitlines(), 1):
                 if pattern in line:
