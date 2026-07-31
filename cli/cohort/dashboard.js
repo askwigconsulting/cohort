@@ -13,7 +13,14 @@ async function api(path, opts = {}) {
     headers: { "X-Cohort-Token": TOKEN, "Content-Type": "application/json", ...(opts.headers || {}) },
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+  if (!res.ok) {
+    // Carry the status so callers can tell a 401 (stale token after a server
+    // restart) from a generic failure — the live chip / poll-health logic keys
+    // off it (HIGH-3).
+    const err = new Error(body.error || ("HTTP " + res.status));
+    err.status = res.status;
+    throw err;
+  }
   return body;
 }
 function toast(msg, cls) {
@@ -40,6 +47,10 @@ function confirmDlg(title, body, yesLabel) {
 async function runAction(btn, action, args, okMsg) {
   if (PENDING) return null;
   PENDING = action;
+  // The "under the hood" wire marches only while an action that actually flows
+  // through the compile pipeline is pending (Part B) — recompile/update.
+  const flows = action === "recompile" || action === "update";
+  if (flows) document.body.classList.add("action-pending");
   if (btn) { btn.disabled = true; btn.classList.add("busy"); }
   try {
     const a = { ...(args || {}) }; if (FOCUS != null) a.project = FOCUS;
@@ -49,10 +60,14 @@ async function runAction(btn, action, args, okMsg) {
     await refresh();
     return report;
   } catch (e) {
-    toast(e.message, "err");
+    // A 401 here means the token is stale (dashboard restarted) — surface it the
+    // same way poll health does, not as a raw "missing or bad token".
+    if (e && e.status === 401) markDisconnected();
+    else toast(e.message, "err");
     return null;
   } finally {
     PENDING = null;
+    if (flows) document.body.classList.remove("action-pending");
     if (btn) { btn.disabled = false; btn.classList.remove("busy"); }
   }
 }
@@ -79,15 +94,36 @@ function kindTag(kind) {
   t.className = "tag k-" + kind; t.textContent = km.tag;
   return t;
 }
-/* the short metadata chips shown on a card, per kind */
+/* the short metadata chips shown on a card, per kind. Each bit is
+   { text, title?, warn? } — role bits (doer/advisor/router) carry an
+   explanatory title so a user who hasn't read the docs knows what they mean;
+   the doer bit is flagged `warn` so it renders in the prominent amber chip
+   style (it's the most trust-relevant signal on the card). */
 function metaBits(it) {
   const bits = [];
-  if (it.kind === "agent") bits.push(
-    it.advisory === false ? "⚡ doer" : (it.topology === "generalist" ? "triage" : "advisor"));
-  if (it.kind === "hook" && it.event) bits.push(it.event);
-  if (it.department) bits.push(it.department);
-  for (const t of (it.targets || [])) if (t !== "all") bits.push(t);
+  if (it.kind === "agent") {
+    if (it.advisory === false) {
+      bits.push({ text: "⚡ doer", title: "Can make changes (gated).", warn: true });
+    } else if (it.topology === "generalist") {
+      bits.push({ text: "router", title: "Routes your request to the right specialist." });
+    } else {
+      bits.push({ text: "advisor", title: "Read-only — recommends, never writes." });
+    }
+  }
+  if (it.kind === "hook" && it.event) bits.push({ text: it.event });
+  if (it.department) bits.push({ text: it.department });
+  for (const t of (it.targets || [])) if (t !== "all") bits.push({ text: t });
   return bits;
+}
+/* Builds a .meta chip span from a metaBits() entry (or a plain string, for
+   callers that mix in their own labels). */
+function metaChip(bit, extraClass) {
+  const b = typeof bit === "string" ? { text: bit } : bit;
+  const c = document.createElement("span");
+  c.className = "meta" + (b.warn ? " warn" : "") + (extraClass ? " " + extraClass : "");
+  c.textContent = b.text;
+  if (b.title) c.title = b.title;
+  return c;
 }
 /* A project memory travels with the repo: committing it hands standing
    instructions to everyone who clones. Show whether that change is reviewable
@@ -124,6 +160,9 @@ function artifactCard(it) {
   // and a button-in-a-button is invalid ARIA. tabIndex + the Enter/Space keydown
   // handler below keep it keyboard-activatable without claiming a button role.
   el.tabIndex = 0;
+  // Stable identity so keyboard focus survives a poll re-render (HIGH-2): the
+  // card is destroyed+rebuilt every poll, so focus is restored by matching this.
+  el.dataset.key = "art:" + it.layer + ":" + it.kind + ":" + it.name;
   el.title = "View " + it.kind + " · " + it.name;
 
   const head = document.createElement("div"); head.className = "art-head";
@@ -136,15 +175,17 @@ function artifactCard(it) {
   desc.textContent = it.description || ""; el.appendChild(desc);
 
   const foot = document.createElement("div"); foot.className = "art-foot";
-  for (const b of metaBits(it)) {
-    const chip = document.createElement("span"); chip.className = "meta"; chip.textContent = b;
-    foot.appendChild(chip);
-  }
+  for (const b of metaBits(it)) foot.appendChild(metaChip(b));
   if (it.active === false) {
-    const c = document.createElement("span"); c.className = "meta warn"; c.textContent = "not on roster"; foot.appendChild(c);
+    const c = metaChip({
+      text: "inactive",
+      title: "Not currently active in sessions — enable it to place it.",
+    });
+    foot.appendChild(c);
   }
   if (it.overrides) {
-    const c = document.createElement("span"); c.className = "meta"; c.textContent = "override"; foot.appendChild(c);
+    const c = metaChip({ text: "override", title: "Replaces a same-named agent from a broader scope." });
+    foot.appendChild(c);
   }
   const g = gitChip(it);
   if (g) foot.appendChild(g);
@@ -234,10 +275,15 @@ async function openDetail(it) {
   const meta = $("dt-meta"); meta.textContent = "";
   meta.appendChild(kindTag(it.kind));
   const LAYER_LABEL = { office: "COMPANY", my: "YOU", project: "PROJECT" };
-  for (const text of [LAYER_LABEL[it.layer] || it.layer].concat(metaBits(it))) {
-    const c = document.createElement("span"); c.className = "meta"; c.textContent = text; meta.appendChild(c);
+  for (const bit of [{ text: LAYER_LABEL[it.layer] || it.layer }].concat(metaBits(it))) {
+    meta.appendChild(metaChip(bit));
   }
-  if (it.active === false) { const c = document.createElement("span"); c.className = "meta warn"; c.textContent = "not on roster"; meta.appendChild(c); }
+  if (it.active === false) {
+    meta.appendChild(metaChip({
+      text: "inactive",
+      title: "Not currently active in sessions — enable it to place it.",
+    }));
+  }
   $("dt-desc").textContent = it.description || "";
   $("dt-body").textContent = "Loading…";
   const editBtn = $("dt-edit");
@@ -300,6 +346,11 @@ function renderProject(p) {
 }
 function renderProjectSwitcher(s) {
   const sel = $("project-switcher");
+  // Don't rebuild the <select>'s options while the user has it open/focused: a
+  // poll re-render would collapse the dropdown and reset the selection (HIGH-2).
+  // Its options only change when a project is added/removed, which can't happen
+  // while the menu is open.
+  if (document.activeElement === sel) return;
   const projects = s.projects || [];
   if (!projects.length) { sel.hidden = true; return; }
   sel.hidden = false;
@@ -333,6 +384,7 @@ function renderProjectsOverview(s) {
     const el = document.createElement("div");
     el.className = "proj-card" + (focused ? " focused" : "");
     el.tabIndex = 0; el.setAttribute("role", "button");
+    el.dataset.key = "proj:" + p.index;  // stable identity for focus restore (HIGH-2)
     el.title = (focused ? "Managing " : "Manage ") + p.name;
 
     const head = document.createElement("div"); head.className = "proj-head";
@@ -351,7 +403,8 @@ function renderProjectsOverview(s) {
     spec.textContent = p.specialists + " specialist" + (p.specialists === 1 ? "" : "s"); foot.appendChild(spec);
     const wire = document.createElement("span");
     wire.className = "meta" + (p.wiring === "present" ? "" : " warn");
-    wire.textContent = p.wiring === "present" ? "wired" : ("wiring " + p.wiring); foot.appendChild(wire);
+    wire.textContent = p.wiring === "present" ? "connected to this repo" : "not connected — Re-init";
+    foot.appendChild(wire);
     const cm = p.claude_memory || { count: 0, updated: null };
     const mem = document.createElement("span"); mem.className = "meta";
     mem.textContent = "🧠 " + cm.count + " memor" + (cm.count === 1 ? "y" : "ies");
@@ -435,40 +488,112 @@ function renderScorecards(s) {
       spark.appendChild(t);
     } else {
       for (const day of trend) {
+        // Redundant, non-color sign encoding (MED-1) with a true zero baseline:
+        // the cell is split by the mid-line (.sparkline::after); a positive bar
+        // sits flush on it and grows up, a negative bar sits flush on it and
+        // grows down — see .sparkline/.spark-cell/.spark-bar in dashboard.html.
+        const cell = document.createElement("span"); cell.className = "spark-cell";
         const bar = document.createElement("span"); bar.className = "spark-bar";
         const dayNet = day.up - day.down;
-        bar.style.height = Math.min(24, 4 + Math.abs(dayNet) * 4) + "px";
+        bar.style.height = Math.min(11, 3 + Math.abs(dayNet) * 3) + "px";
         bar.style.background = dayNet >= 0 ? "var(--ok)" : "var(--bad)";
-        // Redundant, non-color sign encoding (MED-1): positive days sit on the
-        // baseline and grow upward; negative days hang from the top and grow
-        // downward — see .sparkline/.spark-bar in dashboard.html.
-        bar.style.alignSelf = dayNet >= 0 ? "flex-end" : "flex-start";
+        if (dayNet >= 0) bar.style.bottom = "50%"; else bar.style.top = "50%";
         const sign = dayNet > 0 ? "+" : dayNet < 0 ? "−" : "";
         const label = "day " + sign + Math.abs(dayNet) + " net";
-        bar.title = label;
-        bar.setAttribute("aria-label", label);
-        bar.setAttribute("role", "listitem");
-        spark.appendChild(bar);
+        cell.title = label;
+        cell.setAttribute("aria-label", label);
+        cell.setAttribute("role", "listitem");
+        cell.appendChild(bar);
+        spark.appendChild(cell);
       }
     }
     el.appendChild(spark);
     holder.appendChild(el);
   }
 }
+function scrollToId(id) {
+  const el = $(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+/* The "needs attention" strip (Part A): the one place that answers "is anything
+   wrong / what do I do?". It re-surfaces EXISTING state fields — nothing is
+   computed here that the server didn't already send — hoisting ONLY the non-green
+   states, each linking to its section or its fix action. All-green collapses to a
+   quiet "all good" line. */
+function renderAttention(s) {
+  const strip = $("attention");
+  strip.textContent = "";
+  const g = s.global || {};
+  const items = [];  // [icon, text, onClick]
+  const src = g.source || {};
+  if (!src.ok) items.push(["⚠", "Source broken — relink", () => scrollToId("under-the-hood")]);
+  const parity = Object.values(g.parity || {});
+  if (parity.length === 0) {
+    items.push(["⚙", "Office not compiled — recompile", () => $("btn-recompile").click()]);
+  } else if (!parity.every((p) => p.ok !== false)) {
+    items.push(["⚙", "IDE output behind — recompile", () => $("btn-recompile").click()]);
+  }
+  const unmanaged = (g.unmanaged || []).length;
+  if (unmanaged) {
+    items.push(["📄", unmanaged + " unmanaged file" + (unmanaged === 1 ? "" : "s") + " in ~/.claude",
+      () => scrollToId("under-the-hood")]);
+  }
+  const behind = (g.update || {}).behind || 0;
+  if (behind > 0) {
+    items.push(["▲", behind + " commit" + (behind === 1 ? "" : "s") + " behind — update", () => $("btn-update").click()]);
+  }
+  const proj = s.project || {};
+  if ((proj.staleness || {}).stale) items.push(["⏱", "Context stale — snapshot", () => $("btn-snapshot").click()]);
+  const low = ((proj.signals || {}).low_rated_agents || []).length;
+  if (low) items.push(["👎", low + " low-rated agent" + (low === 1 ? "" : "s"), () => scrollToId("scorecards-section")]);
+
+  if (!items.length) {
+    strip.className = "attention ok";
+    const ok = document.createElement("span"); ok.className = "attn-ok";
+    ok.textContent = "✓ All good — nothing needs attention.";
+    strip.appendChild(ok);
+    return;
+  }
+  strip.className = "attention";
+  for (const [icon, text, onClick] of items) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "attn-item"; b.textContent = icon + " " + text;
+    b.addEventListener("click", onClick);
+    strip.appendChild(b);
+  }
+}
+/* Keyboard focus survives a poll re-render (HIGH-2): capture the focused card's
+   stable data-key before the sub-renders wipe+rebuild every holder, then restore
+   focus to the matching rebuilt element afterwards. Static controls (buttons, the
+   switcher) are never removed, so they keep focus on their own. */
+function activeCardKey() {
+  const el = document.activeElement;
+  return el && el.dataset ? (el.dataset.key || null) : null;
+}
+function restoreCardFocus(key) {
+  if (!key) return;
+  let el = null;
+  // Keys are built from safe tokens (layer/kind/slug/index), but stay defensive:
+  // a bad selector or a card that no longer exists must never throw here.
+  try { el = document.querySelector('[data-key="' + key + '"]'); } catch (_) { el = null; }
+  if (el && typeof el.focus === "function") el.focus({ preventScroll: true });
+}
 function render(s) {
+  const focusKey = activeCardKey();
   STATE = s;
   $("version").textContent = "v" + (s.version || "?");
   const g = s.global || {};
+  const roster = g.roster || { count: 0 };  // degraded/partial state must never throw (HIGH-1)
   const src = g.source || {};
   setDot("st-source", src.ok ? "" : "bad", src.ok ? (src.linked ? "source linked" : "source ok") : "source broken — relink");
   const parity = Object.values(g.parity || {});
   const parityOk = parity.every((p) => p.ok !== false);
   setDot("st-parity", parity.length === 0 ? "warn" : parityOk ? "" : "warn",
-    parity.length === 0 ? "not compiled" : parityOk ? "renderers in parity" : "parity gap");
-  setDot("st-placed", g.roster.count ? "" : "warn", g.roster.count + " agents placed");
+    parity.length === 0 ? "not compiled yet — recompile" : parityOk ? "IDEs match your source" : "IDE output is behind your source — recompile");
+  setDot("st-placed", roster.count ? "" : "warn", roster.count + " agents placed");
   const wiring = (s.project && s.project.wiring) || null;
   setDot("st-wiring", !wiring ? "warn" : wiring.state === "present" ? "" : "warn",
-    !wiring ? "no project here" : wiring.state === "present" ? "project wired" : "wiring " + wiring.state + " — re-init");
+    !wiring ? "no project here" : wiring.state === "present" ? "connected to this repo" : "not connected — Re-init");
   const up = g.update || {};
   const behind = up.behind || 0;
   $("behind").hidden = behind <= 0;
@@ -480,16 +605,70 @@ function render(s) {
   $("pipe-sub").textContent = unmanaged
     ? unmanaged + " unmanaged file" + (unmanaged === 1 ? "" : "s") + " in ~/.claude — run cohort status for adopt hints"
     : "how your office actually works";
+  renderAttention(s);
   renderProjectSwitcher(s);
   renderProjectsOverview(s);
   renderCrossProjectActivity(s);
   renderScorecards(s);
   renderLevels();
   renderProject(s.project || null);
+  restoreCardFocus(focusKey);
 }
+/* ---------- poll health + degraded-state banner ---------- */
+// The token is per-launch; after a dashboard restart an old tab's polls 401. Tie
+// the header "live" chip to poll health (HIGH-3): a 401 or repeated failures flip
+// it to "disconnected — reload"; the next success restores it. And a degraded
+// server response (200 + {error, degraded}) shows a persistent banner and keeps
+// the last good render, rather than throwing/blanking (HIGH-1).
+let POLL_FAILS = 0, DISCONNECTED = false;
+const POLL_FAIL_LIMIT = 3;
+function setLive(connected) {
+  const chip = $("live-chip");
+  if (connected) { chip.classList.remove("down"); $("live-label").textContent = "live"; chip.title = "Live — polling for updates"; }
+  else { chip.classList.add("down"); $("live-label").textContent = "disconnected — reload"; chip.title = "Lost contact with the dashboard — click to reload"; }
+}
+function markConnected() {
+  POLL_FAILS = 0;
+  if (DISCONNECTED) { DISCONNECTED = false; setLive(true); }
+}
+function markDisconnected() {
+  if (DISCONNECTED) return;  // flip + toast once, until a poll next succeeds
+  DISCONNECTED = true;
+  setLive(false);
+  toast("Dashboard was restarted — reload this page", "err");
+}
+function notePollFailure(e) {
+  POLL_FAILS += 1;
+  if ((e && e.status === 401) || POLL_FAILS >= POLL_FAIL_LIMIT) markDisconnected();
+  console.error("refresh failed:", e);
+}
+function showBanner(msg) {
+  const b = $("error-banner");
+  b.textContent = "⚠ " + (msg || "The dashboard hit an error") + " — check the terminal, then reload this page.";
+  b.hidden = false;
+}
+function hideBanner() { $("error-banner").hidden = true; }
 async function refresh() {
-  try { render(await api("/api/state" + (FOCUS != null ? "?project=" + FOCUS : ""))); }
-  catch (e) { console.error("refresh failed:", e); } // transient poll failure or render bug
+  let s;
+  try {
+    s = await api("/api/state" + (FOCUS != null ? "?project=" + FOCUS : ""));
+  } catch (e) {
+    notePollFailure(e);  // network/401 — the chip reflects it; keep the last render
+    return;
+  }
+  markConnected();  // the server responded — connection is healthy
+  // Degraded response (#226 server fix returns 200 + {error, degraded}): show a
+  // persistent banner and keep the last good render instead of throwing on the
+  // missing global/roster (HIGH-1).
+  if (s && (s.degraded || s.error)) { showBanner(s.error); return; }
+  hideBanner();
+  try { render(s); }
+  catch (e) {
+    // Belt-and-braces: render() is guarded, but any residual render bug must
+    // surface as a banner, never a silent blank page.
+    console.error("render failed:", e);
+    showBanner("The dashboard hit a rendering error");
+  }
 }
 
 /* ---------- wiring ---------- */
@@ -525,10 +704,10 @@ function openCreate(level) {
   if (CREATE_LEVEL === "project") {
     const p = (STATE && STATE.project && STATE.project.repo) ? STATE.project.repo.split("/").slice(-1)[0] : "this project";
     $("cr-title").textContent = "Create in " + p;
-    $("cr-hint").textContent = "Authors it in this project (.cohort/canonical/) so it travels with the repo, and recompiles. Advisory read-only where it applies.";
+    $("cr-hint").textContent = "Authors it in this project (.cohort/canonical/) so it travels with the repo, and recompiles. New agents are read-only advisors by default.";
   } else {
     $("cr-title").textContent = "Create an artifact";
-    $("cr-hint").textContent = "Authors it in my office (~/.cohort/my) and recompiles — updates and proposals never touch it. Advisory read-only where it applies.";
+    $("cr-hint").textContent = "Authors it in my office (~/.cohort/my) and recompiles — updates and proposals never touch it. New agents are read-only advisors by default.";
   }
   syncCreateKind();
   $("dlg-create").showModal();
@@ -583,5 +762,7 @@ $("edit-form").addEventListener("submit", async (e) => {
 });
 
 $("project-switcher").addEventListener("change", (e) => { FOCUS = e.target.value; refresh(); });
+// When disconnected, the live chip is the reload affordance (HIGH-3).
+$("live-chip").addEventListener("click", () => { if (DISCONNECTED) location.reload(); });
 refresh();
 setInterval(() => { if (!PENDING) refresh(); }, 6000);
