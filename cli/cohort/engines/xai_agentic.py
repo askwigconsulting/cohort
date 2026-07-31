@@ -50,6 +50,7 @@ from cohort.engines.xai import (
     EngineUnavailableError,
     _RETRY_BACKOFF_SECONDS,
     _build_request,
+    _read_bounded,
     _resolve_api_key,
     _retry_after_seconds,
 )
@@ -449,7 +450,7 @@ def _post_chat(spec: EngineSpec, key: str, body: dict[str, Any]) -> dict[str, An
             with urllib.request.urlopen(
                 _build_request(endpoint, key, body), timeout=_TIMEOUT
             ) as resp:
-                raw = resp.read()
+                raw = _read_bounded(resp)
             return json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):

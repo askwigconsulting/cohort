@@ -34,8 +34,10 @@ class _FakeResponse:
         self._body = json.dumps(payload).encode("utf-8")
         self.status = status
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int | None = None) -> bytes:
+        # Mirrors the real HTTPResponse signature: the client reads a bounded number of
+        # bytes (a size-less read would let a hostile endpoint buffer without limit).
+        return self._body if size is None else self._body[:size]
 
     def __enter__(self) -> "_FakeResponse":
         return self

@@ -35,6 +35,30 @@ _MAX_RETRY_AFTER_SECONDS: float = 30.0
 # to implement a full retry schedule. The 429 path uses ``Retry-After`` instead.
 _RETRY_BACKOFF_SECONDS: float = 1.0
 
+# A hard client-side ceiling on the response body we will buffer. `max_tokens` is a
+# *request hint* the server may ignore, not a resource bound — a misbehaving, misconfigured
+# or hostile endpoint can stream a body far larger than any completion, and `response.read()`
+# with no argument buffers all of it into memory on a path the user is waiting on
+# (audit r3, M3). 32MB is orders of magnitude above any legitimate completion while still
+# bounding the damage. Reading one byte past the cap is what distinguishes "at the limit"
+# from "over it", so the check is unambiguous.
+_MAX_RESPONSE_BYTES: int = 32_000_000
+
+
+
+def _read_bounded(response: Any, limit: int = _MAX_RESPONSE_BYTES) -> bytes:
+    """Read at most ``limit`` bytes from ``response``, refusing anything larger.
+
+    Reads ``limit + 1`` so an over-cap body is detected without buffering it whole.
+    """
+    raw = response.read(limit + 1)
+    if len(raw) > limit:
+        raise ResponseTooLargeError(
+            f"the engine returned more than {limit} bytes; refusing to buffer it. "
+            "This is a client-side resource bound, not a model limit."
+        )
+    return raw
+
 
 class EngineError(Exception):
     """Base class for all xAI client failures."""
@@ -50,6 +74,10 @@ class EngineUnavailableError(EngineError):
 
 class EnginePayloadError(EngineError):
     """The prompt exceeds the configured byte cap (raised before any network I/O)."""
+
+
+class ResponseTooLargeError(EngineError):
+    """The endpoint returned more data than the client will buffer."""
 
 
 def estimate_tokens(text: str) -> int:
@@ -197,7 +225,7 @@ def consult(
     while True:
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = response.read()
+                raw = _read_bounded(response)
             return _parse_assistant_text(raw)
         except urllib.error.HTTPError as exc:
             status = exc.code

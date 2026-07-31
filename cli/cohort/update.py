@@ -456,6 +456,10 @@ class UpdateResult:
     pip_reinstalled: bool = False
     recompiled_ides: list = field(default_factory=list)
     detail: str = ""
+    # False when the update's rollback point could not be written to the history ledger.
+    # The update still succeeded, but a bare `cohort rollback` will have nothing to return
+    # to, so the caller warns rather than letting the user discover it at the worst moment.
+    rollback_point_recorded: bool = True
 
     @property
     def ok(self) -> bool:
@@ -519,9 +523,20 @@ def _history_path(home: Path) -> Path:
     return CohortPaths(home).state / "update-history.json"
 
 
-def _record_update(home: Path, from_sha: str, to_sha: str, action: str, *, at: str) -> None:
-    """Append one clone-move to the history ledger (kept to the last 20). Advisory
-    state only — a write failure never fails the update/rollback itself."""
+def _record_update(home: Path, from_sha: str, to_sha: str, action: str, *, at: str) -> bool:
+    """Append one clone-move to the history ledger (kept to the last 20).
+
+    A write failure never fails the update itself — the clone has already moved, and
+    refusing after the fact would leave a worse state than proceeding. But it is no longer
+    *silent*: the return value says whether the entry was recorded, so the caller can warn
+    (audit r3, M8). ``cohort rollback`` presents itself as the inverse of ``cohort update``,
+    and without this entry a bare rollback reports "no recorded update to roll back" —
+    the advertised one-shot undo is simply gone, and the user finds out only when they
+    reach for it.
+
+    Returns:
+        True if the ledger now records this move; False if it could not be written.
+    """
     import json
 
     path = _history_path(home)
@@ -535,7 +550,8 @@ def _record_update(home: Path, from_sha: str, to_sha: str, action: str, *, at: s
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"entries": entries[-20:]}, indent=2), encoding="utf-8")
     except OSError:
-        pass
+        return False
+    return True
 
 
 def _last_rollback_point(home: Path) -> Optional[str]:
@@ -771,9 +787,12 @@ def do_update(
         )
     # The clone moved — record the rollback point before any downstream step.
     _, post_sha = _git(source, "rev-parse", "HEAD")
+    rollback_point_recorded = True
     if pre_sha and post_sha:
-        _record_update(home, pre_sha, post_sha, "update",
-                       at=datetime.now(timezone.utc).isoformat())
+        rollback_point_recorded = _record_update(
+            home, pre_sha, post_sha, "update",
+            at=datetime.now(timezone.utc).isoformat(),
+        )
 
     # F3: record the gated-office artifacts this pull introduced into the office
     # quarantine store BEFORE recompiling, so the recompile below withholds any
@@ -828,6 +847,7 @@ def do_update(
         status="updated", upstream=upstream, behind=behind, current=current, target=target,
         commits=commits, changed_files=changed_files, pip_reinstalled=pip_reinstalled,
         recompiled_ides=recompiled, detail=detail,
+        rollback_point_recorded=rollback_point_recorded,
     )
 
 

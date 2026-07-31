@@ -304,7 +304,10 @@ def test_approve_requires_a_name_or_all(home):
 
 def test_pulled_agent_is_not_quarantined(home, tmp_path):
     remote = _bare_remote(tmp_path)
-    _write_personal(home, "pulled-agent")  # an agent, not a gated kind
+    # `_write_personal` writes a body with no frontmatter, so it renders as no gated kind
+    # at all. NOT "an agent is not gated" — `agent` IS in GATED_KINDS; the old comment here
+    # asserted the opposite and sent audit r3 hunting a runtime bug that does not exist.
+    _write_personal(home, "pulled-agent")
     do_my_sync(home, remote=str(remote))
     home_b = tmp_path / "home-b"
     home_b.mkdir()

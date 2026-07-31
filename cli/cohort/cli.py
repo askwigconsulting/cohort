@@ -33,6 +33,7 @@ def _force_utf8_io() -> None:
 _force_utf8_io()
 
 import json as _json
+import os
 import re
 import time
 from pathlib import Path
@@ -700,6 +701,15 @@ def _print_update_human(result: UpdateResult) -> None:
     if result.status == "dry_run":
         typer.echo("Dry run — nothing changed. Re-run `cohort update` to apply.")
         return
+    if not result.rollback_point_recorded:
+        # The update landed, but the undo did not get recorded. Say so now rather than
+        # letting `cohort rollback` report "no recorded update" at the moment it is needed.
+        typer.echo(
+            "⚠ could not write the update history, so a bare `cohort rollback` has no "
+            "point to return to. Roll back with an explicit ref instead: "
+            f"`cohort rollback --to {result.current or '<previous-sha>'}`.",
+            err=True,
+        )
     if result.pip_reinstalled:
         typer.echo("Reinstalled the cohort package (pyproject.toml changed).")
     if result.recompiled_ides:
@@ -1208,16 +1218,38 @@ def _next_transcript_path(repo_root: Path, override: Optional[Path]) -> Path:
     An explicit ``override`` wins. Otherwise the next zero-padded index in the
     ``.cohort/engine-transcripts`` directory is chosen — deterministic (no wall-clock),
     so a caller/test controls the name and successive runs never collide.
+
+    The slot is **reserved atomically** (``O_CREAT | O_EXCL``) rather than merely computed.
+    Scanning for the highest index and returning ``highest + 1`` is a check-then-act race:
+    two concurrent reviews both see the same highest, both pick the same name, and the
+    second silently overwrites the first (audit r3, M6 — observed for real, five parallel
+    reviews produced four transcripts). These files are the record of what was sent to a
+    vendor, so losing one loses the evidence exactly when the fan-out is widest.
+
+    An empty reserved file left behind by a run that then fails is the deliberate
+    trade: a stray empty transcript is recoverable, a silently overwritten one is not.
     """
     if override is not None:
         return override
     tdir = repo_root / ".cohort" / "engine-transcripts"
+    tdir.mkdir(parents=True, exist_ok=True)
     highest = 0
-    if tdir.is_dir():
-        for existing in tdir.glob("*.jsonl"):
-            if existing.stem.isdigit():
-                highest = max(highest, int(existing.stem))
-    return tdir / f"{highest + 1:04d}.jsonl"
+    for existing in tdir.glob("*.jsonl"):
+        if existing.stem.isdigit():
+            highest = max(highest, int(existing.stem))
+    candidate = highest + 1
+    while True:
+        path = tdir / f"{candidate:04d}.jsonl"
+        try:
+            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+            return path
+        except FileExistsError:
+            # Another run took this slot between our scan and our create; step past it.
+            candidate += 1
+        except OSError:
+            # Cannot reserve (read-only dir, permissions). Fall back to the computed name
+            # rather than failing the review over its transcript.
+            return path
 
 
 @engine_app.command("review")
