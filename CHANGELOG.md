@@ -11,6 +11,36 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-31 · Dashboard usability
+
+### Changed
+- **Dashboard UI/UX overhaul (from a multi-vendor UX `/scout`).** The dashboard now
+  answers "is anything wrong / what do I do?" at a glance: a **"needs attention" strip**
+  under the header surfaces only the non-green states (source broken, IDE output behind,
+  unmanaged files, commits behind, stale context, low-rated agents), each linking to its
+  fix, and collapses to a quiet line when all's well. The static "Under the hood" explainer
+  is demoted to a closed disclosure at the bottom (its "wire" now animates only during a
+  pending recompile/update), and sections are reordered to the company/you/project mental
+  model with telemetry last. Status vocabulary is now plain and actionable — `parity` →
+  **compiled** ("IDE output is behind your source — recompile"), `wiring` → **connected**,
+  `not on roster` → **inactive** — with explanatory role-chip tooltips (advisor / doer /
+  router) and a plain-English Recompile tooltip. The trust-critical `⚡ doer` flag is now
+  amber and legible; kind-tag colours no longer collide with the green/amber/red state
+  palette; the project switcher looks clickable; the sparkline grows from a true zero
+  baseline; dialog dropdowns are themed.
+
+### Fixed
+- **Dashboard no longer blanks on a degraded response** (a regression from 0.13.0's
+  `/api/state` failure-isolation): the client now detects the degraded 200, shows a
+  persistent error banner, and keeps the last good view instead of throwing on the missing
+  roster and rendering a blank page.
+- **Keyboard focus and an open project switcher survive the 6-second poll** — the auto-refresh
+  no longer dumps a keyboard user back to the top of the page every poll (it was silently
+  undercutting the accessibility work).
+- **The dashboard "live" indicator now reflects real poll health** — after a server restart
+  (or any 401 / repeated poll failure) it flips to "disconnected — reload" with a one-time
+  toast, instead of pulsing green while every request silently fails.
+
 ## [0.13.0] — 2026-07-31 · Sandbox & dashboard hardening
 
 ### Security
@@ -604,7 +634,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/askwigconsulting/cohort/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/askwigconsulting/cohort/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/askwigconsulting/cohort/compare/v0.10.0...v0.11.0
