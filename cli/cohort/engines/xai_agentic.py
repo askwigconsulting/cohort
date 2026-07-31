@@ -131,10 +131,23 @@ class ReadOnlyToolbox:
         # writer already had" conflated local *read* access with sending bytes to a vendor.
         # It mattered more once a broken vendor CLI began falling back to this path
         # automatically — the weaker gate would have become the common one.
-        from .cli_doer import default_branch_file
+        from .cli_doer import committed_file, default_branch_file
 
-        manifest = default_branch_file(self.root, gates.SECRET_ALLOWLIST_PATH)
-        self._secret_allowlist = gates.parse_secret_allowlist(manifest or "")
+        reviewed = gates.parse_secret_allowlist(
+            default_branch_file(self.root, gates.SECRET_ALLOWLIST_PATH) or ""
+        )
+        # Entries committed on this branch but not yet reviewed elsewhere are honoured
+        # only with a live human's confirmation, matching the doer gate. Read from HEAD,
+        # never the live file, so an uncommitted edit cannot widen egress (M2).
+        unreviewed = frozenset(
+            gates.parse_secret_allowlist(
+                committed_file(self.root, gates.SECRET_ALLOWLIST_PATH) or ""
+            )
+            - reviewed
+        )
+        self._secret_allowlist = reviewed
+        self._unreviewed_suppressions = unreviewed
+        self._unreviewed_confirmed: bool | None = None
 
     def _undeclared_secret_labels(self, rel: str, raw: bytes) -> list[str]:
         """Labels for credential-shaped content in ``rel`` that it has not declared.
@@ -150,7 +163,31 @@ class ReadOnlyToolbox:
         if not findings:
             return []
         remaining = gates.unsuppressed_findings(findings, rel, self._secret_allowlist)
+        if remaining and self._unreviewed_suppressions:
+            # Ask once per run, only about findings a branch-local declaration would
+            # clear, and only if a human is actually there to answer.
+            pending = gates.unsuppressed_findings(
+                remaining, rel, self._unreviewed_suppressions
+            )
+            if not pending and self._confirm_unreviewed_once(rel, remaining):
+                return []
+            remaining = pending or remaining
         return sorted({finding.label for finding in remaining})
+
+    def _confirm_unreviewed_once(self, rel: str, findings: list) -> bool:
+        """Confirm branch-local suppressions once, then reuse the answer for this run.
+
+        Caching matters: a reviewer reads many files, and re-prompting per file would
+        train the reader to type "y" without looking — which is the failure this whole
+        mechanism exists to avoid.
+        """
+        from .cli_doer import _confirm_unreviewed_suppressions
+
+        if self._unreviewed_confirmed is None:
+            self._unreviewed_confirmed = _confirm_unreviewed_suppressions(
+                [(rel, finding) for finding in findings]
+            )
+        return self._unreviewed_confirmed
 
     # -- path policy (fail-closed) ------------------------------------------ #
 

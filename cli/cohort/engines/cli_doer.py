@@ -58,8 +58,10 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlsplit
 
 from cohort.engines import gates
@@ -186,23 +188,67 @@ def _assert_worktree_within_wire_budget(
     )
 
 
-def _load_secret_allowlist(repo_root: Path) -> frozenset[gates.SecretSuppression]:
-    """Read the repo's committed secret-scan suppression manifest, if it has one.
+def _split_secret_allowlist(
+    repo_root: Path, worktree: Path
+) -> tuple[frozenset[gates.SecretSuppression], frozenset[gates.SecretSuppression]]:
+    """Split declared suppressions into ``(reviewed, unreviewed)``.
 
-    Read from the **default branch**, not the worktree and not the live tree, because a
-    suppression must never be able to authorise its own egress. Committing is not review:
-    the refusal message prints paste-ready declaration lines, so anyone (or any agent) who
-    hits the gate can commit them and re-dispatch without a second person ever looking —
-    and egress is irreversible. Requiring the entry to be reachable from the default branch
-    means it has already been through whatever review that branch enforces.
+    **Reviewed** entries are reachable from the **default branch**, so they have already
+    been through whatever review that branch enforces. They apply silently.
 
-    Anything unreadable, or a repo with no resolvable default branch, yields no
-    suppressions — fail closed.
+    **Unreviewed** entries are committed on this branch only. They are not rejected — a
+    developer adding a fake fixture is the ordinary case, and refusing outright merely
+    re-blocks the engines on the very repo whose fixtures they are (which is exactly what
+    a stricter first cut did). They instead require a live human decision.
+
+    The threat this separation targets is narrower than "someone committed a suppression".
+    The refusal message prints paste-ready declaration lines *into the caller's context*,
+    so an agent at supervised or autopilot can commit them and re-dispatch with nobody
+    looking — and egress is irreversible. A human at a keyboard confirming once is a fine
+    authorisation; an agent silently authorising itself is not. So the gate asks, and an
+    unattended caller (no TTY: CI, a hook, an agent's shell) is refused by default.
     """
-    text = default_branch_file(repo_root, gates.SECRET_ALLOWLIST_PATH)
-    if text is None:
-        return frozenset()
-    return gates.parse_secret_allowlist(text)
+    reviewed = gates.parse_secret_allowlist(
+        default_branch_file(repo_root, gates.SECRET_ALLOWLIST_PATH) or ""
+    )
+    try:
+        # Committed-on-this-branch, so it still shows up in a PR diff — the manifest is
+        # never read from an uncommitted edit.
+        local_text = (worktree / gates.SECRET_ALLOWLIST_PATH).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return reviewed, frozenset()
+    return reviewed, frozenset(gates.parse_secret_allowlist(local_text) - reviewed)
+
+
+def _confirm_unreviewed_suppressions(
+    entries: list[tuple[str, gates.SecretFinding]]
+) -> bool:
+    """Ask a human, on a TTY, to authorise suppressions not yet on the default branch.
+
+    Returns False without prompting when stdin is not a terminal. That is the whole point:
+    an agent's shell, a CI job, and a git hook all run without one, so none of them can
+    authorise an irreversible egress on their own. A human gets one prompt.
+    """
+    if not sys.stdin.isatty():
+        return False
+    print(
+        "\nThese credential-shaped values are declared fake in "
+        f"{gates.SECRET_ALLOWLIST_PATH}, but that declaration is NOT yet on the default "
+        "branch, so nobody else has reviewed it:",
+        file=sys.stderr,
+    )
+    for rel, finding in entries:
+        print(f"  {finding.label:34s} {rel}", file=sys.stderr)
+    print(
+        "\nConfirm ONLY if you have checked these are fake. Approving a real credential "
+        "here sends it to the vendor, and that cannot be undone.",
+        file=sys.stderr,
+    )
+    try:
+        answer = input("Send these files to the vendor? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("y", "yes")
 
 
 def _default_branch_ref(repo_root: Path) -> str | None:
@@ -233,6 +279,25 @@ def _default_branch_ref(repo_root: Path) -> str | None:
     return None
 
 
+def committed_file(repo_root: Path, rel: str, ref: str = "HEAD") -> str | None:
+    """Return ``rel`` as committed at ``ref``, or None if unavailable.
+
+    Used where there is no worktree to read from (the API reviewer). Reading the *live*
+    file instead would let an uncommitted edit widen what may egress, which is the gap
+    audit r3 flagged as M2.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"{ref}:{rel}"],
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
 def default_branch_file(repo_root: Path, rel: str) -> str | None:
     """Return ``rel`` as committed on the default branch, or None if unavailable."""
     ref = _default_branch_ref(repo_root)
@@ -250,7 +315,12 @@ def default_branch_file(repo_root: Path, rel: str) -> str | None:
     return proc.stdout if proc.returncode == 0 else None
 
 
-def _assert_worktree_files_have_no_secrets(worktree: Path, repo_root: Path) -> None:
+def _assert_worktree_files_have_no_secrets(
+    worktree: Path,
+    repo_root: Path,
+    *,
+    confirm: Callable[[list[tuple[str, gates.SecretFinding]]], bool] | None = None,
+) -> None:
     """Secret-scan the committed files the worktree will expose to the vendor CLI.
 
     The outbound task string is gated separately, but the vendor CLI then *reads the
@@ -264,8 +334,10 @@ def _assert_worktree_files_have_no_secrets(worktree: Path, repo_root: Path) -> N
         gates.SecretFoundError: a tracked file carries credential-shaped content. The
             message lists only non-secret finding labels, never a matched value.
     """
+    # Resolved at call time, not bound as a default, so the prompt stays substitutable.
+    confirm = confirm or _confirm_unreviewed_suppressions
     tracked = _tracked_worktree_files(worktree)
-    allowlist = _load_secret_allowlist(repo_root)
+    reviewed, unreviewed = _split_secret_allowlist(repo_root, worktree)
     blocking: list[tuple[str, gates.SecretFinding]] = []
     for rel in tracked:
         try:
@@ -285,8 +357,33 @@ def _assert_worktree_files_have_no_secrets(worktree: Path, repo_root: Path) -> N
             continue
         blocking.extend(
             (rel, finding)
-            for finding in gates.unsuppressed_findings(findings, rel, allowlist)
+            for finding in gates.unsuppressed_findings(findings, rel, reviewed)
         )
+
+    # Of what the reviewed manifest did not clear, separate the findings this branch has
+    # *declared* (but nobody else has seen) from the ones nothing declares at all. Only
+    # the former are a human's to wave through; the latter are undeclared secrets.
+    pending = [
+        (rel, finding)
+        for rel, finding in blocking
+        if not gates.unsuppressed_findings([finding], rel, unreviewed)
+    ]
+    undeclared = [item for item in blocking if item not in pending]
+
+    if pending and not undeclared:
+        if confirm(pending):
+            return
+        raise gates.SecretFoundError(
+            "dispatch refused: "
+            + ", ".join(sorted({finding.label for _, finding in pending}))
+            + f" are declared fake in {gates.SECRET_ALLOWLIST_PATH}, but that declaration "
+            "is not on the default branch and was not confirmed.\n\nEither merge the "
+            "manifest change, or re-run this from an interactive terminal to confirm it. "
+            "An unattended caller — CI, a hook, an agent's shell — cannot authorise its "
+            "own egress, because egress cannot be undone."
+        )
+
+    blocking = undeclared or blocking
     if blocking:
         labels = sorted({finding.label for _, finding in blocking})
         # Print the exact manifest lines that would clear each finding. Without this the
@@ -302,9 +399,9 @@ def _assert_worktree_files_have_no_secrets(worktree: Path, repo_root: Path) -> N
             + f"\n\nIf — and only if — a human has confirmed these values are fake, declare "
             f"them in {gates.SECRET_ALLOWLIST_PATH}:\n"
             + declarations
-            + "\n\nSuppressions are only honoured once they are merged to the default "
-            "branch. Committing them on this branch will not unblock the dispatch — that "
-            "is deliberate, so that a suppression cannot authorise its own egress."
+            + "\n\nAn entry already on the default branch applies silently. One committed "
+            "only on this branch still works, but must be confirmed interactively — an "
+            "unattended caller cannot authorise its own irreversible egress."
         )
 
 

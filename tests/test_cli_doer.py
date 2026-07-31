@@ -480,30 +480,33 @@ def test_declared_fixture_clears_the_worktree_scan_and_dispatch_proceeds(
     assert spawned["called"] is True
 
 
-def test_suppression_only_on_a_feature_branch_does_not_unblock_dispatch(
-    tmp_path, monkeypatch, _codex_installed
-):
-    """A suppression must not be able to authorise its own egress (audit r3, H1).
-
-    The refusal prints paste-ready declaration lines, so committing them is something the
-    blocked party can do alone — and egress is irreversible. Only entries reachable from the
-    default branch count, because that is where review actually happened.
-    """
-    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
-    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
-    # Declare it — but only on a side branch, exactly as a blocked party would.
+def _declare_on_feature_branch(tmp_path, digest: str, rel: str) -> None:
+    """Commit a suppression on a side branch — i.e. declared, but reviewed by nobody."""
     subprocess.run(
         ["git", "checkout", "-q", "-b", "unblock-me"], cwd=tmp_path, check=True,
         capture_output=True,
     )
     manifest = tmp_path / gates.SECRET_ALLOWLIST_PATH
     manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(f"{digest}  config.py  # looks fine to me\n", encoding="utf-8")
+    manifest.write_text(f"{digest}  {rel}  # looks fine to me\n", encoding="utf-8")
     subprocess.run(["git", "add", "-Af"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "declare"],
         cwd=tmp_path, check=True, capture_output=True,
     )
+
+
+def test_an_unattended_caller_cannot_authorise_its_own_egress(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """Audit r3, H1. The refusal prints paste-ready declaration lines *into the caller's
+    context*, so an agent at supervised/autopilot could commit them and re-dispatch with
+    nobody looking. A branch-local declaration therefore needs a live human; without a TTY
+    (an agent's shell, CI, a hook) the answer is no.
+    """
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    _declare_on_feature_branch(tmp_path, digest, "config.py")
 
     spawned = {"called": False}
     real_run = subprocess.run
@@ -514,11 +517,75 @@ def test_suppression_only_on_a_feature_branch_does_not_unblock_dispatch(
         return real_run(cmd, **kwargs)
 
     monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    # pytest gives no TTY, which is exactly the unattended case.
     with pytest.raises(gates.SecretFoundError) as excinfo:
         cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
 
     assert spawned["called"] is False
-    assert "default branch" in str(excinfo.value)  # the refusal explains why
+    assert "was not confirmed" in str(excinfo.value)
+
+
+def test_a_human_confirming_unblocks_a_branch_local_declaration(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """The other half: a developer adding a fake fixture is the ordinary case, so an
+    interactive confirmation must actually work — otherwise the gate just re-blocks the
+    engines on the repo whose fixtures they are."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    _declare_on_feature_branch(tmp_path, digest, "config.py")
+
+    asked = {"n": 0}
+
+    def yes(entries):
+        asked["n"] += 1
+        return True
+
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer._confirm_unreviewed_suppressions", yes
+    )
+    real_run = subprocess.run
+    spawned = {"called": False}
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+            return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+
+    assert spawned["called"] is True
+    assert asked["n"] == 1
+
+
+def test_confirmation_cannot_wave_through_an_undeclared_secret(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """Confirmation authorises *declared* fixtures only. A credential nothing declares is
+    not a human's to wave through at the prompt — it is simply a secret in the repo."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    _declare_on_feature_branch(tmp_path, digest, "config.py")
+    # A second, undeclared credential lands in the same file.
+    (tmp_path / "config.py").write_text(
+        'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\nGITHUB_TOKEN = "ghp_' + "b" * 36 + '"\n',
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "more"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer._confirm_unreviewed_suppressions",
+        lambda entries: True,  # even an eager "yes"
+    )
+    with pytest.raises(gates.SecretFoundError) as excinfo:
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    assert "github-token" in str(excinfo.value)
 
 
 def test_declared_fixture_does_not_exempt_a_different_secret_in_that_file(
