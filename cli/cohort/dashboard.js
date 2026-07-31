@@ -94,15 +94,36 @@ function kindTag(kind) {
   t.className = "tag k-" + kind; t.textContent = km.tag;
   return t;
 }
-/* the short metadata chips shown on a card, per kind */
+/* the short metadata chips shown on a card, per kind. Each bit is
+   { text, title?, warn? } — role bits (doer/advisor/router) carry an
+   explanatory title so a user who hasn't read the docs knows what they mean;
+   the doer bit is flagged `warn` so it renders in the prominent amber chip
+   style (it's the most trust-relevant signal on the card). */
 function metaBits(it) {
   const bits = [];
-  if (it.kind === "agent") bits.push(
-    it.advisory === false ? "⚡ doer" : (it.topology === "generalist" ? "triage" : "advisor"));
-  if (it.kind === "hook" && it.event) bits.push(it.event);
-  if (it.department) bits.push(it.department);
-  for (const t of (it.targets || [])) if (t !== "all") bits.push(t);
+  if (it.kind === "agent") {
+    if (it.advisory === false) {
+      bits.push({ text: "⚡ doer", title: "Can make changes (gated).", warn: true });
+    } else if (it.topology === "generalist") {
+      bits.push({ text: "router", title: "Routes your request to the right specialist." });
+    } else {
+      bits.push({ text: "advisor", title: "Read-only — recommends, never writes." });
+    }
+  }
+  if (it.kind === "hook" && it.event) bits.push({ text: it.event });
+  if (it.department) bits.push({ text: it.department });
+  for (const t of (it.targets || [])) if (t !== "all") bits.push({ text: t });
   return bits;
+}
+/* Builds a .meta chip span from a metaBits() entry (or a plain string, for
+   callers that mix in their own labels). */
+function metaChip(bit, extraClass) {
+  const b = typeof bit === "string" ? { text: bit } : bit;
+  const c = document.createElement("span");
+  c.className = "meta" + (b.warn ? " warn" : "") + (extraClass ? " " + extraClass : "");
+  c.textContent = b.text;
+  if (b.title) c.title = b.title;
+  return c;
 }
 /* A project memory travels with the repo: committing it hands standing
    instructions to everyone who clones. Show whether that change is reviewable
@@ -154,15 +175,17 @@ function artifactCard(it) {
   desc.textContent = it.description || ""; el.appendChild(desc);
 
   const foot = document.createElement("div"); foot.className = "art-foot";
-  for (const b of metaBits(it)) {
-    const chip = document.createElement("span"); chip.className = "meta"; chip.textContent = b;
-    foot.appendChild(chip);
-  }
+  for (const b of metaBits(it)) foot.appendChild(metaChip(b));
   if (it.active === false) {
-    const c = document.createElement("span"); c.className = "meta warn"; c.textContent = "not on roster"; foot.appendChild(c);
+    const c = metaChip({
+      text: "inactive",
+      title: "Not currently active in sessions — enable it to place it.",
+    });
+    foot.appendChild(c);
   }
   if (it.overrides) {
-    const c = document.createElement("span"); c.className = "meta"; c.textContent = "override"; foot.appendChild(c);
+    const c = metaChip({ text: "override", title: "Replaces a same-named agent from a broader scope." });
+    foot.appendChild(c);
   }
   const g = gitChip(it);
   if (g) foot.appendChild(g);
@@ -252,10 +275,15 @@ async function openDetail(it) {
   const meta = $("dt-meta"); meta.textContent = "";
   meta.appendChild(kindTag(it.kind));
   const LAYER_LABEL = { office: "COMPANY", my: "YOU", project: "PROJECT" };
-  for (const text of [LAYER_LABEL[it.layer] || it.layer].concat(metaBits(it))) {
-    const c = document.createElement("span"); c.className = "meta"; c.textContent = text; meta.appendChild(c);
+  for (const bit of [{ text: LAYER_LABEL[it.layer] || it.layer }].concat(metaBits(it))) {
+    meta.appendChild(metaChip(bit));
   }
-  if (it.active === false) { const c = document.createElement("span"); c.className = "meta warn"; c.textContent = "not on roster"; meta.appendChild(c); }
+  if (it.active === false) {
+    meta.appendChild(metaChip({
+      text: "inactive",
+      title: "Not currently active in sessions — enable it to place it.",
+    }));
+  }
   $("dt-desc").textContent = it.description || "";
   $("dt-body").textContent = "Loading…";
   const editBtn = $("dt-edit");
@@ -375,7 +403,8 @@ function renderProjectsOverview(s) {
     spec.textContent = p.specialists + " specialist" + (p.specialists === 1 ? "" : "s"); foot.appendChild(spec);
     const wire = document.createElement("span");
     wire.className = "meta" + (p.wiring === "present" ? "" : " warn");
-    wire.textContent = p.wiring === "present" ? "wired" : ("wiring " + p.wiring); foot.appendChild(wire);
+    wire.textContent = p.wiring === "present" ? "connected to this repo" : "not connected — Re-init";
+    foot.appendChild(wire);
     const cm = p.claude_memory || { count: 0, updated: null };
     const mem = document.createElement("span"); mem.className = "meta";
     mem.textContent = "🧠 " + cm.count + " memor" + (cm.count === 1 ? "y" : "ies");
@@ -459,20 +488,23 @@ function renderScorecards(s) {
       spark.appendChild(t);
     } else {
       for (const day of trend) {
+        // Redundant, non-color sign encoding (MED-1) with a true zero baseline:
+        // the cell is split by the mid-line (.sparkline::after); a positive bar
+        // sits flush on it and grows up, a negative bar sits flush on it and
+        // grows down — see .sparkline/.spark-cell/.spark-bar in dashboard.html.
+        const cell = document.createElement("span"); cell.className = "spark-cell";
         const bar = document.createElement("span"); bar.className = "spark-bar";
         const dayNet = day.up - day.down;
-        bar.style.height = Math.min(24, 4 + Math.abs(dayNet) * 4) + "px";
+        bar.style.height = Math.min(11, 3 + Math.abs(dayNet) * 3) + "px";
         bar.style.background = dayNet >= 0 ? "var(--ok)" : "var(--bad)";
-        // Redundant, non-color sign encoding (MED-1): positive days sit on the
-        // baseline and grow upward; negative days hang from the top and grow
-        // downward — see .sparkline/.spark-bar in dashboard.html.
-        bar.style.alignSelf = dayNet >= 0 ? "flex-end" : "flex-start";
+        if (dayNet >= 0) bar.style.bottom = "50%"; else bar.style.top = "50%";
         const sign = dayNet > 0 ? "+" : dayNet < 0 ? "−" : "";
         const label = "day " + sign + Math.abs(dayNet) + " net";
-        bar.title = label;
-        bar.setAttribute("aria-label", label);
-        bar.setAttribute("role", "listitem");
-        spark.appendChild(bar);
+        cell.title = label;
+        cell.setAttribute("aria-label", label);
+        cell.setAttribute("role", "listitem");
+        cell.appendChild(bar);
+        spark.appendChild(cell);
       }
     }
     el.appendChild(spark);
@@ -557,11 +589,11 @@ function render(s) {
   const parity = Object.values(g.parity || {});
   const parityOk = parity.every((p) => p.ok !== false);
   setDot("st-parity", parity.length === 0 ? "warn" : parityOk ? "" : "warn",
-    parity.length === 0 ? "not compiled" : parityOk ? "renderers in parity" : "parity gap");
+    parity.length === 0 ? "not compiled yet — recompile" : parityOk ? "IDEs match your source" : "IDE output is behind your source — recompile");
   setDot("st-placed", roster.count ? "" : "warn", roster.count + " agents placed");
   const wiring = (s.project && s.project.wiring) || null;
   setDot("st-wiring", !wiring ? "warn" : wiring.state === "present" ? "" : "warn",
-    !wiring ? "no project here" : wiring.state === "present" ? "project wired" : "wiring " + wiring.state + " — re-init");
+    !wiring ? "no project here" : wiring.state === "present" ? "connected to this repo" : "not connected — Re-init");
   const up = g.update || {};
   const behind = up.behind || 0;
   $("behind").hidden = behind <= 0;
@@ -672,10 +704,10 @@ function openCreate(level) {
   if (CREATE_LEVEL === "project") {
     const p = (STATE && STATE.project && STATE.project.repo) ? STATE.project.repo.split("/").slice(-1)[0] : "this project";
     $("cr-title").textContent = "Create in " + p;
-    $("cr-hint").textContent = "Authors it in this project (.cohort/canonical/) so it travels with the repo, and recompiles. Advisory read-only where it applies.";
+    $("cr-hint").textContent = "Authors it in this project (.cohort/canonical/) so it travels with the repo, and recompiles. New agents are read-only advisors by default.";
   } else {
     $("cr-title").textContent = "Create an artifact";
-    $("cr-hint").textContent = "Authors it in my office (~/.cohort/my) and recompiles — updates and proposals never touch it. Advisory read-only where it applies.";
+    $("cr-hint").textContent = "Authors it in my office (~/.cohort/my) and recompiles — updates and proposals never touch it. New agents are read-only advisors by default.";
   }
   syncCreateKind();
   $("dlg-create").showModal();
