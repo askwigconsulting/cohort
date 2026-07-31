@@ -181,6 +181,20 @@ def _assert_worktree_within_wire_budget(
     )
 
 
+def _load_secret_allowlist(worktree: Path) -> frozenset[gates.SecretSuppression]:
+    """Read the repo's committed secret-scan suppression manifest, if it has one.
+
+    Read from the *worktree* (a detached checkout of HEAD), not the live working tree, so
+    an uncommitted edit to the manifest can never widen what a dispatch is allowed to
+    send. An absent or unreadable manifest yields no suppressions — fail closed.
+    """
+    try:
+        text = (worktree / gates.SECRET_ALLOWLIST_PATH).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return frozenset()
+    return gates.parse_secret_allowlist(text)
+
+
 def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
     """Secret-scan the committed files the worktree will expose to the vendor CLI.
 
@@ -196,7 +210,8 @@ def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
             message lists only non-secret finding labels, never a matched value.
     """
     tracked = _tracked_worktree_files(worktree)
-    labels: set[str] = set()
+    allowlist = _load_secret_allowlist(worktree)
+    blocking: list[tuple[str, gates.SecretFinding]] = []
     for rel in tracked:
         try:
             raw = (worktree / rel).read_bytes()
@@ -210,11 +225,28 @@ def _assert_worktree_files_have_no_secrets(worktree: Path) -> None:
         # Decode latin-1 (lossless byte->char), not utf-8-with-errors-ignored: an
         # ASCII-shaped credential embedded in a binary blob stays visible to the scanner
         # instead of being dropped with the surrounding invalid bytes.
-        labels.update(gates.scan_for_secrets(raw.decode("latin-1")))
-    if labels:
+        findings = gates.scan_for_secret_findings(raw.decode("latin-1"))
+        if not findings:
+            continue
+        blocking.extend(
+            (rel, finding)
+            for finding in gates.unsuppressed_findings(findings, rel, allowlist)
+        )
+    if blocking:
+        labels = sorted({finding.label for _, finding in blocking})
+        # Print the exact manifest lines that would clear each finding. Without this the
+        # only way to unblock is to guess digests, which pushes people toward exempting
+        # whole paths — the blind spot this design exists to avoid.
+        declarations = "\n".join(
+            f"  {finding.digest}  {rel}"
+            for rel, finding in sorted(blocking, key=lambda item: (item[0], item[1]))
+        )
         raise gates.SecretFoundError(
             "worktree files contain credential-shaped content: "
-            + ", ".join(sorted(labels))
+            + ", ".join(labels)
+            + f"\n\nIf — and only if — you have confirmed these values are fake, declare "
+            f"them in {gates.SECRET_ALLOWLIST_PATH} and commit it:\n"
+            + declarations
         )
 
 

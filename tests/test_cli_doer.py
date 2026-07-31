@@ -437,6 +437,79 @@ def test_worktree_secret_scan_refuses_committed_secret_before_dispatch(
     assert _worktree_count(tmp_path) == 1       # worktree cleaned up on refusal
 
 
+def test_worktree_secret_scan_error_prints_the_lines_that_would_declare_it(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """The refusal names the exact manifest lines to add, so unblocking never requires
+    guessing a digest — which is what pushes people toward exempting a whole path."""
+    _init_git_repo(tmp_path, {"config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'})
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", subprocess.run)
+    with pytest.raises(gates.SecretFoundError) as excinfo:
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+
+    message = str(excinfo.value)
+    assert gates.SECRET_ALLOWLIST_PATH in message
+    assert "AKIAIOSFODNN7EXAMPLE" not in message          # never echoes the value
+    expected = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    assert f"{expected}  config.py" in message
+
+
+def test_declared_fixture_clears_the_worktree_scan_and_dispatch_proceeds(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """A committed manifest declaring the exact fake value lets the dispatch through."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(
+        tmp_path,
+        {
+            "config.py": 'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n',
+            gates.SECRET_ALLOWLIST_PATH: f"{digest}  config.py  # AWS doc example\n",
+        },
+    )
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+            return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    assert spawned["called"] is True
+
+
+def test_declared_fixture_does_not_exempt_a_different_secret_in_that_file(
+    tmp_path, monkeypatch, _codex_installed
+):
+    """The blind spot a path allowlist would create: a *real* key added beside a declared
+    fake one has a different digest, so the gate still refuses."""
+    digest = gates.secret_digest("AKIAIOSFODNN7EXAMPLE")
+    _init_git_repo(
+        tmp_path,
+        {
+            "config.py": (
+                'AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n'
+                'AWS_SECRET_ACCESS_KEY = "totallyRealKey9876543210"\n'
+            ),
+            gates.SECRET_ALLOWLIST_PATH: f"{digest}  config.py  # AWS doc example\n",
+        },
+    )
+    spawned = {"called": False}
+    real_run = subprocess.run
+
+    def spy(cmd, **kwargs):
+        if cmd[:2] == ["codex", "exec"]:
+            spawned["called"] = True
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr("cohort.engines.cli_doer.subprocess.run", spy)
+    with pytest.raises(gates.SecretFoundError):
+        cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    assert spawned["called"] is False
+
+
 @pytest.mark.skipif(cli_doer._bwrap() is None, reason="bwrap not installed")
 def test_grok_sandbox_actually_blocks_writes_outside_the_worktree(tmp_path):
     """Live kernel-level check: a command in the sandbox can write the worktree but not

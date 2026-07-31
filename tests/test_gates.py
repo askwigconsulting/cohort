@@ -8,9 +8,13 @@ No test performs network I/O.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from cohort.engines.gates import (
+    SECRET_ALLOWLIST_PATH,
     EgressBlockedError,
     GateError,
     PathViolationError,
@@ -24,7 +28,11 @@ from cohort.engines.gates import (
     egress_opted_out,
     preflight,
     require_egress_allowed,
+    parse_secret_allowlist,
+    scan_for_secret_findings,
     scan_for_secrets,
+    secret_digest,
+    unsuppressed_findings,
 )
 
 # A stand-in secret value that must never surface in any label or error message.
@@ -292,6 +300,154 @@ def test_secret_value_never_appears_in_exception_message() -> None:
 
 def test_assert_no_secrets_is_silent_on_clean_text() -> None:
     assert_no_secrets("nothing sensitive here")
+
+
+# --------------------------------------------------------------------------- #
+# 2b. Secret-scan precision — code that merely *names* a secret is not a secret
+# --------------------------------------------------------------------------- #
+
+
+def test_scan_ignores_keyword_argument_forwarded_under_its_own_name() -> None:
+    """`max_tokens=max_tokens` passes a variable; no credential appears in the text."""
+    assert scan_for_secrets("engine.consult(prompt, max_tokens=max_tokens)") == []
+    assert scan_for_secrets("    max_tokens=max_tokens,") == []
+
+
+def test_scan_ignores_attribute_reference_as_assigned_value() -> None:
+    """`token=srv.token` reads an attribute at runtime — the text holds no secret."""
+    assert scan_for_secrets('request(srv, "GET", "/api/state", token=srv.token)') == []
+    assert scan_for_secrets("api_key=config.credentials.api_key") == []
+
+
+def test_scan_ignores_type_annotation_on_a_secret_named_identifier() -> None:
+    """A name being *typed* is a declaration, not an assignment of a credential."""
+    assert scan_for_secrets("def _release(lock_path: Path, token: bytes) -> None:") == []
+    assert scan_for_secrets("_SECRET_KEYWORDS: tuple[str, ...] = (") == []
+    assert scan_for_secrets("        max_tokens: Optional cap on the response.") == []
+
+
+def test_scan_still_detects_a_real_credential_in_colon_form() -> None:
+    """The annotation exemption must not swallow `GITHUB_TOKEN: ghp_...`."""
+    assert scan_for_secrets("GITHUB_TOKEN: ghp_abcdef123456") == [
+        "generic-assignment:TOKEN"
+    ]
+
+
+def test_scan_still_detects_a_bare_word_credential_value() -> None:
+    """Only an *exact* self-reference is exempt — an ordinary bare value still trips."""
+    assert scan_for_secrets("DATABASE_PASSWORD=hunter2secret") == [
+        "generic-assignment:PASSWORD"
+    ]
+
+
+# --------------------------------------------------------------------------- #
+# 2c. Declared suppression manifest — digest-bound, never path-bound
+# --------------------------------------------------------------------------- #
+
+
+def _sole_finding(text: str):
+    findings = scan_for_secret_findings(text)
+    assert len(findings) == 1, findings
+    return findings[0]
+
+
+def test_digest_is_stable_and_never_reveals_the_value() -> None:
+    digest = secret_digest(_SECRET_VALUE)
+    assert digest == secret_digest(_SECRET_VALUE)
+    assert len(digest) == 16
+    assert _SECRET_VALUE not in digest
+
+
+def test_parse_allowlist_reads_entries_and_ignores_comments_and_blanks() -> None:
+    text = (
+        "# a leading comment\n"
+        "\n"
+        "0123456789abcdef  tests/fixtures.py  # the AWS documentation example key\n"
+        "   fedcba9876543210   src/config.py\n"
+    )
+    entries = parse_secret_allowlist(text)
+    assert len(entries) == 2
+    assert all(len(entry.digest) == 16 for entry in entries)
+    assert {entry.path for entry in entries} == {"tests/fixtures.py", "src/config.py"}
+
+
+def test_parse_allowlist_skips_malformed_lines_so_a_typo_never_widens_it() -> None:
+    """Fail closed: an unparseable entry suppresses nothing."""
+    text = (
+        "not-a-digest  tests/fixtures.py\n"       # digest is not 16 hex chars
+        "0123456789abcdef\n"                       # path missing entirely
+        "0123456789ABCDEF  tests/fixtures.py\n"    # uppercase hex is not the format
+        "0123456789abcdef  tests/fixtures.py\n"    # the one good line
+    )
+    assert len(parse_secret_allowlist(text)) == 1
+
+
+def test_suppression_clears_the_exact_declared_value() -> None:
+    finding = _sole_finding("MY_SECRET=supersecretvalue")
+    allowlist = parse_secret_allowlist(f"{finding.digest}  tests/fixtures.py\n")
+    assert unsuppressed_findings([finding], "tests/fixtures.py", allowlist) == []
+
+
+def test_suppression_is_bound_to_its_path_and_does_not_travel() -> None:
+    """The same fake value in an *undeclared* file still blocks."""
+    finding = _sole_finding("MY_SECRET=supersecretvalue")
+    allowlist = parse_secret_allowlist(f"{finding.digest}  tests/fixtures.py\n")
+    assert unsuppressed_findings([finding], "src/config.py", allowlist) == [finding]
+
+
+def test_a_different_secret_in_a_declared_file_still_blocks() -> None:
+    """The property a bare path allowlist gives up: exempting a file is not a blind spot."""
+    declared = _sole_finding("MY_SECRET=supersecretvalue")
+    allowlist = parse_secret_allowlist(f"{declared.digest}  tests/fixtures.py\n")
+    intruder = _sole_finding('AWS_SECRET_ACCESS_KEY = "totallyRealKey9876543210"')
+    remaining = unsuppressed_findings([intruder], "tests/fixtures.py", allowlist)
+    assert remaining == [intruder]
+
+
+def test_absent_manifest_suppresses_nothing() -> None:
+    finding = _sole_finding("MY_SECRET=supersecretvalue")
+    assert unsuppressed_findings([finding], "any/path.py", frozenset()) == [finding]
+
+
+def test_this_repo_clears_its_own_secret_scan() -> None:
+    """Dogfooding guard: cohort must stay able to send itself to an external engine.
+
+    This repo is a secret scanner, so its fixtures and its pattern documentation are
+    credential-shaped by construction (#233). Every such value must be declared in the
+    committed manifest — otherwise `cohort engine review/propose` refuses on cohort
+    itself and no cross-vendor review of this repo can run at all. Adding a new
+    credential-shaped fixture without declaring it fails here, at the cheap end, instead
+    of at dispatch time.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    manifest = repo_root / SECRET_ALLOWLIST_PATH
+    assert manifest.is_file(), f"{SECRET_ALLOWLIST_PATH} must be committed, not ignored"
+    allowlist = parse_secret_allowlist(manifest.read_text(encoding="utf-8"))
+
+    tracked = subprocess.run(
+        ["git", "-C", str(repo_root), "ls-files"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+
+    blocking: list[str] = []
+    for rel in tracked:
+        try:
+            # latin-1 mirrors the doer's lossless byte->char decode.
+            text = (repo_root / rel).read_bytes().decode("latin-1")
+        except OSError:
+            continue
+        for finding in unsuppressed_findings(
+            scan_for_secret_findings(text), rel, allowlist
+        ):
+            blocking.append(f"{finding.digest}  {rel}  # {finding.label}")
+
+    assert not blocking, (
+        "tracked files carry undeclared credential-shaped content, which blocks "
+        f"external-engine dispatch. If these values are fake, add to {SECRET_ALLOWLIST_PATH}:\n"
+        + "\n".join(sorted(blocking))
+    )
 
 
 # --------------------------------------------------------------------------- #
