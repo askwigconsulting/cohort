@@ -141,3 +141,92 @@ def test_transcripts_keep_a_tail_however_old_they_are(tmp_path) -> None:
 def test_nothing_to_do_is_not_an_error(tmp_path) -> None:
     report = gc.scan(min_age_days=7, temp_root=tmp_path)
     assert report.items == [] and report.reclaimable_bytes == 0
+
+
+# --------------------------------------------------------------------------- #
+# Scope: Cohort's own footprint, wherever it landed
+# --------------------------------------------------------------------------- #
+
+
+def test_all_projects_sweeps_every_repo_in_the_registry(tmp_path) -> None:
+    """A project that merely *uses* Cohort should not have to visit each repo to reclaim
+    what Cohort left there — the artifacts are Cohort's wherever they landed."""
+    import json
+
+    home = tmp_path / "home"
+    other = tmp_path / "elsewhere" / "someproject"
+    tdir = other / ".cohort" / "engine-transcripts"
+    tdir.mkdir(parents=True)
+    for i in range(1, 4):
+        t = tdir / f"{i:04d}.jsonl"
+        t.write_text("{}\n", encoding="utf-8")
+        _aged(t, 30)
+    state = home / ".cohort" / "state"
+    state.mkdir(parents=True)
+    (state / "projects.json").write_text(json.dumps({"projects": [str(other)]}), "utf-8")
+
+    without = gc.scan(min_age_days=7, keep_transcripts=1, temp_root=tmp_path)
+    assert without.items == []  # not this repo, so invisible without the flag
+
+    with_flag = gc.scan(
+        all_projects_home=home, min_age_days=7, keep_transcripts=1, temp_root=tmp_path
+    )
+    names = sorted(i.path.name for i in with_flag.items if i.kind == "transcript")
+    assert names == ["0001.jsonl", "0002.jsonl"]
+
+
+def test_a_repo_outside_the_registry_is_none_of_its_business(tmp_path) -> None:
+    """The registry is the boundary. A repo Cohort was never initialised in is untouched
+    even if it happens to contain a `.cohort` directory."""
+    import json
+
+    home = tmp_path / "home"
+    stranger = tmp_path / "not-registered"
+    tdir = stranger / ".cohort" / "engine-transcripts"
+    tdir.mkdir(parents=True)
+    t = tdir / "0001.jsonl"
+    t.write_text("{}\n", encoding="utf-8")
+    _aged(t, 400)
+    state = home / ".cohort" / "state"
+    state.mkdir(parents=True)
+    (state / "projects.json").write_text(json.dumps({"projects": []}), "utf-8")
+
+    report = gc.scan(
+        all_projects_home=home, min_age_days=7, keep_transcripts=0, temp_root=tmp_path
+    )
+    assert report.items == []
+    assert t.exists()
+
+
+def test_working_notes_are_surfaced_but_never_deleted(tmp_path) -> None:
+    """They are disposable by design, but an unpromoted note is the only copy of context a
+    session meant to keep — and `gc` cannot tell promoted from unpromoted. Deleting them
+    would destroy exactly what they exist to preserve."""
+    notes = tmp_path / "repo" / ".cohort" / "state" / "working-memory"
+    notes.mkdir(parents=True)
+    note = notes / "20260101T000000Z-abc-note.md"
+    note.write_text("staged context\n", encoding="utf-8")
+    _aged(note, 90)
+
+    report = gc.scan(repo_root=tmp_path / "repo", min_age_days=7, temp_root=tmp_path)
+    item = next(i for i in report.items if i.kind == "working-note")
+    assert not item.safe_by_default
+
+    gc.reclaim(report)                      # even a full reclaim leaves it
+    assert note.exists()
+
+
+def test_include_live_still_does_not_delete_working_notes(tmp_path) -> None:
+    """--include-live is about worktrees. Notes are excluded on a different ground, so the
+    flag must not quietly sweep them up too."""
+    notes = tmp_path / "repo" / ".cohort" / "state" / "working-memory"
+    notes.mkdir(parents=True)
+    note = notes / "n.md"
+    note.write_text("x\n", encoding="utf-8")
+    _aged(note, 90)
+
+    gc.reclaim(
+        gc.scan(repo_root=tmp_path / "repo", min_age_days=7, temp_root=tmp_path),
+        include_live=True,
+    )
+    assert note.exists()

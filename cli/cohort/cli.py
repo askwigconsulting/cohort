@@ -187,6 +187,10 @@ def gc(
         50, "--keep-transcripts",
         help="Always retain this many newest engine transcripts, whatever their age.",
     ),
+    all_projects: bool = typer.Option(
+        False, "--all-projects",
+        help="Sweep every repo in Cohort's registry, not just this one.",
+    ),
     include_live: bool = typer.Option(
         False, "--include-live",
         help="Also remove worktrees git still resolves — a diff someone may be reviewing.",
@@ -208,7 +212,9 @@ def gc(
 
     repo_root = find_repo_root(Path.cwd())
     report = gc_mod.scan(
-        repo_root=repo_root, min_age_days=days, keep_transcripts=keep_transcripts
+        repo_root=repo_root,
+        all_projects_home=Path.home() if all_projects else None,
+        min_age_days=days, keep_transcripts=keep_transcripts,
     )
     if apply_:
         gc_mod.reclaim(report, include_live=include_live, repo_root=repo_root)
@@ -243,10 +249,18 @@ def gc(
         typer.echo(f"  {item.kind:18s} {item.state:5s} {item.age_days:5.1f}d  {item.path}")
     if len(safe) > 10:
         typer.echo(f"  … and {len(safe) - 10} more")
-    if live:
+    notes = [i for i in live if i.kind == "working-note"]
+    worktrees = [i for i in live if i.kind != "working-note"]
+    if worktrees:
         typer.echo(
-            f"\nSkipped {len(live)} live worktree(s) — git still resolves them, so a diff "
-            "may be under review. Use --include-live to remove those too."
+            f"\nSkipped {len(worktrees)} live worktree(s) — git still resolves them, so a "
+            "diff may be under review. Use --include-live to remove those too."
+        )
+    if notes:
+        typer.echo(
+            f"\n{len(notes)} working note(s) are staged and unpromoted. These are never "
+            "deleted automatically — an unpromoted note may be the only copy of context a "
+            "session meant to keep. Promote or discard them from the session that owns them."
         )
     raise typer.Exit(code=0)
 

@@ -26,6 +26,16 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   but never removed by default** — "left for review" means someone may still want that
   diff, and age alone is not evidence otherwise.
 
+  `--all-projects` sweeps every repo in Cohort's registry, because a project that merely
+  *uses* Cohort should not have to visit each repo to reclaim what Cohort left there. The
+  registry is the boundary: a repo Cohort was never initialised in is out of scope, as is
+  anything inside a registered repo that Cohort did not create.
+
+  **Working notes are surfaced and never deleted, by any flag.** They are disposable by
+  design — staged during a turn, promoted at a session boundary — but an unpromoted note is
+  the only copy of context a session meant to keep, and `gc` cannot tell the two apart. They
+  are reported so you know they are there, and left for the session that owns them.
+
 ### Fixed
 - **The test suite no longer leaks worktrees.** `run_ratchet` leaves its worktree in place
   on success by design, and the suite calls it ten times, so every full run stranded up to
