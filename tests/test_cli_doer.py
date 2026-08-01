@@ -9,6 +9,7 @@ are all exercised.
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 import types
 from pathlib import Path
@@ -46,6 +47,31 @@ class _FakePopen:
 
     def communicate(self, timeout=None):
         return self._out
+
+
+def _bwrap_usable() -> bool:
+    """True only if bwrap is present AND can actually create a sandbox here.
+
+    `_bwrap() is not None` was the old gate, and it is not enough: CI installs bubblewrap,
+    but a runner without unprivileged user namespaces fails at run time, so the live
+    confinement tests failed instead of skipping — red CI that says nothing about the code.
+    Probing once tells present-and-working apart from present-and-blocked.
+    """
+    exe = cli_doer._bwrap()
+    if exe is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [exe, "--ro-bind", "/", "/", "--", "true"],
+            capture_output=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
+_BWRAP_USABLE = _bwrap_usable()
+_LINUX_ONLY = sys.platform.startswith("linux")
 
 
 def _init_git_repo(root: Path, files: dict[str, str]) -> None:
@@ -308,6 +334,7 @@ def test_grok_sandbox_argv_ro_binds_etc_and_never_writable_home(tmp_path):
         assert not home.is_relative_to(Path(dst))      # not an ancestor of the real home
 
 
+@pytest.mark.skipif(not _LINUX_ONLY, reason="the /etc bind set is Linux-only; bwrap is a Linux jail")
 def test_grok_sandbox_argv_narrows_etc_to_tls_and_resolver(tmp_path):
     """#227: /etc is no longer bound wholesale; only the TLS + name-resolution subset is
     bound read-only, each path only when it exists on the host. Bare `/etc /etc` is gone,
@@ -436,6 +463,7 @@ def test_run_codex_in_worktree_is_non_interactive_and_own_session(tmp_path, monk
     assert seen["kwargs"]["start_new_session"] is True
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups/killpg are POSIX-only")
 def test_a_timed_out_vendor_cli_takes_its_whole_process_group_with_it(tmp_path):
     """Audit r3, M5. A real kernel-level check, not a mock.
 
@@ -662,7 +690,7 @@ def test_declared_fixture_does_not_exempt_a_different_secret_in_that_file(
     assert spawned["called"] is False
 
 
-@pytest.mark.skipif(cli_doer._bwrap() is None, reason="bwrap not installed")
+@pytest.mark.skipif(not _BWRAP_USABLE, reason="bwrap unavailable or cannot sandbox here")
 def test_grok_sandbox_actually_blocks_writes_outside_the_worktree(tmp_path):
     """Live kernel-level check: a command in the sandbox can write the worktree but not
     /etc or the real home."""
