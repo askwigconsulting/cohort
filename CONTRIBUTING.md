@@ -59,6 +59,22 @@ tree is always restored to the branch you started on.
 - Imperative mood, ≤50-char subject (`Add X`, not `Added X`).
 - One logical change per commit.
 
+## Licensing of contributions
+
+Cohort is MIT-licensed. **By opening a pull request you agree that your contribution is
+licensed under the same MIT terms**, and that you have the right to license it — that it is
+your own work, or that you have permission from whoever owns it (an employer, typically).
+
+That last clause is the one worth reading twice: a contribution written on an employer's time
+or equipment may belong to the employer, not to you, and neither of us can undo that after it
+is merged and released.
+
+No CLA, no signed paperwork, no copyright assignment — you keep the copyright in what you
+write. This paragraph exists because 1.0.0 freezes provenance: after a stable release, the
+history is what people rely on, and reconstructing who agreed to what is far more expensive
+than stating it up front. If you would rather mark it per commit, `git commit -s` adds the
+standard `Signed-off-by:` line and means the same thing.
+
 ## Security
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md) — please don't open a

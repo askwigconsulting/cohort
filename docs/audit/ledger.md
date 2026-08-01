@@ -61,11 +61,45 @@ office / my-office / project three-tier machinery built to host them. It changes
 stability promise should cover, since people depend on what they ported, not on what they
 forked.
 
-Not yet established, and the questions a later run should answer rather than assume: whether
-any of the four installed it *themselves* (the acquisition channel) or were set up by the
-owner; whether any runs a company fork; what the least technical of them got stuck on; and
-which parts were ported versus left behind — that last one names the load-bearing surface
-directly.
+Answered by the owner, 2026-07-31, and three of the four answers move something:
+
+**The acquisition channel works, and worked before it was documented.** Three of the four
+were installed by the owner telling them to point their AI IDE at the repo — no walkthrough,
+no `AGENTS.md` (it did not exist yet), and all three succeeded. Agent-mediated install is not
+a hypothesis; it is the observed default. `AGENTS.md` hardens a channel already carrying
+traffic rather than opening one.
+
+**Onboarding cost was mis-ranked, and the coordinator's prediction was wrong.** r2's GTM pass
+flagged the ~10-step onboarding as an activation risk, and the r3 follow-up predicted the
+durable-PATH symlink as the likely sticking point. Nobody got stuck on anything. The reason
+is structural rather than luck: **the agent absorbs the friction**, so step count is close to
+free when a machine performs the steps. Onboarding cost should be re-weighted for the
+agent-install path, and only counts for a human following the README by hand.
+
+**Two of the four have committed back** — so the inbound-IP gap is no longer one stray commit.
+r3's business-ops finding (no DCO, no CLA, inbound relying on GitHub ToS) now has several
+contributors behind it, and 1.0.0 is the moment provenance freezes. This is the cheapest
+pre-1.0.0 item on the list: one line in `CONTRIBUTING.md`.
+
+**The company path is a third pattern, and not the one the architecture centres.** It is not a
+fork, and not a one-time port: the owner built a separate company harness in parallel and
+**asks it weekly to pull the good parts out of Cohort**. Recurring, agent-mediated extraction.
+What travelled: **agents, skills and commands** — the canonical artifacts. What did not: the
+**engine layer**, deliberately, because company code cannot carry the same risk.
+
+Two consequences worth acting on:
+
+1. **The load-bearing surface is the canonical artifact format.** That is what people depend
+   on, port, and pull weekly — so it is what a 1.0.0 stability promise has to cover. The
+   office/my-office/project topology hosts it and travels with nobody.
+2. **Default-allow egress is a barrier in a company context, on direct evidence.** The company
+   harness swapped the engine layer out *specifically* to avoid that risk profile. The
+   posture is defensible for a solo developer on their own code and is evidently not adopted
+   as-is where the code belongs to an employer — which is a product finding, not a legal one.
+
+Uncomfortable but worth stating: the engine/doer/gate layer is the most heavily hardened
+subsystem in the repo and the one nobody ported, while the artifacts that do travel have had
+comparatively little audit attention. A later run should weight the slice accordingly.
 
 ### The posture is the part worth attacking
 
