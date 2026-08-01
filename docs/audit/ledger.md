@@ -26,12 +26,12 @@ because the next audit will silently build on it. Re-confirm the whole block eac
 
 | Field | Value | Source |
 |---|---|---|
-| **Stage** | In use by **5 people including the owner**, at a range of technical levels (owner, 2026-07-31). Revenue model still 🔲 | owner |
+| **Stage** | Free open source, **no revenue model intended** — the owner's stated goal is that the world has this and helps improve it (owner, 2026-08-01). In use by 5 people including the owner, at a range of technical levels | owner |
 | **Distribution** | Git clone, or an AI agent following `AGENTS.md`. **Deliberately not on PyPI** (owner, 2026-07-31); the name there is an unrelated project (#234) | owner + `AGENTS.md` |
-| **Jurisdictions — entity** | 🔲 — "Askwig Consulting" appears only as a copyright string | `LICENSE:3` |
+| **Jurisdictions — entity** | No entity. "Askwig Consulting" is **not a registered name**; the owner operates personally (owner, 2026-08-01). Operating jurisdiction itself still 🔲, and now lower-stakes: with no entity and no data collected, it bears mainly on B3 (trademark) | owner, `LICENSE:3` |
 | **Jurisdictions — users** | 🔲 — unknown; a public repo has no user registry | owner |
-| **Entity form & filings** | 🔲 — registered entity or trade name? filing calendar? who owns each? | owner |
-| **Insurance** | 🔲 | owner |
+| **Entity form & filings** | **None.** Unregistered, operated personally, so there is no filing calendar to own (owner, 2026-08-01). The consequence to keep visible: liability for the tool's behaviour sits with the owner personally, not a company | owner |
+| **Insurance** | 🔲 — not stated; follows from the unregistered/personal posture rather than being an independent decision | owner |
 | **Licence (outbound)** | MIT | `LICENSE` |
 | **Licence (inbound)** | Implicit GitHub ToS — no DCO or CLA, and one external contributor's commit is in the tree | `CONTRIBUTING.md`, `git log` |
 | **Dependencies** | `typer`, `click`, `PyYAML` (+ their trees) — all permissive, none copyleft | `pyproject.toml`, `requirements.lock` |
@@ -126,14 +126,33 @@ a single "just send us anonymous usage stats" feature would move Cohort from "no
 to "processor", and the first place it would show up is a new outbound call in `cli/`. A
 future run should re-run that grep rather than trusting this row.
 
-The unresolved question is narrower and is **not** answered here: Cohort's *default-allow*
-egress means the author chose, on the user's behalf, that source goes to three vendors unless
-the user opts out. Whether distributing a tool that does that creates any exposure for the
-distributor is a question for counsel, not for this ledger — it is **B1** in the r3 report's
+The unresolved question is narrower: Cohort's *default-allow* egress means the author chose,
+on the user's behalf, that source goes to three vendors unless the user opts out. That is
+**B1** in the r3 report's
 [§BUSINESS-OPS](r3-2026-07-31.md#business-ops--legal-compliance-filings-fable) section,
 alongside **B2** (inbound licensing of commits merged before `CONTRIBUTING.md` stated terms)
-and **B3** (trademark clearance on the name). All three are tagged REQUIRES PROFESSIONAL
-OPINION: framed, deliberately unanswered, and one consult covers them.
+and **B3** (trademark clearance on the name).
+
+**Owner decision, 2026-08-01: assessed as low risk; no counsel consult for now.** Recorded as
+the owner's risk acceptance, not as a legal conclusion — this ledger cannot make one, and the
+questions stay framed above so a later run finds the reasoning rather than re-deriving it.
+
+Two things to keep accurate under that decision, because the record should survive the
+summary:
+
+* The stated basis was "we are not collecting personal info at all." That is exactly right
+  about **Cohort itself** — no telemetry, no accounts, no server, verifiable by grep. The
+  narrower fact B1 turns on is different: Cohort **transmits the user's source by default**,
+  and that source can contain personal data. It travels under the user's own keys and vendor
+  agreements, which is the substance of the distributor-not-processor position; the design
+  choice of the *default* is the part left unexamined. Nothing here says that is wrong — only
+  that the decision covers a slightly narrower question than the sentence suggests.
+* **B2 gets more important under the stated goal, not less.** "I want the world to have this
+  and help improve it" is a bet on contribution, and provenance is a project-health question
+  before it is a liability one: relicensing, or dual-licensing, later means chasing every
+  contributor. `CONTRIBUTING.md` (0.16.0) stops the gap growing; commits merged before it
+  remain as they were. **B3** is likewise a cost question rather than a liability one — a
+  post-1.0 rename breaks every install script, since the command *is* the brand.
 
 ## Dimension coverage
 
