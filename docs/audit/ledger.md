@@ -26,7 +26,7 @@ because the next audit will silently build on it. Re-confirm the whole block eac
 
 | Field | Value | Source |
 |---|---|---|
-| **Stage** | 🔲 — pre-revenue open source? private beta? | owner |
+| **Stage** | In use by **5 people including the owner**, at a range of technical levels (owner, 2026-07-31). Revenue model still 🔲 | owner |
 | **Distribution** | Git clone, or an AI agent following `AGENTS.md`. **Deliberately not on PyPI** (owner, 2026-07-31); the name there is an unrelated project (#234) | owner + `AGENTS.md` |
 | **Jurisdictions — entity** | 🔲 — "Askwig Consulting" appears only as a copyright string | `LICENSE:3` |
 | **Jurisdictions — users** | 🔲 — unknown; a public repo has no user registry | owner |
@@ -40,6 +40,32 @@ because the next audit will silently build on it. Re-confirm the whole block eac
 | **Third-party processors** | Anthropic, OpenAI, xAI — reached **with the user's own API keys**, under the user's own agreements with them. Cohort orchestrates the call; it is not a party to it | `engines/` |
 | **Egress default** | **Allow**, opt-out per repo via the literal `cohort:egress=deny` marker | `engines/gates.py`, README |
 | **Regulatory posture** | The claim: Cohort is a **locally-run developer tool**, not a service, not a processor, and holds no user data off-machine. What keeps it true: no telemetry, no server, no account system — verifiable by the greps above, and worth re-verifying each run rather than assuming | derived |
+
+### Adoption evidence — and what it does to the go-to-market premise
+
+**r3's G2 said the company-fork assumption had never been tested against a single real org,
+with no named user, pilot or LOI. The first half is now refuted:** four people besides the
+owner use Cohort, at deliberately varied technical levels (owner, 2026-07-31). That range is
+worth more than the count — it is the only way to find where onboarding actually breaks, and
+it arrived the same week the install path became a documented contract (`AGENTS.md`).
+
+**The second half is not refuted so much as redirected, and it is the finding worth carrying
+forward.** The owner is bringing Cohort into their company by **porting the important parts
+into an existing company harness**, not by running a company Cohort fork. That is the
+best-informed adopter available choosing a path the architecture does not centre — behaviour,
+not stated intention, which is the stronger evidence.
+
+If that generalises, the wedge is **the pieces, not the topology**: the gates, the canonical
+artifact format, the commands — things another harness can absorb — rather than the
+office / my-office / project three-tier machinery built to host them. It changes what a 1.0.0
+stability promise should cover, since people depend on what they ported, not on what they
+forked.
+
+Not yet established, and the questions a later run should answer rather than assume: whether
+any of the four installed it *themselves* (the acquisition channel) or were set up by the
+owner; whether any runs a company fork; what the least technical of them got stuck on; and
+which parts were ported versus left behind — that last one names the load-bearing surface
+directly.
 
 ### The posture is the part worth attacking
 
