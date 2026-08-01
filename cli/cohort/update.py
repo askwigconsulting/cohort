@@ -52,18 +52,38 @@ def _git(source: Path, *args: str, timeout: int = _GIT_TIMEOUT) -> tuple[Optiona
         return None, ""
 
 
+def _unquote_toml_scalar(rhs: Optional[str]) -> Optional[str]:
+    """The string value of a simple TOML scalar right-hand side, or None."""
+    if rhs is None:
+        return None
+    value = rhs.split("#", 1)[0].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value or None
+
+
 def _read_update_config(home: Path) -> tuple[Optional[str], Optional[str]]:
     """``(upstream_remote, upstream_branch)`` from the global ``cohort.toml``
-    ``[update]`` table, or ``(None, None)``. Never raises."""
-    cfg = CohortPaths(home).cohort_home / "cohort.toml"
-    try:
-        import tomllib  # 3.11+; absent on 3.10 → fall back to defaults
+    ``[update]`` table, or ``(None, None)``. Never raises.
 
-        data = tomllib.loads(cfg.read_text(encoding="utf-8"))
-        upd = data.get("update", {}) if isinstance(data, dict) else {}
-        return upd.get("upstream_remote"), upd.get("upstream_branch")
-    except Exception:  # noqa: BLE001 - missing file, parse error, old python
+    Read with the stdlib scanner rather than ``tomllib``, which is 3.11+ while this
+    project's floor is 3.10 (``requires-python``). The previous implementation imported
+    ``tomllib`` inside the ``try`` and returned ``(None, None)`` on ``ModuleNotFoundError``,
+    so on the floor the whole ``[update]`` table was silently ignored: a configured
+    upstream remote or branch did nothing, and fell back to the defaults without a word.
+    ``_require_signed`` already avoided ``tomllib`` for exactly this reason; this now
+    matches it.
+    """
+    try:
+        text = _config_text(home)
+    except Exception:  # noqa: BLE001 - present but unreadable → defaults
         return None, None
+    if text is None:
+        return None, None
+    return (
+        _unquote_toml_scalar(_update_table_value(text, "upstream_remote")),
+        _unquote_toml_scalar(_update_table_value(text, "upstream_branch")),
+    )
 
 
 def _config_text(home: Path) -> Optional[str]:

@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from .timeutil import parse_iso8601
 from .install_model import CohortPaths
 from .loader import load_artifact
 
@@ -25,7 +26,7 @@ def _utc_now() -> datetime:
 
 
 def _to_utc(value: Any) -> datetime:
-    dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+    dt = value if isinstance(value, datetime) else parse_iso8601(str(value))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)

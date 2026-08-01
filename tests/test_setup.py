@@ -359,7 +359,7 @@ def test_setup_preserves_existing_toml_keys(home, source):
     proc = run_cli("setup", "--ide", "claude", "--company-url", "https://example.com/co.git",
                    "--source", str(source), home=home)
     assert proc.returncode == 0
-    import tomllib
+    tomllib = pytest.importorskip("tomllib", reason="needs 3.11+ (project floor is 3.10)")
     data = tomllib.loads((cfg_dir / "cohort.toml").read_text(encoding="utf-8"))
     assert data["top_key"] == 5            # top-level key preserved
     assert data["other"]["foo"] == "bar"   # other table preserved
@@ -370,7 +370,7 @@ def test_setup_rewires_update_table_without_duplicating(home, source):
     for url in ("https://example.com/a.git", "https://example.com/b.git"):
         run_cli("setup", "--ide", "claude", "--company-url", url,
                 "--source", str(source), home=home)
-    import tomllib
+    tomllib = pytest.importorskip("tomllib", reason="needs 3.11+ (project floor is 3.10)")
     text = (home / ".cohort" / "cohort.toml").read_text(encoding="utf-8")
     data = tomllib.loads(text)  # still parses after two rewrites
     assert data["update"]["upstream_remote"] == "company"

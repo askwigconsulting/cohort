@@ -241,9 +241,16 @@ def test_unverified_ides_stage_no_hook_fragment():
         assert not [r for r in rels if r.endswith("-hooks.json")], ide
 
 
-def test_resolve_upstream_falls_back_when_tomllib_absent(tmp_path, monkeypatch):
-    """Python 3.10 ships no ``tomllib``; the lazy import raises ImportError and the
-    config read must degrade to defaults rather than break the session-start hook."""
+def test_resolve_upstream_honours_config_without_tomllib(tmp_path, monkeypatch):
+    """The `[update]` table must be readable on Python 3.10, which ships no `tomllib`.
+
+    This test previously asserted the opposite — that the config degrades to defaults when
+    `tomllib` is absent — which encoded a real gap as intended behaviour: on the project's
+    own floor (`requires-python = ">=3.10"`), a configured upstream remote or branch was
+    silently ignored and the defaults used instead, with no warning. `_require_signed`
+    already avoided `tomllib` for exactly this reason; `_read_update_config` now matches it,
+    so the table is honoured on every supported interpreter.
+    """
     _, src = _make_upstream_and_clone(tmp_path)
     home = tmp_path / "home"
     (home / ".cohort").mkdir(parents=True)
@@ -251,7 +258,17 @@ def test_resolve_upstream_falls_back_when_tomllib_absent(tmp_path, monkeypatch):
         '[update]\nupstream_remote = "up"\nupstream_branch = "release"\n', encoding="utf-8"
     )
     monkeypatch.setitem(sys.modules, "tomllib", None)  # `import tomllib` → ImportError
-    # Config override is unreadable → falls back to origin + the clone's default branch.
+
+    assert resolve_upstream(src, home) == ("up", "release")
+
+
+def test_resolve_upstream_falls_back_when_no_config_exists(tmp_path, monkeypatch):
+    """Absent config still means defaults — the fallback path itself is unchanged."""
+    _, src = _make_upstream_and_clone(tmp_path)
+    home = tmp_path / "home"
+    (home / ".cohort").mkdir(parents=True)
+    monkeypatch.setitem(sys.modules, "tomllib", None)
+
     assert resolve_upstream(src, home) == ("origin", "main")
 
 
