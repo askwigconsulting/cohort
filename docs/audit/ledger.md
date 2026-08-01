@@ -129,8 +129,11 @@ future run should re-run that grep rather than trusting this row.
 The unresolved question is narrower and is **not** answered here: Cohort's *default-allow*
 egress means the author chose, on the user's behalf, that source goes to three vendors unless
 the user opts out. Whether distributing a tool that does that creates any exposure for the
-distributor is a question for counsel, not for this ledger. See the r3 report, finding 3,
-tagged REQUIRES PROFESSIONAL OPINION.
+distributor is a question for counsel, not for this ledger — it is **B1** in the r3 report's
+[§BUSINESS-OPS](r3-2026-07-31.md#business-ops--legal-compliance-filings-fable) section,
+alongside **B2** (inbound licensing of commits merged before `CONTRIBUTING.md` stated terms)
+and **B3** (trademark clearance on the name). All three are tagged REQUIRES PROFESSIONAL
+OPINION: framed, deliberately unanswered, and one consult covers them.
 
 ## Dimension coverage
 
