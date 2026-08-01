@@ -8,12 +8,35 @@ end to end without any external engine or network.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
 from cohort.engines import gates, ratchet
+
+
+@pytest.fixture(autouse=True)
+def _reclaim_leaked_worktrees():
+    """Remove any proposal worktree a test leaves behind.
+
+    `run_ratchet` deliberately leaves its worktree in place on success so a human can
+    review the diff — correct for a real run, and a leak in a suite that calls it ten
+    times. Nothing reclaimed them afterwards, so every full-suite run stranded up to ten
+    `cohort-proposal-*` directories under the system temp dir; 1,592 had accumulated over
+    nine days and eventually exhausted the tmpfs quota mid-run.
+
+    Autouse and snapshot-based rather than per-call cleanup, so a test added later cannot
+    forget: only directories that appear *during* a test are removed, never one that was
+    already there.
+    """
+    tmp = Path(tempfile.gettempdir())
+    before = set(tmp.glob("cohort-proposal-*"))
+    yield
+    for leaked in set(tmp.glob("cohort-proposal-*")) - before:
+        shutil.rmtree(leaked, ignore_errors=True)
 
 # Cross-platform evaluator (no Unix `cat`): a committed script prints metric.txt's number.
 _EVAL = "python read.py"

@@ -178,6 +178,94 @@ def _print_validate_human(tree: TreeResult) -> None:
 
 
 @app.command()
+def gc(
+    days: float = typer.Option(
+        7.0, "--days",
+        help="Ignore artifacts younger than this. Recent ones are usually still wanted.",
+    ),
+    keep_transcripts: int = typer.Option(
+        50, "--keep-transcripts",
+        help="Always retain this many newest engine transcripts, whatever their age.",
+    ),
+    all_projects: bool = typer.Option(
+        False, "--all-projects",
+        help="Sweep every repo in Cohort's registry, not just this one.",
+    ),
+    include_live: bool = typer.Option(
+        False, "--include-live",
+        help="Also remove worktrees git still resolves — a diff someone may be reviewing.",
+    ),
+    apply_: bool = typer.Option(
+        False, "--apply", help="Actually remove. Without this, nothing is deleted."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Reclaim what Cohort left behind: stale proposal worktrees and old transcripts.
+
+    Reports by default and removes only with --apply, because reclaiming is deletion.
+    A doer or ratchet run deliberately keeps its worktree so a human can review the diff,
+    and nothing ever collected them: 1,592 accumulated over nine days on the author's
+    machine and exhausted the temp quota.
+    """
+    from . import gc as gc_mod
+    from .project import find_repo_root
+
+    repo_root = find_repo_root(Path.cwd())
+    report = gc_mod.scan(
+        repo_root=repo_root,
+        all_projects_home=Path.home() if all_projects else None,
+        min_age_days=days, keep_transcripts=keep_transcripts,
+    )
+    if apply_:
+        gc_mod.reclaim(report, include_live=include_live, repo_root=repo_root)
+
+    safe = [i for i in report.items if i.safe_by_default]
+    live = [i for i in report.items if not i.safe_by_default]
+    payload = {
+        "action": "gc",
+        "applied": apply_,
+        "reclaimable": len(safe),
+        "live_worktrees": len(live),
+        "bytes": report.reclaimable_bytes,
+        "removed": [str(p) for p in report.removed],
+    }
+    if json_output:
+        typer.echo(_json.dumps(payload, indent=2))
+        raise typer.Exit(code=0)
+
+    if not report.items:
+        typer.echo("Nothing to reclaim — no stale Cohort artifacts found.")
+        raise typer.Exit(code=0)
+
+    mb = report.reclaimable_bytes / 1_000_000
+    if apply_:
+        typer.echo(f"Reclaimed {len(report.removed)} item(s), about {mb:.1f} MB.")
+    else:
+        typer.echo(
+            f"Would reclaim {len(safe)} item(s), about {mb:.1f} MB. "
+            "Nothing was deleted — re-run with --apply."
+        )
+    for item in safe[:10]:
+        typer.echo(f"  {item.kind:18s} {item.state:5s} {item.age_days:5.1f}d  {item.path}")
+    if len(safe) > 10:
+        typer.echo(f"  … and {len(safe) - 10} more")
+    notes = [i for i in live if i.kind == "working-note"]
+    worktrees = [i for i in live if i.kind != "working-note"]
+    if worktrees:
+        typer.echo(
+            f"\nSkipped {len(worktrees)} live worktree(s) — git still resolves them, so a "
+            "diff may be under review. Use --include-live to remove those too."
+        )
+    if notes:
+        typer.echo(
+            f"\n{len(notes)} working note(s) are staged and unpromoted. These are never "
+            "deleted automatically — an unpromoted note may be the only copy of context a "
+            "session meant to keep. Promote or discard them from the session that owns them."
+        )
+    raise typer.Exit(code=0)
+
+
+@app.command()
 def validate(
     ctx: typer.Context,
     path: Path = typer.Argument(

@@ -11,6 +11,37 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`cohort gc` — Cohort now cleans up after itself.** Several paths deliberately leave
+  artifacts on disk: a doer or ratchet run keeps its worktree so a human can review the
+  diff, and every `engine review` writes a transcript so what was egressed stays auditable.
+  Both are correct in isolation, and nothing ever collected either — 1,592 proposal
+  worktrees accumulated over nine days on one machine.
+
+  Reclaiming is deletion, so the command **reports by default and removes only with
+  `--apply`**. It matches only Cohort's own `cohort-proposal-` prefix inside the system
+  temp directory, never a path a user named; it ignores anything younger than `--days`
+  (default 7); it keeps a tail of the newest transcripts whatever their age, because they
+  are the record of what left the machine; and **a worktree git still resolves is reported
+  but never removed by default** — "left for review" means someone may still want that
+  diff, and age alone is not evidence otherwise.
+
+  `--all-projects` sweeps every repo in Cohort's registry, because a project that merely
+  *uses* Cohort should not have to visit each repo to reclaim what Cohort left there. The
+  registry is the boundary: a repo Cohort was never initialised in is out of scope, as is
+  anything inside a registered repo that Cohort did not create.
+
+  **Working notes are surfaced and never deleted, by any flag.** They are disposable by
+  design — staged during a turn, promoted at a session boundary — but an unpromoted note is
+  the only copy of context a session meant to keep, and `gc` cannot tell the two apart. They
+  are reported so you know they are there, and left for the session that owns them.
+
+### Fixed
+- **The test suite no longer leaks worktrees.** `run_ratchet` leaves its worktree in place
+  on success by design, and the suite calls it ten times, so every full run stranded up to
+  ten directories. An autouse fixture now removes only those that appear *during* a test —
+  snapshot-based rather than per-call, so a test added later cannot forget.
+
 ## [0.16.0] — 2026-08-01 · Agent-driven install
 
 ### Added
