@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .timeutil import parse_iso8601
 from .frontmatter import dump_frontmatter
 from .gitutil import GIT_ENV, GIT_TIMEOUT
 from .install_model import CohortPaths
@@ -346,7 +347,7 @@ def _parse_timestamp(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
-        dt = datetime.fromisoformat(value.strip())
+        dt = parse_iso8601(value)
     except ValueError:
         return None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
