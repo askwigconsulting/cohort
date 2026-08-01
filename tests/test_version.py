@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import cohort
@@ -12,9 +12,30 @@ import cohort
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _pyproject_version() -> str:
+    """The `[project] version` from pyproject, read without `tomllib`.
+
+    `tomllib` is 3.11+, and this project's floor is 3.10 (`requires-python`), so importing
+    it at module scope made this whole module fail to import on 3.10 — taking the version
+    check down on the exact interpreter it most needed to run on. Only one scalar is
+    needed here, so a scoped scan beats adding a parser dependency.
+    """
+    text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    in_project = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_project = stripped == "[project]"
+            continue
+        if in_project:
+            match = re.match(r'^version\s*=\s*"([^"]+)"', stripped)
+            if match:
+                return match.group(1)
+    raise AssertionError("no [project] version found in pyproject.toml")
+
+
 def test_version_is_single_sourced_with_pyproject():
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert cohort.__version__ == pyproject["project"]["version"]
+    assert cohort.__version__ == _pyproject_version()
 
 
 def test_version_flag_prints_version_and_exits_0():
