@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-07-31 · Multi-vendor unblock
+
 ### Added
 - **`/barney`** — explain a complex topic so simply nobody can get it wrong. Encodes the
   method (name the one idea, decide what to omit, say where the analogy breaks, order steps
@@ -715,7 +717,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/askwigconsulting/cohort/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/askwigconsulting/cohort/compare/v0.11.0...v0.12.0
