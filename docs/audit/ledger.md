@@ -87,19 +87,36 @@ fork, and not a one-time port: the owner built a separate company harness in par
 What travelled: **agents, skills and commands** — the canonical artifacts. What did not: the
 **engine layer**, deliberately, because company code cannot carry the same risk.
 
-Two consequences worth acting on:
+**Scope correction (owner, same day).** An earlier draft of this entry read the company's
+choice as evidence that the engine layer "travels with nobody". That was one data point
+generalised into a pattern, and it is wrong. **The four individual users run Cohort whole,
+engine included** — the engine layer is load-bearing for them, and they are currently most of
+the user base. The company is a single adopter with a specific constraint, not the trend.
 
-1. **The load-bearing surface is the canonical artifact format.** That is what people depend
-   on, port, and pull weekly — so it is what a 1.0.0 stability promise has to cover. The
-   office/my-office/project topology hosts it and travels with nobody.
-2. **Default-allow egress is a barrier in a company context, on direct evidence.** The company
-   harness swapped the engine layer out *specifically* to avoid that risk profile. The
-   posture is defensible for a solo developer on their own code and is evidently not adopted
-   as-is where the code belongs to an employer — which is a product finding, not a legal one.
+The accurate picture is two populations depending on two different surfaces:
 
-Uncomfortable but worth stating: the engine/doer/gate layer is the most heavily hardened
-subsystem in the repo and the one nobody ported, while the artifacts that do travel have had
-comparatively little audit attention. A later run should weight the slice accordingly.
+| Population | Depends on | n |
+|---|---|---|
+| Individual users | **All of Cohort**, engine and gates included | 4 |
+| A company harness (employer code) | The **canonical artifacts** — agents, skills, commands — pulled weekly; own engine | 1 |
+
+Consequences, scoped to what the evidence actually supports:
+
+1. **1.0.0 has to promise stability on both surfaces, for different reasons.** The canonical
+   artifact format is what crosses a harness boundary, so it is what an outside consumer
+   pins against. The engine and gate behaviour is what individual users run directly, so it
+   is what breaks their day if it moves. Neither can be treated as the incidental one.
+2. **Default-allow egress looks like a barrier where the code belongs to an employer — n=1,
+   and worth watching rather than acting on.** The company swapped the engine out
+   specifically to avoid that risk profile. That is a real signal from a well-informed
+   adopter, and it is one organisation; it does not yet establish that the posture is wrong
+   for companies generally. The cheap response is a documented low-risk configuration, not a
+   change of default.
+
+The audit-attention observation survives the correction in weaker form: the engine layer is
+the most heavily hardened subsystem here, and the canonical artifact format — depended on by
+both populations, and the only surface that crosses a boundary — has had comparatively little
+of it. A later run should weight the slice toward the artifacts.
 
 ### The posture is the part worth attacking
 
