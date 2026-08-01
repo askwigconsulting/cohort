@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.16.0] — 2026-08-01 · Agent-driven install
+
 ### Added
 - **`AGENTS.md` — the install contract for an AI agent.** Cohort is distributed by asking an
   agent to install it, not via a package index, which makes the install instructions part of
@@ -757,7 +759,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/askwigconsulting/cohort/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/askwigconsulting/cohort/compare/v0.12.0...v0.13.0
