@@ -61,3 +61,29 @@ jobs:
         run: cohort recompile --ide claude --source . --dry-run
       - name: Full suite + golden/parity + install-smoke + e2e + YAML-safety lint
         run: python -m pytest -q
+
+  # A single, matrix-shape-independent gate for branch protection.
+  #
+  # Branch protection names the contexts it requires, and matrix job names embed every
+  # matrix axis — so adding the `python-version` axis silently renamed
+  # `test (ubuntu-latest)` to `test (ubuntu-latest, 3.10)` and friends. The two required
+  # contexts then referred to jobs that no longer exist: they sat pending forever, every
+  # PR reported BLOCKED however green the real jobs were, and a release went out on red CI
+  # because nobody could tell "not run yet" from "not reporting, ever".
+  #
+  # Requiring THIS job instead decouples protection from the matrix: its name never
+  # changes, so the axes can grow or shrink without anyone editing repo settings.
+  #
+  # `if: always()` is what makes it a gate rather than a rubber stamp — without it the job
+  # would be *skipped* when `test` fails, and a skipped required check does not block.
+  # `needs.test.result` is `success` only when every matrix leg succeeded.
+  ci:
+    name: ci
+    needs: [test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every matrix job to have succeeded
+        run: |
+          echo "aggregate result of the test matrix: ${{ needs.test.result }}"
+          test "${{ needs.test.result }}" = "success"
