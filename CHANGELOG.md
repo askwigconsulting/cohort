@@ -11,6 +11,46 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`AGENTS.md` — the install contract for an AI agent.** Cohort is distributed by asking an
+  agent to install it, not via a package index, which makes the install instructions part of
+  the product surface. Every step carries a check the agent must pass before continuing,
+  because a step you can perform but cannot verify is not finished. It also states, up front,
+  what an installer should tell the user *before* installing: that this writes into their home
+  directory, and that consult commands send source to a third-party vendor by default.
+- **A prominent warning that `pip install cohort` is a different project.** The name on PyPI
+  belongs to an unrelated multi-agent orchestration tool. Under a package-index model that is
+  a naming annoyance; under agent-driven install it is a correctness bug — an agent told
+  "install cohort" will plausibly run it, install the other package, and report success.
+- **An inbound-licence statement in `CONTRIBUTING.md`.** No CLA, no copyright assignment —
+  opening a pull request is the agreement, and contributors keep their copyright. The clause
+  that earns its place is right-to-license: work written on an employer's time may belong to
+  the employer, and that cannot be undone after a merge and a release.
+
+### Fixed
+- **The grok CLI is reachable inside its sandbox.** The bubblewrap jail bound `/usr` but not
+  the real home, so a grok installed the documented way (`npm install -g --prefix ~/.local`)
+  was invisible and every run died at `execvp`. The CLI doer had therefore never worked for a
+  user-local install. Binding the launcher alone is not enough — npm installs it as a symlink
+  into a package tree — so the launcher's directory and the `node_modules` root above its
+  target are both bound read-only, skipping anything already under `/usr`.
+- **A grok CLI run that fails at the vendor is no longer served as a review.** grok-cli reports
+  API errors as an ordinary assistant turn and still exits 0, so a well-formed transcript could
+  contain nothing but `Sorry, I encountered an error: … 410` and be handed back as the answer.
+  Only an *entirely* failed run counts, so a transient error followed by real analysis is still
+  a review rather than discarded work.
+- **`cohort init` no longer scaffolds repos that commit their engine transcripts.** Transcripts
+  record what an external engine read and was sent — excerpts of the repo's source plus the
+  model's analysis. They are a local audit trail, and nothing else in the scaffold ignored
+  them, so a routine `git add -A` committed them and a repo that later went public published
+  the lot.
+- **Office quarantine prunes records whose artifact no longer exists.** `office_reconcile` was
+  written for this and called from nowhere, so office pending records only ever grew and
+  `cohort office review` listed identities a reviewer could not resolve — the artifact they
+  would approve had been deleted upstream or superseded by a later pull.
+- Removed `ToolPolicyError`, an exception class defined once and never raised or caught, left
+  behind when tool refusals became return values.
+
 ## [0.15.0] — 2026-07-31 · Multi-vendor unblock
 
 ### Added
