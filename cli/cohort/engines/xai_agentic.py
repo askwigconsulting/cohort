@@ -45,7 +45,6 @@ from cohort.engines import EngineSpec, get_engine
 from cohort.engines import gates
 from cohort.engines.xai import (
     EngineAuthError,
-    EngineError,
     EnginePayloadError,
     EngineUnavailableError,
     _RETRY_BACKOFF_SECONDS,
@@ -77,11 +76,6 @@ _SECRET_FILE_NAMES = frozenset(
     {".netrc", ".npmrc", ".pgpass", "credentials", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
 )
 _SECRET_FILE_SUFFIXES = (".pem", ".key", ".pfx", ".p12", ".keystore", ".jks")
-
-
-class ToolPolicyError(EngineError):
-    """A tool request was refused by the read-only path policy. Not fatal to the loop —
-    the refusal is returned to the model as the tool result so it can adapt."""
 
 
 @dataclass

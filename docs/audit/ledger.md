@@ -14,6 +14,124 @@ filesystem, moves data off-machine, executes external-engine code, or bootstraps
 - **Trust bootstrap** (`update.py` signed-commit + git transport allowlist, `quarantine.py` + `myoffice.py` sync quarantine).
 - **Advisory tool-strip** (`ir.py` `is_doer` + the four adapters).
 
+## Business context
+
+Every business-track finding is derived from these facts, so a stale or absent premise
+invalidates the lot — which is why `/audit` treats declaring them as a first-run job. Three
+runs went without, so `business-ops` (r3) reasoned from guesses and said so.
+
+**Fields marked 🔲 are unanswerable from the repository and need the owner.** Leave the box
+unticked rather than guessing: a plausible-looking wrong jurisdiction is worse than a blank,
+because the next audit will silently build on it. Re-confirm the whole block each run.
+
+| Field | Value | Source |
+|---|---|---|
+| **Stage** | In use by **5 people including the owner**, at a range of technical levels (owner, 2026-07-31). Revenue model still 🔲 | owner |
+| **Distribution** | Git clone, or an AI agent following `AGENTS.md`. **Deliberately not on PyPI** (owner, 2026-07-31); the name there is an unrelated project (#234) | owner + `AGENTS.md` |
+| **Jurisdictions — entity** | 🔲 — "Askwig Consulting" appears only as a copyright string | `LICENSE:3` |
+| **Jurisdictions — users** | 🔲 — unknown; a public repo has no user registry | owner |
+| **Entity form & filings** | 🔲 — registered entity or trade name? filing calendar? who owns each? | owner |
+| **Insurance** | 🔲 | owner |
+| **Licence (outbound)** | MIT | `LICENSE` |
+| **Licence (inbound)** | Implicit GitHub ToS — no DCO or CLA, and one external contributor's commit is in the tree | `CONTRIBUTING.md`, `git log` |
+| **Dependencies** | `typer`, `click`, `PyYAML` (+ their trees) — all permissive, none copyleft | `pyproject.toml`, `requirements.lock` |
+| **Personal data — collected by us** | **None.** No telemetry, no analytics, no phone-home, no accounts, no server | `grep` over `cli/` returns zero hits |
+| **Personal data — on the user's machine** | Session records, snapshots, feedback, proposals, engine transcripts, working memory — all local, under `~/.cohort/` and `<repo>/.cohort/`. Never transmitted to us | `project.py`, `myoffice.py` |
+| **Third-party processors** | Anthropic, OpenAI, xAI — reached **with the user's own API keys**, under the user's own agreements with them. Cohort orchestrates the call; it is not a party to it | `engines/` |
+| **Egress default** | **Allow**, opt-out per repo via the literal `cohort:egress=deny` marker | `engines/gates.py`, README |
+| **Regulatory posture** | The claim: Cohort is a **locally-run developer tool**, not a service, not a processor, and holds no user data off-machine. What keeps it true: no telemetry, no server, no account system — verifiable by the greps above, and worth re-verifying each run rather than assuming | derived |
+
+### Adoption evidence — and what it does to the go-to-market premise
+
+**r3's G2 said the company-fork assumption had never been tested against a single real org,
+with no named user, pilot or LOI. The first half is now refuted:** four people besides the
+owner use Cohort, at deliberately varied technical levels (owner, 2026-07-31). That range is
+worth more than the count — it is the only way to find where onboarding actually breaks, and
+it arrived the same week the install path became a documented contract (`AGENTS.md`).
+
+**The second half is not refuted so much as redirected, and it is the finding worth carrying
+forward.** The owner is bringing Cohort into their company by **porting the important parts
+into an existing company harness**, not by running a company Cohort fork. That is the
+best-informed adopter available choosing a path the architecture does not centre — behaviour,
+not stated intention, which is the stronger evidence.
+
+If that generalises, the wedge is **the pieces, not the topology**: the gates, the canonical
+artifact format, the commands — things another harness can absorb — rather than the
+office / my-office / project three-tier machinery built to host them. It changes what a 1.0.0
+stability promise should cover, since people depend on what they ported, not on what they
+forked.
+
+Answered by the owner, 2026-07-31, and three of the four answers move something:
+
+**The acquisition channel works, and worked before it was documented.** Three of the four
+were installed by the owner telling them to point their AI IDE at the repo — no walkthrough,
+no `AGENTS.md` (it did not exist yet), and all three succeeded. Agent-mediated install is not
+a hypothesis; it is the observed default. `AGENTS.md` hardens a channel already carrying
+traffic rather than opening one.
+
+**Onboarding cost was mis-ranked, and the coordinator's prediction was wrong.** r2's GTM pass
+flagged the ~10-step onboarding as an activation risk, and the r3 follow-up predicted the
+durable-PATH symlink as the likely sticking point. Nobody got stuck on anything. The reason
+is structural rather than luck: **the agent absorbs the friction**, so step count is close to
+free when a machine performs the steps. Onboarding cost should be re-weighted for the
+agent-install path, and only counts for a human following the README by hand.
+
+**Two of the four have committed back** — so the inbound-IP gap is no longer one stray commit.
+r3's business-ops finding (no DCO, no CLA, inbound relying on GitHub ToS) now has several
+contributors behind it, and 1.0.0 is the moment provenance freezes. This is the cheapest
+pre-1.0.0 item on the list: one line in `CONTRIBUTING.md`.
+
+**The company path is a third pattern, and not the one the architecture centres.** It is not a
+fork, and not a one-time port: the owner built a separate company harness in parallel and
+**asks it weekly to pull the good parts out of Cohort**. Recurring, agent-mediated extraction.
+What travelled: **agents, skills and commands** — the canonical artifacts. What did not: the
+**engine layer**, deliberately, because company code cannot carry the same risk.
+
+**Scope correction (owner, same day).** An earlier draft of this entry read the company's
+choice as evidence that the engine layer "travels with nobody". That was one data point
+generalised into a pattern, and it is wrong. **The four individual users run Cohort whole,
+engine included** — the engine layer is load-bearing for them, and they are currently most of
+the user base. The company is a single adopter with a specific constraint, not the trend.
+
+The accurate picture is two populations depending on two different surfaces:
+
+| Population | Depends on | n |
+|---|---|---|
+| Individual users | **All of Cohort**, engine and gates included | 4 |
+| A company harness (employer code) | The **canonical artifacts** — agents, skills, commands — pulled weekly; own engine | 1 |
+
+Consequences, scoped to what the evidence actually supports:
+
+1. **1.0.0 has to promise stability on both surfaces, for different reasons.** The canonical
+   artifact format is what crosses a harness boundary, so it is what an outside consumer
+   pins against. The engine and gate behaviour is what individual users run directly, so it
+   is what breaks their day if it moves. Neither can be treated as the incidental one.
+2. **Default-allow egress looks like a barrier where the code belongs to an employer — n=1,
+   and worth watching rather than acting on.** The company swapped the engine out
+   specifically to avoid that risk profile. That is a real signal from a well-informed
+   adopter, and it is one organisation; it does not yet establish that the posture is wrong
+   for companies generally. The cheap response is a documented low-risk configuration, not a
+   change of default.
+
+The audit-attention observation survives the correction in weaker form: the engine layer is
+the most heavily hardened subsystem here, and the canonical artifact format — depended on by
+both populations, and the only surface that crosses a boundary — has had comparatively little
+of it. A later run should weight the slice toward the artifacts.
+
+### The posture is the part worth attacking
+
+A posture with nothing enforcing it is the highest-value business finding there is. Here the
+enforcement is *absence* — no server, no telemetry — which is cheap to hold and easy to lose:
+a single "just send us anonymous usage stats" feature would move Cohort from "not a processor"
+to "processor", and the first place it would show up is a new outbound call in `cli/`. A
+future run should re-run that grep rather than trusting this row.
+
+The unresolved question is narrower and is **not** answered here: Cohort's *default-allow*
+egress means the author chose, on the user's behalf, that source goes to three vendors unless
+the user opts out. Whether distributing a tool that does that creates any exposure for the
+distributor is a question for counsel, not for this ledger. See the r3 report, finding 3,
+tagged REQUIRES PROFESSIONAL OPINION.
+
 ## Dimension coverage
 
 `Tiers seen` records which model tier reviewed the dimension on each run, so the FP rate
@@ -38,9 +156,9 @@ baked into its history.
 | accessibility | 2026-07-31 (r3) | opus (r2), gpt-codex (r3) | 0/6 (r3) | r2 found #232; r3 found the keyboard-operability gaps |
 | vendor-reachability | 2026-07-31 (r3) | opus (r3) | 0/6 | **always-on**; added after grok was found unreachable despite correct code |
 | go-to-market | 2026-07-31 (r3) | fable (r2), grok-4.5 (r3) | — | always-on; r3 was **single-vendor — protocol requires two, not met** |
-| business-ops | 2026-07-31 (r3) | fable (r3) | 0/8 | first coverage; found the business context itself is undeclared |
-| privacy | — never | — | — | never covered in three runs |
-| dead-ends | — never | — | — | never covered in three runs |
+| business-ops | 2026-07-31 (r3) | fable (r3) | 0/8 | first coverage; found the business context itself was undeclared — now declared above, with the owner-only fields marked |
+| privacy | 2026-07-31 (r3 follow-up) | opus | 0/1 | first coverage; found engine transcripts were not gitignored by the scaffold |
+| dead-ends | 2026-07-31 (r3 follow-up) | opus | 0/2 | first coverage; found `office_reconcile` written but never wired |
 
 ### Tier signal so far
 

@@ -28,7 +28,16 @@ from .manifest import Manifest, load_manifest, manifest_lock, new_install_id, no
 
 PROJECT_IDE = "project"
 IMPORT_LINE = "@import ../.cohort/project_context.md"
-GITIGNORE_CONTENT = "# Cohort machine-local bookkeeping (do not commit)\nstate/\ncompiled/\n"
+GITIGNORE_CONTENT = (
+    "# Cohort machine-local bookkeeping (do not commit)\n"
+    "state/\n"
+    "compiled/\n"
+    # Transcripts record what an external engine actually read and was sent — i.e. excerpts
+    # of this repo's source, plus the model's analysis of it. They are a local audit trail,
+    # not shared context, and nothing else here ignores them: without this line a routine
+    # `git add -A` commits them, and a repo that later goes public publishes the lot.
+    "engine-transcripts/\n"
+)
 COHORT_TOML_CONTENT = (
     "# Cohort project config (git-tracked, shared)\n"
     "staleness_hours = 24\n"
