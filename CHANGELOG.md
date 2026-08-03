@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-03 · Housekeeping and upstream reports
+
 ### Added
 - **`cohort report` — file a ticket upstream about Cohort itself.** `feedback` records what
   you noticed, but the entry stayed on your machine, so a report only reached the maintainer
@@ -863,7 +865,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/askwigconsulting/cohort/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/askwigconsulting/cohort/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...v0.14.0
