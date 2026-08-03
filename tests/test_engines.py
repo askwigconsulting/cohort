@@ -365,3 +365,26 @@ def test_an_explicit_timeout_overrides_the_derived_one(monkeypatch) -> None:
         xai.consult("hi", max_tokens=4096, timeout=7.0)
 
     assert seen["timeout"] == 7.0
+def test_a_truncated_answer_is_flagged_not_returned_silently(capsys) -> None:
+    """A response cut off at --max-tokens is still a 200 with usable-looking text, so
+    nothing downstream can tell it from a complete one. A consult stopped mid-sentence
+    inside a table and exited 0 with no signal at all (wickwork, 2026-08-03)."""
+    from cohort.engines.xai import _parse_assistant_text
+
+    cut = json.dumps(
+        {"choices": [{"message": {"content": "half a sen"}, "finish_reason": "length"}]}
+    ).encode()
+
+    assert _parse_assistant_text(cut) == "half a sen"   # the partial work is still returned
+    assert "CUT OFF" in capsys.readouterr().err          # but never silently
+
+
+def test_a_complete_answer_is_not_flagged(capsys) -> None:
+    from cohort.engines.xai import _parse_assistant_text
+
+    done = json.dumps(
+        {"choices": [{"message": {"content": "done."}, "finish_reason": "stop"}]}
+    ).encode()
+
+    assert _parse_assistant_text(done) == "done."
+    assert capsys.readouterr().err == ""

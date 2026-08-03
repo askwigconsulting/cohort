@@ -27,6 +27,19 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   Timeouts and connection errors are also no longer reported identically. They are caught
   together but mean opposite things — a healthy API being slow versus an unreachable one —
   and only the first is fixed by lowering `--max-tokens`.
+- **A truncated answer is no longer returned silently.** A response cut off at
+  `--max-tokens` is still a 200 carrying usable-looking text, so nothing downstream could
+  tell it from a complete one — a consult stopped mid-sentence inside a table and exited 0
+  with no signal at all. `finish_reason=length` now prints a warning to stderr. The partial
+  answer is still returned: it is real work already paid for, and discarding it would be
+  worse than labelling it.
+- **A vendor CLI that fails at the vendor is not retried on every call.** grok-cli depends
+  on xAI's retired live-search API and returns `410` on *every* invocation, so each consult
+  paid a full sandboxed launch and round-trip before the fallback even started. The failure
+  is now remembered for a few hours and the launch skipped, with the reason printed. The
+  marker is deliberately short-lived and fails open — wrongly skipping a working CLI
+  silently downgrades every dispatch to a transport with less repo access, which is the
+  more costly error.
 
 ### Added
 - **`cohort gc` — Cohort now cleans up after itself.** Several paths deliberately leave

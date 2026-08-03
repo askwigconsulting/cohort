@@ -1072,3 +1072,54 @@ def test_run_doer_routes_grok_to_the_grok_doer(monkeypatch):
     assert cli_doer.run_doer("grok", "t", repo_root=Path(".")) == "ok"
     assert cli_doer.run_doer("xai", "t", repo_root=Path(".")) == "ok"
     assert called["task"] == "t"
+
+
+# --------------------------------------------------------------------------- #
+# Don't re-pay for a CLI failure that will not fix itself (wickwork, 2026-08-03)
+# --------------------------------------------------------------------------- #
+
+
+def test_a_vendor_failure_is_remembered_so_the_next_call_can_skip_the_cli(tmp_path, monkeypatch):
+    """grok-cli depends on xAI's retired live-search API and returns 410 on every call, so
+    retrying per dispatch buys nothing and costs a full sandboxed launch plus its
+    round-trip before the fallback even starts."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    cli_doer.clear_cli_broken()
+    assert cli_doer.cli_known_broken("grok") is None
+
+    cli_doer.note_cli_broken("grok", 'Grok API error: 410 "Live search is deprecated."')
+
+    assert "410" in (cli_doer.cli_known_broken("grok") or "")
+
+
+def test_the_marker_does_not_apply_to_a_different_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    cli_doer.note_cli_broken("grok", "410")
+    assert cli_doer.cli_known_broken("codex") is None
+
+
+def test_the_marker_expires_so_a_fixed_cli_is_retried(tmp_path, monkeypatch):
+    """A stale marker must never permanently hide a CLI that upstream has since fixed —
+    wrongly skipping a working CLI silently downgrades every dispatch to a transport with
+    less repo access."""
+    import json as _j
+    import time as _t
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    cli_doer.note_cli_broken("grok", "410")
+    marker = cli_doer._cli_broken_marker_path()
+    stale = _j.loads(marker.read_text(encoding="utf-8"))
+    stale["at"] = _t.time() - (cli_doer._CLI_BROKEN_TTL_SECONDS + 60)
+    marker.write_text(_j.dumps(stale), encoding="utf-8")
+
+    assert cli_doer.cli_known_broken("grok") is None
+
+
+def test_an_unreadable_marker_fails_open(tmp_path, monkeypatch):
+    """Fail open: garbage must mean "try the CLI", not "skip it forever"."""
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: tmp_path))
+    marker = cli_doer._cli_broken_marker_path()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("not json", encoding="utf-8")
+
+    assert cli_doer.cli_known_broken("grok") is None

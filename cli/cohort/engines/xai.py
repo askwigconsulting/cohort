@@ -17,6 +17,7 @@ import email.utils
 import json
 import math
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -187,7 +188,26 @@ def _parse_assistant_text(raw: bytes) -> str:
         ) from None
     if not isinstance(content, str) or not content.strip():
         raise EngineUnavailableError("xAI returned empty assistant content")
+    if _hit_the_token_cap(payload):
+        # A truncated answer is still a 200 with usable-looking text, so nothing downstream
+        # can tell it apart from a complete one — a consult stopped mid-sentence inside a
+        # table and exited 0 with no signal at all. Warn on stderr rather than raising: the
+        # partial answer is real work the user already paid for, and discarding it would be
+        # worse than delivering it with a label.
+        print(
+            "warning: the engine hit --max-tokens and its answer is CUT OFF mid-response. "
+            "Re-run with a higher --max-tokens to get the rest.",
+            file=sys.stderr,
+        )
     return content
+
+
+def _hit_the_token_cap(payload: Any) -> bool:
+    """True if the response stopped because it ran out of tokens rather than finishing."""
+    try:
+        return payload["choices"][0].get("finish_reason") == "length"
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return False
 
 
 def consult(
