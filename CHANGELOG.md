@@ -11,6 +11,46 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`cohort report` — file a ticket upstream about Cohort itself.** `feedback` records what
+  you noticed, but the entry stayed on your machine, so a report only reached the maintainer
+  if you separately remembered to raise it. In practice that meant it did not: four detailed
+  entries sat on disk for a day and were re-filed by hand. `submit-proposals` already pushes
+  *fixes* upstream; a user with a problem and no fix had no path at all.
+
+  `--from-feedback` files an entry you already wrote. Filing is treated as what it is — an
+  outward, effectively irreversible act — so the body is **secret-scanned**, shown in full,
+  and confirmed before anything is sent; without `gh` it prints the report for you to paste
+  rather than failing. The environment block carries version and OS, deliberately not
+  hostname, username or paths: a bug report should not be a fingerprint of the reporter.
+- **`cohort feedback --note-file` and `--area`.** A note passed as a shell string turns
+  backticks, `$` and quotes into hazards — the same reason `engine consult` takes
+  `--prompt-file`. `--area` gives a target for observations that are neither agent- nor
+  command-scoped, which previously got mis-filed under whichever command was closest.
+- **`cohort gc` — Cohort now cleans up after itself.** Several paths deliberately leave
+  artifacts on disk: a doer or ratchet run keeps its worktree so a human can review the
+  diff, and every `engine review` writes a transcript so what was egressed stays auditable.
+  Both are correct in isolation, and nothing ever collected either — 1,592 proposal
+  worktrees accumulated over nine days on one machine.
+
+  Reclaiming is deletion, so the command **reports by default and removes only with
+  `--apply`**. It matches only Cohort's own `cohort-proposal-` prefix inside the system
+  temp directory, never a path a user named; it ignores anything younger than `--days`
+  (default 7); it keeps a tail of the newest transcripts whatever their age, because they
+  are the record of what left the machine; and **a worktree git still resolves is reported
+  but never removed by default** — "left for review" means someone may still want that
+  diff, and age alone is not evidence otherwise.
+
+  `--all-projects` sweeps every repo in Cohort's registry, because a project that merely
+  *uses* Cohort should not have to visit each repo to reclaim what Cohort left there. The
+  registry is the boundary: a repo Cohort was never initialised in is out of scope, as is
+  anything inside a registered repo that Cohort did not create.
+
+  **Working notes are surfaced and never deleted, by any flag.** They are disposable by
+  design — staged during a turn, promoted at a session boundary — but an unpromoted note is
+  the only copy of context a session meant to keep, and `gc` cannot tell the two apart. They
+  are reported so you know they are there, and left for the session that owns them.
+
 ### Changed
 - **`AGENTS.md` now orients the user, not just the installer.** It explained how to install
   Cohort but barely what Cohort *is*, and ended at "tell them to run `cohort setup`" — so an
@@ -57,25 +97,6 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   marker is deliberately short-lived and fails open — wrongly skipping a working CLI
   silently downgrades every dispatch to a transport with less repo access, which is the
   more costly error.
-
-### Added
-- **`cohort report` — file a ticket upstream about Cohort itself.** `feedback` records what
-  you noticed, but the entry stayed on your machine, so a report only reached the maintainer
-  if you separately remembered to raise it. In practice that meant it did not: four detailed
-  entries sat on disk for a day and were re-filed by hand. `submit-proposals` already pushes
-  *fixes* upstream; a user with a problem and no fix had no path at all.
-
-  `--from-feedback` files an entry you already wrote. Filing is treated as what it is — an
-  outward, effectively irreversible act — so the body is **secret-scanned**, shown in full,
-  and confirmed before anything is sent; without `gh` it prints the report for you to paste
-  rather than failing. The environment block carries version and OS, deliberately not
-  hostname, username or paths: a bug report should not be a fingerprint of the reporter.
-- **`cohort feedback --note-file` and `--area`.** A note passed as a shell string turns
-  backticks, `$` and quotes into hazards — the same reason `engine consult` takes
-  `--prompt-file`. `--area` gives a target for observations that are neither agent- nor
-  command-scoped, which previously got mis-filed under whichever command was closest.
-
-### Fixed
 - **The secret scanner missed a credential under a prose label.** The assignment pattern
   used `\s*` around its separator, which matches newlines — so `Repro:` on one line paired
   with `AWS_SECRET_ACCESS_KEY` on the next *as its value*. No secret keyword in "Repro", no
@@ -84,33 +105,11 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   A label above a credential is the most common shape in a bug report or a doc, so this hid
   precisely the case that matters most. Found when `cohort report` filed a public issue the
   gate should have refused.
-
-### Added
-- **`cohort gc` — Cohort now cleans up after itself.** Several paths deliberately leave
-  artifacts on disk: a doer or ratchet run keeps its worktree so a human can review the
-  diff, and every `engine review` writes a transcript so what was egressed stays auditable.
-  Both are correct in isolation, and nothing ever collected either — 1,592 proposal
-  worktrees accumulated over nine days on one machine.
-
-  Reclaiming is deletion, so the command **reports by default and removes only with
-  `--apply`**. It matches only Cohort's own `cohort-proposal-` prefix inside the system
-  temp directory, never a path a user named; it ignores anything younger than `--days`
-  (default 7); it keeps a tail of the newest transcripts whatever their age, because they
-  are the record of what left the machine; and **a worktree git still resolves is reported
-  but never removed by default** — "left for review" means someone may still want that
-  diff, and age alone is not evidence otherwise.
-
-  `--all-projects` sweeps every repo in Cohort's registry, because a project that merely
-  *uses* Cohort should not have to visit each repo to reclaim what Cohort left there. The
-  registry is the boundary: a repo Cohort was never initialised in is out of scope, as is
-  anything inside a registered repo that Cohort did not create.
-
-  **Working notes are surfaced and never deleted, by any flag.** They are disposable by
-  design — staged during a turn, promoted at a session boundary — but an unpromoted note is
-  the only copy of context a session meant to keep, and `gc` cannot tell the two apart. They
-  are reported so you know they are there, and left for the session that owns them.
-
-### Fixed
+- **`gc --json` reported a number that meant something else.** `live_worktrees` counted
+  worktrees together with working notes, which are withheld for an entirely different
+  reason — so a reader saw 25 unreclaimable worktrees where there were 9, and planned work
+  around it. Now reports `withheld_worktrees`, `withheld_working_notes` and a `by_kind`
+  breakdown. A wrong number is worse than no number when someone is going to act on it.
 - **The test suite no longer leaks worktrees.** `run_ratchet` leaves its worktree in place
   on success by design, and the suite calls it ten times, so every full run stranded up to
   ten directories. An autouse fixture now removes only those that appear *during* a test —
