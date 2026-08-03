@@ -230,3 +230,22 @@ def test_include_live_still_does_not_delete_working_notes(tmp_path) -> None:
         include_live=True,
     )
     assert note.exists()
+
+
+def test_the_report_separates_worktrees_from_working_notes(tmp_path) -> None:
+    """A single "live" count lumped two things withheld for entirely different reasons.
+    A reader saw 25 unreclaimable worktrees where there were 9, and diagnosed a leak from
+    it (#258). A number wrong in the direction of alarm is worse than no number."""
+    _proposal(tmp_path, "dead", days=30)
+    notes = tmp_path / "repo" / ".cohort" / "state" / "working-memory"
+    notes.mkdir(parents=True)
+    for i in range(3):
+        note = notes / f"n{i}.md"
+        note.write_text("x\n", encoding="utf-8")
+        _aged(note, 30)
+
+    report = gc.scan(repo_root=tmp_path / "repo", min_age_days=7, temp_root=tmp_path)
+    withheld = [i for i in report.items if not i.safe_by_default]
+
+    assert sum(1 for i in withheld if i.kind == "working-note") == 3
+    assert sum(1 for i in withheld if i.kind == "proposal-worktree") == 0
