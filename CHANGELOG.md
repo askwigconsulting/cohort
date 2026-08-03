@@ -71,6 +71,19 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   somebody else's project.
 
 ### Fixed
+- **The engine egress guard was a no-op for almost every directory a user works in.**
+  `_repo_has_egress_provenance` accepted a `.cohort` ancestor as proof of repository
+  context — but `$HOME/.cohort` is Cohort's *own* global state directory (autonomy level,
+  project registry, CLI-health markers) and exists on every installed machine. So every
+  path under `$HOME` looked like a repo, and the RFC 0004 F5 fail-closed check that is
+  supposed to refuse egress from a bare working directory passed instead. A project's
+  `.cohort` still counts; Cohort's own no longer does.
+
+  Windows CI is what exposed it: pytest's `tmp_path` lives under `$HOME` there, so a test
+  that wrote the real CLI-health marker created `~/.cohort` and silently granted provenance
+  to every later test. Both fail-closed tests went green. Tests no longer write to the real
+  home at all (`tests/conftest.py`), and the guard has a regression test that fakes a home
+  containing `.cohort`.
 - **`cohort engine consult` could not succeed at its own defaults.** The command asks for
   up to `--max-tokens 4096` but never passed a timeout, so it took the client's 60-second
   default — and grok-4.5 emits roughly 50 tokens/second. Any consult that actually used its

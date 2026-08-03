@@ -40,6 +40,23 @@ requires_symlinks = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _never_write_the_real_home(tmp_path_factory, monkeypatch) -> None:
+    """Keep the CLI-health marker out of the developer's (and the runner's) real home.
+
+    ``note_cli_broken`` writes to ``~/.cohort/state/`` in production, which is correct —
+    but tests that exercise a vendor failure called it for real, creating ``~/.cohort``
+    on whatever machine ran the suite. On Windows that was not merely untidy: pytest's
+    ``tmp_path`` lives *under* ``$HOME`` there, so the stray directory became a ``.cohort``
+    ancestor of every subsequent test's working directory and silently satisfied the
+    engine egress provenance guard, turning two fail-closed tests green-then-red.
+    """
+    from cohort.engines import cli_doer
+
+    marker = tmp_path_factory.mktemp("cohort-state") / cli_doer._CLI_BROKEN_MARKER
+    monkeypatch.setattr(cli_doer, "_cli_broken_marker_path", lambda: marker)
+
+
 @pytest.fixture
 def fixtures_dir() -> Path:
     return FIXTURES

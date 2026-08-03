@@ -1074,10 +1074,23 @@ def _repo_has_egress_provenance(cwd: Path) -> bool:
     """True if ``cwd`` sits inside a repository context — a ``.git`` or ``.cohort``
     ancestor. When neither exists (e.g. a bare ``/tmp`` working dir), there is no repo
     whose ``.cohort/project_context.md`` could carry an egress opt-out, so a piped
-    payload's provenance cannot be checked and engine egress must fail closed (F5)."""
+    payload's provenance cannot be checked and engine egress must fail closed (F5).
+
+    The home directory's ``.cohort`` does not count. That one is Cohort's own *global
+    state* directory (autonomy level, registry, CLI-health markers) and exists on every
+    installed machine — counting it made every path under ``$HOME`` look like a repo, so
+    the fail-closed guard passed for essentially every directory a user works in. A
+    project's ``.cohort`` is repo context; Cohort's own is not.
+    """
     cwd = Path(cwd).resolve()
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):  # no home on this platform/config
+        home = None
     for candidate in (cwd, *cwd.parents):
-        if (candidate / ".git").exists() or (candidate / ".cohort").exists():
+        if (candidate / ".git").exists():
+            return True
+        if (candidate / ".cohort").exists() and candidate != home:
             return True
     return False
 
