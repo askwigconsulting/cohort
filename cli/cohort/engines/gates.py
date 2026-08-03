@@ -212,8 +212,14 @@ _SECRET_KEYWORDS: tuple[str, ...] = (
     "PASSWD",
     "TOKEN",
 )
+# Horizontal whitespace only around the separator — `\s*` matches newlines, which made a
+# harmless label swallow the next line. `Repro:` followed by a blank line and
+# `AWS_SECRET_ACCESS_KEY = "..."` matched as identifier `Repro` with the credential's NAME
+# as its value: no secret keyword in "Repro", no finding, and `finditer` had consumed the
+# real assignment so it was never scanned on its own. A prose label above a credential is
+# the most common shape in a bug report or a doc, so this hid exactly the case that matters.
 _ASSIGNMENT_RE = re.compile(
-    r"\b([A-Za-z_][A-Za-z0-9_\-]*)\s*([:=])\s*['\"]?([^\s'\"]{6,})",
+    r"\b([A-Za-z_][A-Za-z0-9_\-]*)[ \t]*([:=])[ \t]*['\"]?([^\s'\"]{6,})",
 )
 
 # Trailing syntax that rides along on the captured value because the value pattern

@@ -235,12 +235,19 @@ def sanitize_for_upstream(text: str, markers: ProjectMarkers) -> tuple[str, list
 
 def do_feedback(
     repo: Path, rating: str, agent: Optional[str], command: Optional[str],
-    note: str, dry_run: bool,
+    note: str, dry_run: bool, area: Optional[str] = None,
 ) -> dict[str, Any]:
+    """Record one feedback entry.
+
+    ``area`` exists because useful feedback is often neither agent- nor command-scoped: an
+    observation spanning a command, a hook, and a convention was previously filed under the
+    single command it was closest to, which mis-files it — a reader grouping by command sees
+    a complaint about one command instead of a circuit-level report.
+    """
     paths = _require_project(repo)
     if rating not in RATINGS:
         raise FeedbackError(f"rating must be one of {RATINGS}, got {rating!r}")
-    for field, value in (("agent", agent), ("command", command)):
+    for field, value in (("agent", agent), ("command", command), ("area", area)):
         if value and len(value) > _MAX_FIELD:
             raise FeedbackError(f"{field} too long (max {_MAX_FIELD} chars)")
     pairs = [("rating", rating)]
@@ -248,6 +255,8 @@ def do_feedback(
         pairs.append(("agent", agent))
     if command:
         pairs.append(("command", command))
+    if area:
+        pairs.append(("area", area))
     pairs.append(("timestamp", now_iso()))
     content = dump_frontmatter(pairs) + (note.strip() + "\n" if note.strip() else "")
     filename = f"{_utc_compact()}-{_short_id()}.md"
