@@ -42,6 +42,7 @@ from typing import Optional
 import typer
 
 from . import __version__
+from . import report as report_mod
 from .compile import CompileError, CompileResult, compile_ide, planned_dests, write_staging
 from .executor import ClobberRefused
 from .install import (
@@ -175,6 +176,102 @@ def _print_validate_human(tree: TreeResult) -> None:
                 typer.echo(f"  {err.code}{field}: {err.message}")
     s = tree.summary
     typer.echo(f"{s['valid']} valid, {s['invalid']} invalid")
+
+
+def _report_gates():
+    """Local import to match how every other command in this module reaches the gates."""
+    from .engines import gates as engine_gates
+
+    return engine_gates
+
+
+@app.command()
+def report(
+    title: Optional[str] = typer.Option(None, "--title", help="One-line summary."),
+    body_file: Optional[Path] = typer.Option(
+        None, "--body-file",
+        help="Read the report body from a file (never a shell argument: report text quotes "
+             "code, config and output).",
+    ),
+    from_feedback: Optional[Path] = typer.Option(
+        None, "--from-feedback",
+        help="File an existing `cohort feedback` entry instead of retyping it.",
+    ),
+    repo: str = typer.Option(
+        report_mod.DEFAULT_UPSTREAM, "--repo", help="Target repo (OWNER/NAME)."
+    ),
+    no_environment: bool = typer.Option(
+        False, "--no-environment", help="Omit the version/OS block."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="Skip the confirmation prompt (for scripted filing)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """File a ticket upstream about Cohort itself — a bug, a friction, a proposal.
+
+    `feedback` records what you noticed locally; this is how it reaches someone who can act
+    on it. Anyone may file; only maintainers integrate, which is what makes an issue the
+    right shape for this.
+
+    Filing is egress and effectively irreversible, so the body is secret-scanned, shown, and
+    confirmed before anything is sent.
+    """
+    if from_feedback is None and body_file is None:
+        typer.echo("error: give --body-file or --from-feedback", err=True)
+        raise typer.Exit(code=2)
+    try:
+        if from_feedback is not None:
+            derived_title, body = report_mod.read_feedback_entry(from_feedback)
+            title = title or derived_title
+        else:
+            body = body_file.read_text(encoding="utf-8")
+        if not title:
+            typer.echo("error: --title is required with --body-file", err=True)
+            raise typer.Exit(code=2)
+        draft = report_mod.build_draft(
+            title=title, body=body, cohort_version=__version__, repo=repo,
+            include_environment=not no_environment,
+        )
+    except report_mod.ReportError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except _report_gates().SecretFoundError as exc:
+        typer.echo(
+            f"error: {exc}\nNothing was filed. A report is public the moment it exists, so "
+            "credential-shaped content is refused here exactly as it is for any other egress.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    gh = report_mod.gh_available()
+    if gh is None:
+        typer.echo(
+            "gh is not installed or not authenticated, so this cannot be filed for you.\n"
+            "The report is below — paste it at "
+            f"https://github.com/{draft.repo}/issues/new\n",
+            err=True,
+        )
+        typer.echo(draft.preview)
+        raise typer.Exit(code=1)
+
+    if not yes:
+        typer.echo(draft.preview)
+        typer.echo("")
+        if not typer.confirm(f"File this as a public issue on {draft.repo}?", default=False):
+            typer.echo("Not filed.", err=True)
+            raise typer.Exit(code=1)
+    try:
+        url = report_mod.file_issue(draft, gh=gh)
+    except report_mod.ReportError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if json_output:
+        typer.echo(_json.dumps({"action": "report", "repo": draft.repo, "url": url}, indent=2))
+    else:
+        typer.echo(f"Filed: {url}")
+    raise typer.Exit(code=0)
 
 
 @app.command()
@@ -3168,13 +3265,36 @@ def feedback(
     agent: Optional[str] = typer.Option(None, "--agent", help="Agent the feedback is about."),
     command: Optional[str] = typer.Option(None, "--command", help="Command the feedback is about."),
     note: str = typer.Option("", "--note", help="Free-text note."),
+    note_file: Optional[Path] = typer.Option(
+        None, "--note-file",
+        help="Read the note body from a file. Mutually exclusive with --note. Use this for "
+             "anything structured: a shell string turns backticks, $ and quotes into "
+             "hazards, exactly as --prompt-file avoids for engine payloads.",
+    ),
+    area: Optional[str] = typer.Option(
+        None, "--area",
+        help="Subject when the feedback is neither agent- nor command-scoped "
+             "(e.g. working-memory, egress, engines).",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Record one feedback entry (conflict-free file) for the Steward to learn from."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    if note and note_file:
+        typer.echo("error: --note and --note-file are mutually exclusive", err=True)
+        raise typer.Exit(code=2)
+    if note_file is not None:
+        try:
+            note = note_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read --note-file: {exc}", err=True)
+            raise typer.Exit(code=2)
     try:
-        report = do_feedback(find_repo_root(Path.cwd()), rating, agent, command, note, effective_dry_run)
+        report = do_feedback(
+            find_repo_root(Path.cwd()), rating, agent, command, note, effective_dry_run,
+            area=area,
+        )
     except FeedbackError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
