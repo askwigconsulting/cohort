@@ -221,11 +221,24 @@ def gc(
 
     safe = [i for i in report.items if i.safe_by_default]
     live = [i for i in report.items if not i.safe_by_default]
+    # Report per kind. A single "live_worktrees" count lumped worktrees together with
+    # working notes, which are withheld for an entirely different reason — so a reader saw
+    # 25 unreclaimable worktrees where there were 9, and diagnosed a leak accordingly.
+    # A number that is wrong in the direction of alarm is worse than no number.
+    by_kind: dict[str, int] = {}
+    for item in report.items:
+        key = f"{item.kind}:{'reclaimable' if item.safe_by_default else 'withheld'}"
+        by_kind[key] = by_kind.get(key, 0) + 1
     payload = {
         "action": "gc",
         "applied": apply_,
         "reclaimable": len(safe),
-        "live_worktrees": len(live),
+        "withheld": len(live),
+        "withheld_worktrees": sum(
+            1 for i in live if i.kind == "proposal-worktree"
+        ),
+        "withheld_working_notes": sum(1 for i in live if i.kind == "working-note"),
+        "by_kind": by_kind,
         "bytes": report.reclaimable_bytes,
         "removed": [str(p) for p in report.removed],
     }
