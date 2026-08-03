@@ -279,3 +279,89 @@ def test_get_engine_unknown_name_raises() -> None:
 
 def test_registry_contains_grok() -> None:
     assert "grok" in ENGINES
+
+
+# --------------------------------------------------------------------------- #
+# The timeout must be able to cover the work requested (wickwork field report)
+# --------------------------------------------------------------------------- #
+
+
+def test_timeout_scales_with_the_tokens_requested() -> None:
+    """`engine consult` defaults to max_tokens=4096 while this client defaulted to a 60s
+    timeout, and grok-4.5 emits roughly 50 tokens/second — so the command could not
+    succeed at its own defaults. Every substantive consult timed out twice and reported
+    a network failure."""
+    from cohort.engines.xai import timeout_for
+
+    assert timeout_for(4096) > 60.0          # the combination that was unsatisfiable
+    assert timeout_for(4096) > timeout_for(500)
+    assert timeout_for(None) >= 120.0        # a floor even when nothing is requested
+    assert timeout_for(0) >= 120.0
+
+
+def test_a_timeout_is_reported_as_a_timeout_not_as_unreachable(monkeypatch) -> None:
+    """They are caught together but mean opposite things: a timeout is a healthy API being
+    slow, a connection error is an unreachable one. Reporting both as "failed to reach the
+    API" sent a user hunting a network problem that did not exist."""
+    import urllib.request
+
+    from cohort.engines import xai
+
+    monkeypatch.setenv("GROK_API_KEY", "test-key-not-real")
+
+    def always_timeout(*_a, **_k):
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr(urllib.request, "urlopen", always_timeout)
+    monkeypatch.setattr(xai.time, "sleep", lambda _s: None)
+
+    with pytest.raises(xai.EngineUnavailableError) as excinfo:
+        xai.consult("hi", max_tokens=4096)
+
+    message = str(excinfo.value)
+    assert "did not respond" in message      # named as a timeout
+    assert "reachable" in message            # and explicitly not a network failure
+    assert "max-tokens" in message           # with the lever that fixes it
+
+
+def test_a_connection_error_is_still_reported_as_unreachable(monkeypatch) -> None:
+    """The other half must not regress into the timeout wording."""
+    import urllib.error
+    import urllib.request
+
+    from cohort.engines import xai
+
+    monkeypatch.setenv("GROK_API_KEY", "test-key-not-real")
+
+    def always_refused(*_a, **_k):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(urllib.request, "urlopen", always_refused)
+    monkeypatch.setattr(xai.time, "sleep", lambda _s: None)
+
+    with pytest.raises(xai.EngineUnavailableError) as excinfo:
+        xai.consult("hi", max_tokens=100)
+
+    assert "could not be reached" in str(excinfo.value)
+
+
+def test_an_explicit_timeout_overrides_the_derived_one(monkeypatch) -> None:
+    """`--timeout` has to win, or a user cannot recover from a bad derivation."""
+    import urllib.request
+
+    from cohort.engines import xai
+
+    monkeypatch.setenv("GROK_API_KEY", "test-key-not-real")
+    seen = {}
+
+    def capture(_req, timeout=None):
+        seen["timeout"] = timeout
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr(urllib.request, "urlopen", capture)
+    monkeypatch.setattr(xai.time, "sleep", lambda _s: None)
+
+    with pytest.raises(xai.EngineUnavailableError):
+        xai.consult("hi", max_tokens=4096, timeout=7.0)
+
+    assert seen["timeout"] == 7.0

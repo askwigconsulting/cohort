@@ -1170,6 +1170,11 @@ def engine_consult(
         "--max-tokens",
         help="Cap on the engine's response length (bounds cost).",
     ),
+    timeout: Optional[float] = typer.Option(
+        None, "--timeout",
+        help="Per-attempt timeout in seconds. Default scales with --max-tokens, so a "
+             "bigger answer is given longer to arrive.",
+    ),
 ) -> None:
     """Consult an external engine (advisory only) and print its reply to stdout.
 
@@ -1276,7 +1281,9 @@ def engine_consult(
         )
 
     try:
-        text = engine_xai.consult(prompt, model=chosen_model, max_tokens=max_tokens)
+        text = engine_xai.consult(
+            prompt, model=chosen_model, max_tokens=max_tokens, timeout=timeout
+        )
     except engine_xai.EngineAuthError:
         typer.echo(
             "error: GROK_API_KEY is unset or was rejected by xAI; export a developer "

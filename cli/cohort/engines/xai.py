@@ -35,6 +35,26 @@ _MAX_RETRY_AFTER_SECONDS: float = 30.0
 # to implement a full retry schedule. The 429 path uses ``Retry-After`` instead.
 _RETRY_BACKOFF_SECONDS: float = 1.0
 
+# A per-attempt HTTP timeout must be able to cover generating the tokens the caller asked
+# for, or the request is configured to fail: `engine consult` defaults to max_tokens=4096
+# while this module defaulted to 60s, and grok-4.5 emits roughly 50 tokens/second — so the
+# command could not succeed at its own defaults, and every substantive consult timed out
+# twice and reported "failed to reach the API". Derive the budget from the work requested,
+# assuming a pessimistic 12 tokens/second so a slow model or a long queue still fits.
+#
+# A generous cap is safe here because it only applies to a server that ACCEPTED the request
+# and is answering slowly. A refused connection, bad DNS or a dead host raises URLError
+# immediately regardless of this value, so raising it cannot make a real outage hang longer.
+_MIN_TIMEOUT_SECONDS: float = 120.0
+_SECONDS_PER_TOKEN: float = 1 / 12
+
+
+def timeout_for(max_tokens: int | None) -> float:
+    """A per-attempt timeout that can actually cover ``max_tokens`` of generation."""
+    if not max_tokens or max_tokens <= 0:
+        return _MIN_TIMEOUT_SECONDS
+    return max(_MIN_TIMEOUT_SECONDS, 30.0 + max_tokens * _SECONDS_PER_TOKEN)
+
 # A hard client-side ceiling on the response body we will buffer. `max_tokens` is a
 # *request hint* the server may ignore, not a resource bound — a misbehaving, misconfigured
 # or hostile endpoint can stream a body far larger than any completion, and `response.read()`
@@ -174,7 +194,7 @@ def consult(
     prompt: str,
     *,
     model: str | None = None,
-    timeout: float = 60.0,
+    timeout: float | None = None,
     max_tokens: int | None = None,
     max_prompt_bytes: int = 200_000,
 ) -> str:
@@ -184,7 +204,9 @@ def consult(
     Args:
         prompt: The user message to send.
         model: Model id to request; defaults to the grok flagship from the registry.
-        timeout: Per-attempt timeout in seconds.
+        timeout: Per-attempt timeout in seconds. ``None`` derives one from ``max_tokens``
+            via :func:`timeout_for`, so a caller that raises the token cap does not
+            silently configure itself to time out.
         max_tokens: Optional cap on the response length (API ``max_tokens``).
         max_prompt_bytes: Refuse (fail closed) if the UTF-8 prompt exceeds this —
             the primary cost control, enforced before any network call.
@@ -221,10 +243,11 @@ def consult(
         body["max_tokens"] = max_tokens
     request = _build_request(endpoint, key, body)
 
+    effective_timeout = timeout if timeout is not None else timeout_for(max_tokens)
     retried = False
     while True:
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=effective_timeout) as response:
                 raw = _read_bounded(response)
             return _parse_assistant_text(raw)
         except urllib.error.HTTPError as exc:
@@ -250,12 +273,27 @@ def consult(
                 time.sleep(_RETRY_BACKOFF_SECONDS)
                 continue
             raise EngineUnavailableError(f"xAI returned HTTP {status}") from None
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError) as exc:
             # Connection error or timeout — no response body was received.
             if not retried:
                 retried = True
                 time.sleep(_RETRY_BACKOFF_SECONDS)
                 continue
+            # Name which of the two it was. They are caught together but mean opposite
+            # things: a timeout is a healthy API being slow (raise the cap, or lower
+            # max_tokens), a connection error is an unreachable one (network, DNS, proxy).
+            # Reporting both as "failed to reach the API" sent a user hunting a network
+            # problem that did not exist while the real cause was this timeout.
+            timed_out = isinstance(exc, TimeoutError) or isinstance(
+                getattr(exc, "reason", None), TimeoutError
+            )
+            if timed_out:
+                raise EngineUnavailableError(
+                    f"xAI did not respond within {effective_timeout:.0f}s (twice). The API "
+                    "was reachable — it was still generating. Lower --max-tokens, or raise "
+                    "the timeout."
+                ) from None
             raise EngineUnavailableError(
-                "xAI request failed to reach the API after one retry"
+                "xAI request could not be reached after one retry (connection error, not a "
+                "timeout) — check network, DNS or proxy"
             ) from None

@@ -11,6 +11,23 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- **`cohort engine consult` could not succeed at its own defaults.** The command asks for
+  up to `--max-tokens 4096` but never passed a timeout, so it took the client's 60-second
+  default — and grok-4.5 emits roughly 50 tokens/second. Any consult that actually used its
+  token budget timed out twice and reported **"xAI request failed to reach the API"**, which
+  sent at least one user hunting a network fault that did not exist. The two defaults were
+  mutually unsatisfiable.
+
+  The per-attempt timeout is now derived from the tokens requested (pessimistic 12 tok/s,
+  floor 120s), and `--timeout` is exposed to override it. Raising it is safe: a refused
+  connection, bad DNS or a dead host raises immediately regardless, so the cap only applies
+  to a server that accepted the request and is answering slowly.
+
+  Timeouts and connection errors are also no longer reported identically. They are caught
+  together but mean opposite things — a healthy API being slow versus an unreachable one —
+  and only the first is fixed by lowering `--max-tokens`.
+
 ### Added
 - **`cohort gc` — Cohort now cleans up after itself.** Several paths deliberately leave
   artifacts on disk: a doer or ratchet run keeps its worktree so a human can review the

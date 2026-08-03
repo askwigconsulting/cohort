@@ -44,7 +44,9 @@ def _grok_cli_unavailable_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 def _capture_consult():
     captured: dict[str, Any] = {}
 
-    def fake_consult(prompt: str, *, model: str | None, max_tokens: int | None) -> str:
+    def fake_consult(
+        prompt: str, *, model: str | None, max_tokens: int | None, **_kw
+    ) -> str:
         captured["model"] = model
         captured["max_tokens"] = max_tokens
         return "reply"
