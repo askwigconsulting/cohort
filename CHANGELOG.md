@@ -11,6 +11,23 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- **`AGENTS.md` now orients the user, not just the installer.** It explained how to install
+  Cohort but barely what Cohort *is*, and ended at "tell them to run `cohort setup`" — so an
+  agent could complete a correct install and leave someone with seventeen advisors and no
+  idea what to do with them. An install nobody knows how to use is a failed install.
+
+  Adds a plain-language explanation aimed at someone who has never heard of Cohort (the
+  office of specialists, the commands that do real work, one source across every IDE — and
+  what it is *not*: no model, no server, no telemetry), plus a short orientation the agent
+  walks through afterwards: meet the office with a real cross-functional question, try
+  `/plan` on something they actually intend to build, learn the off-switch *before* needing
+  it, then hand off to the installed `office-guide` skill.
+
+  The README's pointer to `AGENTS.md` moved from line 39 to the top, because an agent that
+  starts improvising before it reaches line 39 is exactly how `pip install cohort` fetches
+  somebody else's project.
+
 ### Fixed
 - **A truncated answer is no longer returned silently.** A response cut off at
   `--max-tokens` is still a 200 carrying usable-looking text, so nothing downstream could

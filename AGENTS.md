@@ -23,9 +23,45 @@ substitute a similarly-named package from any index.
 
 ## What you are installing
 
-Cohort is a **portable, multi-IDE agentic office**: a roster of specialist agents (legal,
-finance, security, compliance, …) compiled from one canonical source into whichever IDEs the
-user has. It installs a `cohort` CLI, writes into `~/.cohort/`, and places compiled agent
+**In one sentence:** Cohort gives the user a team of specialist AI advisors inside their IDE,
+plus commands that run real multi-step work, and keeps both in sync across their machines and
+projects.
+
+Expect to explain this — most people meet Cohort because someone told them to install it, not
+because they know what it does. Three ideas cover it.
+
+**1. An office of specialists.** Instead of one general assistant, the user gets ~17 named
+advisors — legal, finance, security, compliance, cloud, HR and so on — plus a **ChiefOfStaff**
+that routes a question to the right ones and reconciles their answers. They are **advisory
+and read-only by construction**: they recommend, the human decides. Asking "we're storing
+customer emails in a new table, what should I worry about?" pulls in privacy, security and
+compliance rather than one generic answer.
+
+**2. Commands that do work, not just chat.** Installed as slash commands in the IDE:
+
+| Command | What it does |
+|---|---|
+| `/plan` | breaks work into ordered, verifiable tasks |
+| `/build` | implements a task, tests it, commits |
+| `/goal <issue>` | drives a GitHub issue to a draft PR, with an independent judge checking each acceptance criterion |
+| `/crew` | fans a large job across model tiers, cheapest capable model per task |
+| `/scout`, `/consult-gpt`, `/consult-grok` | bring a *second vendor's* model in to argue with the first |
+| `/audit`, `/brainstorm` | recurring adversarial sweeps that remember what they already covered |
+| `/barney` | explain something complex so simply nobody can get it wrong |
+
+**3. One source, every IDE, every project.** Everything is compiled from one canonical
+directory into whichever IDEs the user has, so the office is the same in each. `cohort update`
+pulls improvements; `/snapshot` records what a session learned into the repo so the next
+session — or a teammate — starts with it.
+
+**What it is not.** Not a model or an API — it uses the user's existing IDE and their own API
+keys. Not a hosted service: there is no server, no account, and no telemetry. Everything runs
+on their machine.
+
+**Be honest about maturity.** Claude Code is the reference target and is fully supported;
+Codex, Cursor and Copilot are **experimental**. Say so rather than implying parity.
+
+Mechanically: it installs a `cohort` CLI, writes into `~/.cohort/`, and places compiled agent
 files into IDE directories such as `~/.claude/`.
 
 Two things to tell the user **before** you install, because both are easy to discover late:
@@ -105,6 +141,25 @@ Do not answer it on their behalf; `--non-interactive` exists for scripted instal
 scripted answer to "which agents do you want" is a guess wearing a fact's clothes.
 
 Then, inside their IDE: `/office-setup`, and `/project-setup` in a repo they work on.
+
+### Then orient them — do not just say "done"
+
+An install they do not know how to use is a failed install. Offer these four, in order, and
+keep it to a couple of minutes:
+
+1. **Meet the office.** In the IDE, ask something that spans functions — *"we're about to
+   store customer emails in a new table; what should I worry about?"* ChiefOfStaff routes it
+   and the specialists answer. This is the fastest way to understand what they now have.
+2. **Try one real command.** `/plan` on something they actually intend to build. It produces
+   ordered tasks with acceptance criteria, and nothing is written until they say so.
+3. **Show them the off-switch before they need it.** The `cohort:egress=deny` marker
+   (see Egress below) and `cohort uninstall`. Knowing how to stop and how to reverse is what
+   makes the rest safe to try.
+4. **Point at the guide.** The installed `office-guide` skill covers routing, the daily loop
+   and health checks — it is the reference once they are past the first day.
+
+If they only remember one thing, make it this: **the specialists advise, the human decides,
+and every change lands through a pull request they review.**
 
 ---
 
