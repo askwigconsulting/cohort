@@ -61,6 +61,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -602,6 +603,62 @@ def _bwrap() -> str | None:
     return shutil.which("bwrap")
 
 
+# When the vendor CLI is broken in a way that will not fix itself — grok-cli depends on
+# xAI's retired live-search API and returns 410 on *every* call — retrying it per dispatch
+# buys nothing and costs a full sandboxed launch plus its round-trip before the fallback
+# even starts. Remember the verdict briefly so the cost is paid once, not once per consult.
+_CLI_BROKEN_MARKER = "grok-cli-broken.json"
+_CLI_BROKEN_TTL_SECONDS = 6 * 3600
+
+
+def _cli_broken_marker_path() -> Path:
+    return Path.home() / ".cohort" / "state" / _CLI_BROKEN_MARKER
+
+
+def note_cli_broken(engine: str, reason: str) -> None:
+    """Record that this vendor CLI is failing at the vendor, so the next call can skip it.
+
+    Deliberately short-lived and best-effort: the CLI may be fixed upstream or reinstalled
+    at any time, and a stale marker must never permanently hide a working CLI.
+    """
+    marker = _cli_broken_marker_path()
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(
+            json.dumps({"engine": engine, "reason": reason[:300], "at": time.time()}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def cli_known_broken(engine: str) -> str | None:
+    """The remembered failure reason if this CLI failed recently, else None.
+
+    Fails open: an unreadable or expired marker means "try the CLI", because wrongly
+    skipping a working CLI is the more costly error — it silently downgrades every
+    dispatch to a transport with less repo access.
+    """
+    try:
+        data = json.loads(_cli_broken_marker_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if data.get("engine") != engine:
+        return None
+    age = time.time() - float(data.get("at", 0))
+    if age > _CLI_BROKEN_TTL_SECONDS or age < 0:
+        return None
+    return str(data.get("reason") or "previously failed")
+
+
+def clear_cli_broken() -> None:
+    """Forget the marker — used after a successful CLI run, and by `cohort gc`."""
+    try:
+        _cli_broken_marker_path().unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _grok_cli_available() -> bool:
     """Whether the locally-installed, bubblewrap-sandboxed grok CLI can run here.
 
@@ -1024,9 +1081,11 @@ def run_grok_review(
             )
         vendor_error = _grok_cli_error(stdout)
         if vendor_error:
+            note_cli_broken("grok", vendor_error)
             raise DoerFailedError(
                 f"the grok CLI reported a vendor error instead of a review: {vendor_error}"
             )
+        clear_cli_broken()
         return GrokReviewResult(
             engine="grok",
             analysis=stdout,

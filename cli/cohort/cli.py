@@ -1255,7 +1255,16 @@ def engine_consult(
     # on their current path. A gate refusal inside run_grok_review exits, never falls back.
     from .engines import cli_doer
 
-    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+    _grok_cli_broken = cli_doer.cli_known_broken("grok") if _is_grok_engine(engine) else None
+    if _grok_cli_broken:
+        # Skip a launch we already know ends at the vendor. Announced, and short-lived, so
+        # a CLI fixed upstream is retried soon rather than being written off permanently.
+        typer.echo(
+            f"note: skipping the local grok CLI — it failed recently ({_grok_cli_broken}). "
+            "Using xAI API-direct. Retried automatically within a few hours.",
+            err=True,
+        )
+    if _is_grok_engine(engine) and not _grok_cli_broken and cli_doer._grok_cli_available():
         typer.echo(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
@@ -1269,7 +1278,7 @@ def engine_consult(
             project_context_text=project_context_text,
             api_channel="no local file access",  # consult sends only the prompt
         )
-    elif _is_grok_engine(engine):
+    elif _is_grok_engine(engine) and not _grok_cli_broken:
         typer.echo(
             "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
             err=True,
@@ -1458,7 +1467,16 @@ def engine_review(
     # gate refusal inside run_grok_review exits, never falls back to the API.
     from .engines import cli_doer
 
-    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+    _grok_cli_broken = cli_doer.cli_known_broken("grok") if _is_grok_engine(engine) else None
+    if _grok_cli_broken:
+        # Skip a launch we already know ends at the vendor. Announced, and short-lived, so
+        # a CLI fixed upstream is retried soon rather than being written off permanently.
+        typer.echo(
+            f"note: skipping the local grok CLI — it failed recently ({_grok_cli_broken}). "
+            "Using xAI API-direct. Retried automatically within a few hours.",
+            err=True,
+        )
+    if _is_grok_engine(engine) and not _grok_cli_broken and cli_doer._grok_cli_available():
         typer.echo(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
@@ -1474,7 +1492,7 @@ def engine_review(
             # DO reach xAI, gated per read. Saying "no local file access" here was false.
             api_channel="gated read-only repo access, not worktree-scoped",
         )
-    elif _is_grok_engine(engine):
+    elif _is_grok_engine(engine) and not _grok_cli_broken:
         typer.echo(
             "note: grok CLI/bwrap not found — using xAI API-direct (gated read-only repo "
             "access, not worktree-scoped)",
@@ -1625,7 +1643,16 @@ def engine_propose(
     from .engines import cli_doer
     from .engines import patch_proposal
 
-    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+    _grok_cli_broken = cli_doer.cli_known_broken("grok") if _is_grok_engine(engine) else None
+    if _grok_cli_broken:
+        # Skip a launch we already know ends at the vendor. Announced, and short-lived, so
+        # a CLI fixed upstream is retried soon rather than being written off permanently.
+        typer.echo(
+            f"note: skipping the local grok CLI — it failed recently ({_grok_cli_broken}). "
+            "Using xAI API-direct. Retried automatically within a few hours.",
+            err=True,
+        )
+    if _is_grok_engine(engine) and not _grok_cli_broken and cli_doer._grok_cli_available():
         typer.echo(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
@@ -1693,7 +1720,7 @@ def engine_propose(
             err=True,
         )
         raise typer.Exit(code=0)
-    if _is_grok_engine(engine):
+    if _is_grok_engine(engine) and not _grok_cli_broken:
         # --agentic runs the read-only toolbox over this repo, so file contents DO reach
         # xAI (gated per read); the one-shot path sends only the packaged task. Naming the
         # wrong one here misdescribes the egress at the moment the human consents to it.
