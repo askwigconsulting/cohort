@@ -141,7 +141,9 @@ def test_engine_consult_reads_prompt_from_file_and_caps_max_tokens_by_default(tm
 
     captured: dict[str, Any] = {}
 
-    def fake_consult(prompt: str, *, model: str | None, max_tokens: int | None) -> str:
+    def fake_consult(
+        prompt: str, *, model: str | None, max_tokens: int | None, **_kw
+    ) -> str:
         captured["prompt"] = prompt
         captured["model"] = model
         captured["max_tokens"] = max_tokens
@@ -242,7 +244,9 @@ def test_engine_consult_honors_a_custom_max_tokens_override(tmp_path: Path):
     prompt_file.write_text("hello", encoding="utf-8")
     captured: dict[str, Any] = {}
 
-    def fake_consult(prompt: str, *, model: str | None, max_tokens: int | None) -> str:
+    def fake_consult(
+        prompt: str, *, model: str | None, max_tokens: int | None, **_kw
+    ) -> str:
         captured["max_tokens"] = max_tokens
         return "reply"
 

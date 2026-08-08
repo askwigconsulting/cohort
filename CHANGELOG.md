@@ -11,7 +11,24 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-03 · Housekeeping and upstream reports
+
 ### Added
+- **`cohort report` — file a ticket upstream about Cohort itself.** `feedback` records what
+  you noticed, but the entry stayed on your machine, so a report only reached the maintainer
+  if you separately remembered to raise it. In practice that meant it did not: four detailed
+  entries sat on disk for a day and were re-filed by hand. `submit-proposals` already pushes
+  *fixes* upstream; a user with a problem and no fix had no path at all.
+
+  `--from-feedback` files an entry you already wrote. Filing is treated as what it is — an
+  outward, effectively irreversible act — so the body is **secret-scanned**, shown in full,
+  and confirmed before anything is sent; without `gh` it prints the report for you to paste
+  rather than failing. The environment block carries version and OS, deliberately not
+  hostname, username or paths: a bug report should not be a fingerprint of the reporter.
+- **`cohort feedback --note-file` and `--area`.** A note passed as a shell string turns
+  backticks, `$` and quotes into hazards — the same reason `engine consult` takes
+  `--prompt-file`. `--area` gives a target for observations that are neither agent- nor
+  command-scoped, which previously got mis-filed under whichever command was closest.
 - **`cohort gc` — Cohort now cleans up after itself.** Several paths deliberately leave
   artifacts on disk: a doer or ratchet run keeps its worktree so a human can review the
   diff, and every `engine review` writes a transcript so what was egressed stays auditable.
@@ -36,7 +53,78 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   the only copy of context a session meant to keep, and `gc` cannot tell the two apart. They
   are reported so you know they are there, and left for the session that owns them.
 
+### Changed
+- **`AGENTS.md` now orients the user, not just the installer.** It explained how to install
+  Cohort but barely what Cohort *is*, and ended at "tell them to run `cohort setup`" — so an
+  agent could complete a correct install and leave someone with seventeen advisors and no
+  idea what to do with them. An install nobody knows how to use is a failed install.
+
+  Adds a plain-language explanation aimed at someone who has never heard of Cohort (the
+  office of specialists, the commands that do real work, one source across every IDE — and
+  what it is *not*: no model, no server, no telemetry), plus a short orientation the agent
+  walks through afterwards: meet the office with a real cross-functional question, try
+  `/plan` on something they actually intend to build, learn the off-switch *before* needing
+  it, then hand off to the installed `office-guide` skill.
+
+  The README's pointer to `AGENTS.md` moved from line 39 to the top, because an agent that
+  starts improvising before it reaches line 39 is exactly how `pip install cohort` fetches
+  somebody else's project.
+
 ### Fixed
+- **The engine egress guard was a no-op for almost every directory a user works in.**
+  `_repo_has_egress_provenance` accepted a `.cohort` ancestor as proof of repository
+  context — but `$HOME/.cohort` is Cohort's *own* global state directory (autonomy level,
+  project registry, CLI-health markers) and exists on every installed machine. So every
+  path under `$HOME` looked like a repo, and the RFC 0004 F5 fail-closed check that is
+  supposed to refuse egress from a bare working directory passed instead. A project's
+  `.cohort` still counts; Cohort's own no longer does.
+
+  Windows CI is what exposed it: pytest's `tmp_path` lives under `$HOME` there, so a test
+  that wrote the real CLI-health marker created `~/.cohort` and silently granted provenance
+  to every later test. Both fail-closed tests went green. Tests no longer write to the real
+  home at all (`tests/conftest.py`), and the guard has a regression test that fakes a home
+  containing `.cohort`.
+- **`cohort engine consult` could not succeed at its own defaults.** The command asks for
+  up to `--max-tokens 4096` but never passed a timeout, so it took the client's 60-second
+  default — and grok-4.5 emits roughly 50 tokens/second. Any consult that actually used its
+  token budget timed out twice and reported **"xAI request failed to reach the API"**, which
+  sent at least one user hunting a network fault that did not exist. The two defaults were
+  mutually unsatisfiable.
+
+  The per-attempt timeout is now derived from the tokens requested (pessimistic 12 tok/s,
+  floor 120s), and `--timeout` is exposed to override it. Raising it is safe: a refused
+  connection, bad DNS or a dead host raises immediately regardless, so the cap only applies
+  to a server that accepted the request and is answering slowly.
+
+  Timeouts and connection errors are also no longer reported identically. They are caught
+  together but mean opposite things — a healthy API being slow versus an unreachable one —
+  and only the first is fixed by lowering `--max-tokens`.
+- **A truncated answer is no longer returned silently.** A response cut off at
+  `--max-tokens` is still a 200 carrying usable-looking text, so nothing downstream could
+  tell it from a complete one — a consult stopped mid-sentence inside a table and exited 0
+  with no signal at all. `finish_reason=length` now prints a warning to stderr. The partial
+  answer is still returned: it is real work already paid for, and discarding it would be
+  worse than labelling it.
+- **A vendor CLI that fails at the vendor is not retried on every call.** grok-cli depends
+  on xAI's retired live-search API and returns `410` on *every* invocation, so each consult
+  paid a full sandboxed launch and round-trip before the fallback even started. The failure
+  is now remembered for a few hours and the launch skipped, with the reason printed. The
+  marker is deliberately short-lived and fails open — wrongly skipping a working CLI
+  silently downgrades every dispatch to a transport with less repo access, which is the
+  more costly error.
+- **The secret scanner missed a credential under a prose label.** The assignment pattern
+  used `\s*` around its separator, which matches newlines — so `Repro:` on one line paired
+  with `AWS_SECRET_ACCESS_KEY` on the next *as its value*. No secret keyword in "Repro", no
+  finding, and the real assignment was consumed and never scanned on its own.
+
+  A label above a credential is the most common shape in a bug report or a doc, so this hid
+  precisely the case that matters most. Found when `cohort report` filed a public issue the
+  gate should have refused.
+- **`gc --json` reported a number that meant something else.** `live_worktrees` counted
+  worktrees together with working notes, which are withheld for an entirely different
+  reason — so a reader saw 25 unreclaimable worktrees where there were 9, and planned work
+  around it. Now reports `withheld_worktrees`, `withheld_working_notes` and a `by_kind`
+  breakdown. A wrong number is worse than no number when someone is going to act on it.
 - **The test suite no longer leaks worktrees.** `run_ratchet` leaves its worktree in place
   on success by design, and the suite calls it ten times, so every full run stranded up to
   ten directories. An autouse fixture now removes only those that appear *during* a test —
@@ -790,7 +878,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/askwigconsulting/cohort/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/askwigconsulting/cohort/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/askwigconsulting/cohort/compare/v0.13.0...v0.14.0

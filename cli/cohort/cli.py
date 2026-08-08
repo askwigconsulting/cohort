@@ -42,6 +42,7 @@ from typing import Optional
 import typer
 
 from . import __version__
+from . import report as report_mod
 from .compile import CompileError, CompileResult, compile_ide, planned_dests, write_staging
 from .executor import ClobberRefused
 from .install import (
@@ -177,6 +178,102 @@ def _print_validate_human(tree: TreeResult) -> None:
     typer.echo(f"{s['valid']} valid, {s['invalid']} invalid")
 
 
+def _report_gates():
+    """Local import to match how every other command in this module reaches the gates."""
+    from .engines import gates as engine_gates
+
+    return engine_gates
+
+
+@app.command()
+def report(
+    title: Optional[str] = typer.Option(None, "--title", help="One-line summary."),
+    body_file: Optional[Path] = typer.Option(
+        None, "--body-file",
+        help="Read the report body from a file (never a shell argument: report text quotes "
+             "code, config and output).",
+    ),
+    from_feedback: Optional[Path] = typer.Option(
+        None, "--from-feedback",
+        help="File an existing `cohort feedback` entry instead of retyping it.",
+    ),
+    repo: str = typer.Option(
+        report_mod.DEFAULT_UPSTREAM, "--repo", help="Target repo (OWNER/NAME)."
+    ),
+    no_environment: bool = typer.Option(
+        False, "--no-environment", help="Omit the version/OS block."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="Skip the confirmation prompt (for scripted filing)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """File a ticket upstream about Cohort itself — a bug, a friction, a proposal.
+
+    `feedback` records what you noticed locally; this is how it reaches someone who can act
+    on it. Anyone may file; only maintainers integrate, which is what makes an issue the
+    right shape for this.
+
+    Filing is egress and effectively irreversible, so the body is secret-scanned, shown, and
+    confirmed before anything is sent.
+    """
+    if from_feedback is None and body_file is None:
+        typer.echo("error: give --body-file or --from-feedback", err=True)
+        raise typer.Exit(code=2)
+    try:
+        if from_feedback is not None:
+            derived_title, body = report_mod.read_feedback_entry(from_feedback)
+            title = title or derived_title
+        else:
+            body = body_file.read_text(encoding="utf-8")
+        if not title:
+            typer.echo("error: --title is required with --body-file", err=True)
+            raise typer.Exit(code=2)
+        draft = report_mod.build_draft(
+            title=title, body=body, cohort_version=__version__, repo=repo,
+            include_environment=not no_environment,
+        )
+    except report_mod.ReportError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except _report_gates().SecretFoundError as exc:
+        typer.echo(
+            f"error: {exc}\nNothing was filed. A report is public the moment it exists, so "
+            "credential-shaped content is refused here exactly as it is for any other egress.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    gh = report_mod.gh_available()
+    if gh is None:
+        typer.echo(
+            "gh is not installed or not authenticated, so this cannot be filed for you.\n"
+            "The report is below — paste it at "
+            f"https://github.com/{draft.repo}/issues/new\n",
+            err=True,
+        )
+        typer.echo(draft.preview)
+        raise typer.Exit(code=1)
+
+    if not yes:
+        typer.echo(draft.preview)
+        typer.echo("")
+        if not typer.confirm(f"File this as a public issue on {draft.repo}?", default=False):
+            typer.echo("Not filed.", err=True)
+            raise typer.Exit(code=1)
+    try:
+        url = report_mod.file_issue(draft, gh=gh)
+    except report_mod.ReportError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if json_output:
+        typer.echo(_json.dumps({"action": "report", "repo": draft.repo, "url": url}, indent=2))
+    else:
+        typer.echo(f"Filed: {url}")
+    raise typer.Exit(code=0)
+
+
 @app.command()
 def gc(
     days: float = typer.Option(
@@ -221,11 +318,24 @@ def gc(
 
     safe = [i for i in report.items if i.safe_by_default]
     live = [i for i in report.items if not i.safe_by_default]
+    # Report per kind. A single "live_worktrees" count lumped worktrees together with
+    # working notes, which are withheld for an entirely different reason — so a reader saw
+    # 25 unreclaimable worktrees where there were 9, and diagnosed a leak accordingly.
+    # A number that is wrong in the direction of alarm is worse than no number.
+    by_kind: dict[str, int] = {}
+    for item in report.items:
+        key = f"{item.kind}:{'reclaimable' if item.safe_by_default else 'withheld'}"
+        by_kind[key] = by_kind.get(key, 0) + 1
     payload = {
         "action": "gc",
         "applied": apply_,
         "reclaimable": len(safe),
-        "live_worktrees": len(live),
+        "withheld": len(live),
+        "withheld_worktrees": sum(
+            1 for i in live if i.kind == "proposal-worktree"
+        ),
+        "withheld_working_notes": sum(1 for i in live if i.kind == "working-note"),
+        "by_kind": by_kind,
         "bytes": report.reclaimable_bytes,
         "removed": [str(p) for p in report.removed],
     }
@@ -964,10 +1074,23 @@ def _repo_has_egress_provenance(cwd: Path) -> bool:
     """True if ``cwd`` sits inside a repository context — a ``.git`` or ``.cohort``
     ancestor. When neither exists (e.g. a bare ``/tmp`` working dir), there is no repo
     whose ``.cohort/project_context.md`` could carry an egress opt-out, so a piped
-    payload's provenance cannot be checked and engine egress must fail closed (F5)."""
+    payload's provenance cannot be checked and engine egress must fail closed (F5).
+
+    The home directory's ``.cohort`` does not count. That one is Cohort's own *global
+    state* directory (autonomy level, registry, CLI-health markers) and exists on every
+    installed machine — counting it made every path under ``$HOME`` look like a repo, so
+    the fail-closed guard passed for essentially every directory a user works in. A
+    project's ``.cohort`` is repo context; Cohort's own is not.
+    """
     cwd = Path(cwd).resolve()
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):  # no home on this platform/config
+        home = None
     for candidate in (cwd, *cwd.parents):
-        if (candidate / ".git").exists() or (candidate / ".cohort").exists():
+        if (candidate / ".git").exists():
+            return True
+        if (candidate / ".cohort").exists() and candidate != home:
             return True
     return False
 
@@ -1170,6 +1293,11 @@ def engine_consult(
         "--max-tokens",
         help="Cap on the engine's response length (bounds cost).",
     ),
+    timeout: Optional[float] = typer.Option(
+        None, "--timeout",
+        help="Per-attempt timeout in seconds. Default scales with --max-tokens, so a "
+             "bigger answer is given longer to arrive.",
+    ),
 ) -> None:
     """Consult an external engine (advisory only) and print its reply to stdout.
 
@@ -1255,7 +1383,16 @@ def engine_consult(
     # on their current path. A gate refusal inside run_grok_review exits, never falls back.
     from .engines import cli_doer
 
-    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+    _grok_cli_broken = cli_doer.cli_known_broken("grok") if _is_grok_engine(engine) else None
+    if _grok_cli_broken:
+        # Skip a launch we already know ends at the vendor. Announced, and short-lived, so
+        # a CLI fixed upstream is retried soon rather than being written off permanently.
+        typer.echo(
+            f"note: skipping the local grok CLI — it failed recently ({_grok_cli_broken}). "
+            "Using xAI API-direct. Retried automatically within a few hours.",
+            err=True,
+        )
+    if _is_grok_engine(engine) and not _grok_cli_broken and cli_doer._grok_cli_available():
         typer.echo(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
@@ -1269,14 +1406,16 @@ def engine_consult(
             project_context_text=project_context_text,
             api_channel="no local file access",  # consult sends only the prompt
         )
-    elif _is_grok_engine(engine):
+    elif _is_grok_engine(engine) and not _grok_cli_broken:
         typer.echo(
             "note: grok CLI/bwrap not found — using xAI API-direct (no local file access)",
             err=True,
         )
 
     try:
-        text = engine_xai.consult(prompt, model=chosen_model, max_tokens=max_tokens)
+        text = engine_xai.consult(
+            prompt, model=chosen_model, max_tokens=max_tokens, timeout=timeout
+        )
     except engine_xai.EngineAuthError:
         typer.echo(
             "error: GROK_API_KEY is unset or was rejected by xAI; export a developer "
@@ -1458,7 +1597,16 @@ def engine_review(
     # gate refusal inside run_grok_review exits, never falls back to the API.
     from .engines import cli_doer
 
-    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+    _grok_cli_broken = cli_doer.cli_known_broken("grok") if _is_grok_engine(engine) else None
+    if _grok_cli_broken:
+        # Skip a launch we already know ends at the vendor. Announced, and short-lived, so
+        # a CLI fixed upstream is retried soon rather than being written off permanently.
+        typer.echo(
+            f"note: skipping the local grok CLI — it failed recently ({_grok_cli_broken}). "
+            "Using xAI API-direct. Retried automatically within a few hours.",
+            err=True,
+        )
+    if _is_grok_engine(engine) and not _grok_cli_broken and cli_doer._grok_cli_available():
         typer.echo(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
@@ -1474,7 +1622,7 @@ def engine_review(
             # DO reach xAI, gated per read. Saying "no local file access" here was false.
             api_channel="gated read-only repo access, not worktree-scoped",
         )
-    elif _is_grok_engine(engine):
+    elif _is_grok_engine(engine) and not _grok_cli_broken:
         typer.echo(
             "note: grok CLI/bwrap not found — using xAI API-direct (gated read-only repo "
             "access, not worktree-scoped)",
@@ -1625,7 +1773,16 @@ def engine_propose(
     from .engines import cli_doer
     from .engines import patch_proposal
 
-    if _is_grok_engine(engine) and cli_doer._grok_cli_available():
+    _grok_cli_broken = cli_doer.cli_known_broken("grok") if _is_grok_engine(engine) else None
+    if _grok_cli_broken:
+        # Skip a launch we already know ends at the vendor. Announced, and short-lived, so
+        # a CLI fixed upstream is retried soon rather than being written off permanently.
+        typer.echo(
+            f"note: skipping the local grok CLI — it failed recently ({_grok_cli_broken}). "
+            "Using xAI API-direct. Retried automatically within a few hours.",
+            err=True,
+        )
+    if _is_grok_engine(engine) and not _grok_cli_broken and cli_doer._grok_cli_available():
         typer.echo(
             "note: using the local grok CLI (bubblewrap-sandboxed, worktree-isolated)",
             err=True,
@@ -1693,7 +1850,7 @@ def engine_propose(
             err=True,
         )
         raise typer.Exit(code=0)
-    if _is_grok_engine(engine):
+    if _is_grok_engine(engine) and not _grok_cli_broken:
         # --agentic runs the read-only toolbox over this repo, so file contents DO reach
         # xAI (gated per read); the one-shot path sends only the packaged task. Naming the
         # wrong one here misdescribes the egress at the moment the human consents to it.
@@ -3168,13 +3325,36 @@ def feedback(
     agent: Optional[str] = typer.Option(None, "--agent", help="Agent the feedback is about."),
     command: Optional[str] = typer.Option(None, "--command", help="Command the feedback is about."),
     note: str = typer.Option("", "--note", help="Free-text note."),
+    note_file: Optional[Path] = typer.Option(
+        None, "--note-file",
+        help="Read the note body from a file. Mutually exclusive with --note. Use this for "
+             "anything structured: a shell string turns backticks, $ and quotes into "
+             "hazards, exactly as --prompt-file avoids for engine payloads.",
+    ),
+    area: Optional[str] = typer.Option(
+        None, "--area",
+        help="Subject when the feedback is neither agent- nor command-scoped "
+             "(e.g. working-memory, egress, engines).",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Record one feedback entry (conflict-free file) for the Steward to learn from."""
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
+    if note and note_file:
+        typer.echo("error: --note and --note-file are mutually exclusive", err=True)
+        raise typer.Exit(code=2)
+    if note_file is not None:
+        try:
+            note = note_file.read_text(encoding="utf-8")
+        except OSError as exc:
+            typer.echo(f"error: could not read --note-file: {exc}", err=True)
+            raise typer.Exit(code=2)
     try:
-        report = do_feedback(find_repo_root(Path.cwd()), rating, agent, command, note, effective_dry_run)
+        report = do_feedback(
+            find_repo_root(Path.cwd()), rating, agent, command, note, effective_dry_run,
+            area=area,
+        )
     except FeedbackError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)

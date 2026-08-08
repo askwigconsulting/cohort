@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from cohort import cli
 from cohort.cli import app
 from cohort.engines import xai
 from cohort.engines.cli_doer import DoerResult, GrokReviewResult
@@ -44,7 +45,9 @@ def _grok_cli_unavailable_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 def _capture_consult():
     captured: dict[str, Any] = {}
 
-    def fake_consult(prompt: str, *, model: str | None, max_tokens: int | None) -> str:
+    def fake_consult(
+        prompt: str, *, model: str | None, max_tokens: int | None, **_kw
+    ) -> str:
         captured["model"] = model
         captured["max_tokens"] = max_tokens
         return "reply"
@@ -133,6 +136,29 @@ def test_engine_consult_refuses_egress_with_no_repo_context(
     assert result.exit_code == 1
     assert "no repository context" in result.output
     consult_mock.assert_not_called()  # nothing egressed
+
+
+def test_cohorts_own_global_state_dir_is_not_repository_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``$HOME/.cohort`` is Cohort's own state directory, not a repo.
+
+    It exists on every installed machine, so counting it as provenance made the
+    fail-closed guard pass for *every* directory under ``$HOME`` — which is nearly every
+    directory a user works in. Windows CI surfaced this because pytest's tmp dir lives
+    under the home directory there.
+    """
+    home = tmp_path / "home"
+    (home / ".cohort" / "state").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
+
+    bare = home / "scratch"          # under $HOME, but not a repo
+    bare.mkdir()
+    assert not cli._repo_has_egress_provenance(bare)
+
+    project = home / "proj"          # a real project's .cohort still counts
+    (project / ".cohort").mkdir(parents=True)
+    assert cli._repo_has_egress_provenance(project / "src")
 
 
 def test_engine_consult_allow_egress_overrides_missing_repo_context(

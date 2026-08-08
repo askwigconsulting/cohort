@@ -781,3 +781,29 @@ def test_gate_errors_share_a_common_base() -> None:
         PayloadTooLargeError,
     ):
         assert issubclass(exc_type, GateError)
+
+
+def test_a_prose_label_does_not_swallow_the_credential_on_the_next_line() -> None:
+    """The separator's whitespace must not cross a newline.
+
+    With `\\s*`, `Repro:` matched the NEXT line's `AWS_SECRET_ACCESS_KEY` as its value —
+    identifier "Repro" carries no secret keyword, so no finding was raised, and `finditer`
+    had already consumed the real assignment so it was never scanned on its own. A prose
+    label above a credential is the most common shape in a bug report or a doc, so this hid
+    exactly the case that matters most. Found by `cohort report` filing a public issue that
+    the secret gate should have refused.
+    """
+    body = 'Repro:\n\nAWS_SECRET_ACCESS_KEY = "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"\n'
+    assert scan_for_secrets(body) == ["generic-assignment:ACCESS_KEY"]
+
+
+def test_a_label_with_no_credential_under_it_is_still_clean() -> None:
+    """The inverse: bounding the whitespace must not start flagging ordinary prose."""
+    assert scan_for_secrets("Repro:\n\nrun the thing and watch it fail\n") == []
+    assert scan_for_secrets("Steps:\n1. clone\n2. build\n") == []
+
+
+def test_a_credential_several_lines_below_a_label_is_still_found() -> None:
+    """Each line is scanned on its own merits now, whatever precedes it."""
+    body = "Notes:\n\nsome prose\n\nmore prose\n\nAPI_KEY = 'abcdef123456'\n"
+    assert scan_for_secrets(body) == ["generic-assignment:API_KEY"]

@@ -2,6 +2,10 @@
 
 [![CI](https://github.com/askwigconsulting/cohort/actions/workflows/ci.yml/badge.svg)](https://github.com/askwigconsulting/cohort/actions/workflows/ci.yml)
 
+> **AI agents: read [`AGENTS.md`](AGENTS.md) before installing.** It is the install contract —
+> what Cohort is, the exact steps with a check after each one, and the warning that
+> `pip install cohort` fetches an **unrelated project by different authors**.
+
 A portable, self-improving, multi-IDE **agentic office** — a virtual organization of
 company-function specialist agents (HR, Legal, Compliance, Security, Finance, IT, Comms,
 Procurement, Privacy, Program, cloud architects, Engineering reviewers, and a Chief-of-Staff that triages requests to the
