@@ -807,3 +807,48 @@ def test_a_credential_several_lines_below_a_label_is_still_found() -> None:
     """Each line is scanned on its own merits now, whatever precedes it."""
     body = "Notes:\n\nsome prose\n\nmore prose\n\nAPI_KEY = 'abcdef123456'\n"
     assert scan_for_secrets(body) == ["generic-assignment:API_KEY"]
+
+
+def test_scan_detects_a_quoted_key_in_json_or_yaml_form() -> None:
+    """#265: a config dump or API error body quotes the credential's NAME.
+
+    The assignment pattern required the separator to follow the identifier directly, so
+    every JSON object and every quoted YAML/TOML key was exempt.
+    """
+    assert scan_for_secrets('{"password": "Xy9z-Path-2026-secretvals"}') == [
+        "generic-assignment:PASSWORD"
+    ]
+    assert scan_for_secrets("'api_key': Xy9z-Path-2026-secretvals") == [
+        "generic-assignment:API_KEY"
+    ]
+
+
+def test_scan_detects_a_credential_glued_to_a_harmless_label_on_the_same_line() -> None:
+    """#265: a label's value token swallowed the assignment attached to it.
+
+    ``WARN:`` consumed ``DB_PASSWORD=...`` as its own value; no keyword in ``WARN`` meant
+    no finding, and the scan resumed *past* the credential. The 0.17.0 fix bounded the
+    whitespace and so only removed the cross-line instance of the same bug.
+    """
+    for body in (
+        "WARN: DB_PASSWORD=Xy9z-Path-2026-secretvals",
+        "Repro: `PASSWORD=Xy9z-Path-2026-secretvals`",
+        "x=1;PASSWORD=Xy9z-Path-2026-secretvals",
+    ):
+        assert scan_for_secrets(body) == ["generic-assignment:PASSWORD"], body
+
+
+def test_scan_finds_every_credential_in_a_chain_of_assignments() -> None:
+    """Rescanning from the value start must not stop at the first finding."""
+    body = "user=alice;DB_PASSWORD=Xy9z-Path-2026-secretvals;API_KEY=abcdef123456"
+    assert scan_for_secrets(body) == [
+        "generic-assignment:API_KEY",
+        "generic-assignment:PASSWORD",
+    ]
+
+
+def test_scan_stays_clean_on_labelled_prose_and_quoted_names() -> None:
+    """The inverse: neither change may start flagging ordinary text."""
+    assert scan_for_secrets("WARN: disk almost full, 91% used") == []
+    assert scan_for_secrets('{"name": "cohort", "version": "0.17.0"}') == []
+    assert scan_for_secrets("x=1;y=2;z=3;total=123456") == []

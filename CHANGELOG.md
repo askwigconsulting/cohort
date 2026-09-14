@@ -11,6 +11,19 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- **Secret scanner: quoted keys and label-glued assignments were exempt (#265).** The
+  generic-assignment rule required the separator to follow the identifier directly, so
+  `{"password": "..."}` (JSON, the shape a config dump or API error body takes) and quoted
+  YAML/TOML keys never matched. And because a harmless label's value token runs to the next
+  whitespace, `WARN: DB_PASSWORD=...`, `x=1;PASSWORD=...` and a backticked `PASSWORD=...`
+  were consumed as the label's value and skipped over. Every egress path that relies on the
+  rule was affected: `cohort report` bodies, the CLI-doer tracked-file scan, the API toolbox
+  per-read scan, and `/consult-*` prompts. The identifier may now be closed by a quote, and
+  a consumed value is rescanned from its start so an embedded `KEY=value` is a candidate in
+  its own right. Two escaped-source fixtures the old scanner missed in this repo's own tests
+  are now declared in the suppression manifest.
+
 ## [0.17.0] — 2026-08-03 · Housekeeping and upstream reports
 
 ### Added
