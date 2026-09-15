@@ -312,7 +312,7 @@ def _result(ide: str, files: dict[str, str]) -> CompileResult:
 
 def _tree(root: Path) -> dict[str, str]:
     return {
-        str(p.relative_to(root)): p.read_text(encoding="utf-8")
+        p.relative_to(root).as_posix(): p.read_text(encoding="utf-8")  # Windows: no backslashes
         for p in sorted(root.rglob("*")) if p.is_file()
     }
 

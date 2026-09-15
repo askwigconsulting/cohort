@@ -9,6 +9,8 @@ not remove anything until asked.
 
 from __future__ import annotations
 
+import re
+
 import subprocess
 import time
 from pathlib import Path
@@ -165,6 +167,9 @@ def test_transcript_sort_is_numeric_across_the_9999_to_10000_boundary(tmp_path) 
     assert names == ["9998.jsonl", "9999.jsonl"]
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def test_negative_keep_transcripts_is_rejected_by_the_cli(tmp_path, monkeypatch) -> None:
     """A negative `--keep-transcripts` has no sane meaning (`transcripts[:-k]` with a
     negative k would delete the |k| *newest*, not the excess), so the CLI must refuse it
@@ -172,7 +177,8 @@ def test_negative_keep_transcripts_is_rejected_by_the_cli(tmp_path, monkeypatch)
     monkeypatch.setenv("HOME", str(tmp_path))
     result = runner.invoke(app, ["gc", "--keep-transcripts", "-1"])
     assert result.exit_code != 0
-    assert "keep-transcripts" in result.output
+    # CI terminals colour the usage error; the option name is split by escape codes.
+    assert "keep-transcripts" in _ANSI.sub("", result.output)
 
 
 def test_nothing_to_do_is_not_an_error(tmp_path) -> None:

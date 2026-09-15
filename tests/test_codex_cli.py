@@ -249,6 +249,7 @@ def _fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (home / ".codex" / "auth.json").write_text('{"login": "saved"}', encoding="utf-8")
     (home / "secret.txt").write_text("ssh-private-key-material", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() on Windows
     monkeypatch.delenv("CODEX_HOME", raising=False)
     return home
 

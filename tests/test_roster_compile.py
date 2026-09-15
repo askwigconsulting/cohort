@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import os
 import shutil
 import subprocess
@@ -170,16 +172,21 @@ def test_edit_to_alias_edits_office_like_layer(office_source, home):
     assert "Edited via --to alias." in text
 
 
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def test_add_agent_help_lists_only_the_canonical_to_spelling():
     proc = run_cli("add-agent", "--help", home=Path.home())
-    assert "--to" in proc.stdout
-    assert "--layer" not in proc.stdout
+    text = _ANSI.sub("", proc.stdout)  # CI terminals colour --help; strip before matching
+    assert "--to" in text
+    assert "--layer" not in text
 
 
 def test_edit_help_lists_only_the_canonical_layer_spelling():
     proc = run_cli("edit", "--help", home=Path.home())
-    assert "--layer" in proc.stdout
-    assert "--to" not in proc.stdout
+    text = _ANSI.sub("", proc.stdout)
+    assert "--layer" in text
+    assert "--to" not in text
 
 
 def test_add_agent_layer_alias_rejects_the_same_way_as_to(office_source, home):
