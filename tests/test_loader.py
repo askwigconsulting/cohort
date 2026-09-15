@@ -6,15 +6,22 @@ cases (CRLF, trailing whitespace, body containing '---', empty body, BOM).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+import yaml
 
 from cohort.errors import E001_FRONTMATTER_PARSE
+from cohort.frontmatter import dump_frontmatter
 from cohort.loader import (
     FrontmatterError,
+    StrictSafeLoader,
     load_artifact_text,
     parse_frontmatter,
     split_frontmatter,
 )
+
+REPO = Path(__file__).resolve().parents[1]
 
 WELL_FORMED = """---
 name: x
@@ -113,3 +120,72 @@ def test_missing_opening_delimiter_raises():
 def test_empty_frontmatter_is_not_a_mapping():
     with pytest.raises(FrontmatterError):
         parse_frontmatter("")
+
+
+# --- Strict loader: duplicate keys, parse parity, C parser ------------------
+
+
+def test_duplicate_top_level_key_fails_e001_naming_the_key():
+    text = "---\nname: x\nkind: hook\naction: first\naction: second\n---\nbody\n"
+    result = load_artifact_text(text, name_stem="x")
+    assert result.load_error is not None
+    assert result.load_error.code == E001_FRONTMATTER_PARSE
+    assert "'action'" in result.load_error.message
+    assert result.frontmatter is None and result.body is None
+
+
+def test_duplicate_nested_key_fails_e001():
+    text = "---\nname: x\nargs:\n  - name: a\n    name: b\n---\nbody\n"
+    result = load_artifact_text(text, name_stem="x")
+    assert result.load_error is not None
+    assert result.load_error.code == E001_FRONTMATTER_PARSE
+    assert "'name'" in result.load_error.message
+
+
+def test_merge_key_override_is_not_a_duplicate():
+    # YAML merge (`<<`) legitimately re-states a key; only explicit repeats are rejected.
+    fm = parse_frontmatter("base: &b\n  a: 1\n  c: 3\nderived:\n  <<: *b\n  a: 2\n")
+    assert fm["derived"] == {"a": 2, "c": 3}
+
+
+@pytest.mark.skipif(not yaml.__with_libyaml__, reason="libyaml not available")
+def test_loader_uses_the_c_parser_when_libyaml_is_available():
+    assert issubclass(StrictSafeLoader, yaml.CSafeLoader)
+
+
+def test_strict_loader_parses_every_canonical_artifact_like_safe_load():
+    # The strict loader must change nothing but duplicate handling: dates, yes/no,
+    # octal-looking strings and every other scalar resolve exactly as safe_load does.
+    for path in sorted((REPO / "canonical").rglob("*.md")):
+        fm_text, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+        assert parse_frontmatter(fm_text) == yaml.safe_load(fm_text), path
+
+
+# --- Splitter: the closing delimiter is at column 0 only --------------------
+
+
+def test_indented_triple_dash_is_not_a_closing_delimiter():
+    fm, body = split_frontmatter("---\nnote: 'a\n\n  ---\n\n  b'\n---\nBODY\n")
+    assert "---" in fm
+    assert body == "BODY\n"
+
+
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("author", "Jonathan --- Askwig"),
+        ("branch", "feat/---break"),
+        ("agent", "a\n---\nb"),
+        ("note", "---"),
+        ("ts", "2026-06-01T12:00:00Z"),
+        ("author", "O'Brien: the \"boss\""),
+    ],
+)
+def test_dumped_frontmatter_round_trips_through_the_loader(key, value):
+    # `cohort feedback --agent $'a\n---\nb'` must produce a loadable artifact: what
+    # `dump_frontmatter` emits, the loader reads back unchanged (#299 item 4).
+    raw = dump_frontmatter([(key, value), ("x", "1")]) + "BODY\n"
+    result = load_artifact_text(raw, name_stem="t")
+    assert result.load_error is None
+    assert result.frontmatter[key] == value
+    assert result.body == "BODY\n"

@@ -14,11 +14,14 @@ from pathlib import Path
 
 import pytest
 
+from cohort.adapters import claude as claude_adapter
+from cohort.adapters import copilot as copilot_adapter
 from cohort.adapters.claude import ClaudeRenderer, claude_model, claude_tools, render_agent
 from cohort.compile import compile_ide, scan_staging_ops, staging_tree_hash, write_staging
 from cohort.install_model import CohortPaths
-from cohort.ir import build_ir
+from cohort.ir import _SHARED_KEYS, build_ir
 from cohort.loader import load_artifact
+from cohort.schema import known_tools, shared_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PHASE2_SRC = REPO_ROOT / "tests" / "fixtures" / "phase2"
@@ -318,3 +321,33 @@ def test_field_declared_both_handled_and_declined_fails():
     with pytest.raises(CompileError) as exc:
         assert_field_contract(universe=universe, contracts=contracts)
     assert "both handled and declined" in str(exc.value)
+
+
+# --- shared-key derivation and the tool vocabulary ---------------------------
+
+
+def test_shared_keys_are_derived_from_the_shared_schema():
+    # Syncing the list by hand once omitted `overrides`, which only worked because
+    # compile read it out of `fields`; the set is now the schema, so it cannot drift.
+    assert _SHARED_KEYS == set(shared_schema()["properties"])
+
+
+def test_override_markers_are_hoisted_off_fields():
+    lr = load_artifact(CANON / "agents" / "security-engineer.md")
+    marked = build_ir(dict(lr.frontmatter, overrides=True, office_sha256="abc"), lr.body)
+    assert marked.overrides is True
+    assert marked.office_sha256 == "abc"
+    assert "overrides" not in marked.fields and "office_sha256" not in marked.fields
+    plain = build_ir(lr.frontmatter, lr.body)
+    assert plain.overrides is False and plain.office_sha256 is None
+
+
+@pytest.mark.parametrize(
+    "tool_map",
+    [claude_adapter._TOOL_MAP, copilot_adapter._TOOL_ALIAS_MAP],
+    ids=["claude", "copilot"],
+)
+def test_adapter_tool_maps_cover_exactly_the_schema_vocabulary(tool_map):
+    # Every name the schema admits maps to a native tool, and nothing else does: the
+    # renderer can never silently drop a validated `tools` entry.
+    assert set(tool_map) == set(known_tools())
