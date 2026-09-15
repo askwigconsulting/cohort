@@ -163,23 +163,23 @@ baked into its history.
 
 | Dimension | Last run | Tiers seen | FP rate | Notes |
 |---|---|---|---|---|
-| critical-path | 2026-09-10 (r4) | opus (r1), fable (r2), fable (r3), fable + gpt-5.6 codex (r4) | 0/5 (r1), 0/2 (r2), 0/8 (r4 Fable), 2/6 struck (r4 Codex) | swept every run; r4 found two scanner shapes by executing the scanner; Codex's two strikes were by-design/moot items |
-| security | 2026-07-31 (r2) | opus (r1), fable (r2) | 0/6 (r1) | not in the r4 slice (critical-path overlapped); due r5 |
-| correctness | 2026-09-10 (r4, **partial**) | opus (r1), opus (r4, stalled) + coordinator probes | 1/8 struck (r1) | r4: the Opus reviewer hung on a permission prompt and returned nothing; coordinator executed scanner/timeout/gc-age probes and verified the reviewer's one lead (session-capture `diff --stat` blind spot, #280). **Weight into r5** |
-| concurrency | 2026-07-31 (r2) | opus (r1), opus (r2) | 0/7 (r1) | r2 downgraded the filelock finding on likelihood (#230) |
+| critical-path | 2026-09-14 (r5) | opus (r1), fable (r2), fable (r3), fable + gpt-5.6 codex (r4), fable + codex (r5) | 0/5 (r1), 0/2 (r2), 0/8 (r4 Fable), 2/6 struck (r4 Codex), 0/6 struck + 1 upgraded (r5 Fable), 0/3 struck (r5 Codex) | swept every run; r5 found the ratchet evaluator hole (#286, never raised r1–r4) and the quadratic #265 regression (#287) by diffing `cli/` since r4 and executing the one changed file |
+| security | 2026-09-14 (r5) | opus (r1), fable (r2), fable (r5) | 0/6 (r1), 0/5 struck + 1 refined-to-decision (r5) | r5: my-office symlink quarantine bypass (#285, HIGH), dashboard token to any loopback client (#293), corrupt-state remedy activates everything withheld (#294) |
+| correctness | 2026-09-14 (r5) | opus (r1), opus (r4, stalled), opus (r5) | 1/8 struck (r1), 0/8 struck but 5/8 refined down (r5) | r5 completed the r4 partial: 8 probed findings, all real, all LOW after refutation (#299); the datetime-timestamp and `---`-splitter items are the ones worth fixing |
+| concurrency | 2026-09-14 (r5) | opus (r1), opus (r2), opus (r5) | 0/7 (r1), 1/6 struck (r5: `reverse_full` by design), 2 HIGHs→MED | r5: reconcile live-set outside the lock (#290), staging rebuilt unlocked (#291), roster lost-update behind a false comment (#292) |
 | honesty | 2026-09-10 (r4) | opus (r1), fable (r4) | 0/2 (r1), 0/12 (r4; 2 HIGH) | r4's richest dimension: `/consult-gpt` prose-only, global `--dry-run` placebo, four wrong README egress rows |
 | tests | 2026-09-10 (r4) | opus (r1), sonnet (r4) | 0/4 (r1), 1/3 downgraded (r4: Copilot killing test HIGH→LOW, E060 pre-empts) | r4 ran a real copy-and-mutate probe; found the real-venv test never runs in CI |
 | supply-chain | 2026-09-10 (r4) | opus (r1), haiku (r4) | 0/5 (r1), 0/4 (r4, all LOW) | r1 fixes hold; lockfile is decorative; Haiku was adequate for this mechanical sweep |
-| performance | 2026-07-31 (r2) | opus (r2), grok-4.3 (r3) | r3 review **struck** | r2 covered it (found #226); the r3 *re-review* was struck as unreliable, so r2 remains the real coverage |
-| resilience | 2026-07-31 (r3) | opus (r2), grok-4.5 (r3) | 0/6 (r3) | strongest external review of r3 |
-| naming | 2026-07-31 (r3) | gpt-codex (r3) | 0/2 | first coverage |
-| docs | 2026-07-31 (r2) | opus (r2), grok-4.20-0309-reasoning (r3, **no answer**) | — | r2 covered it; the r3 attempt hit max_iterations and returned nothing |
+| performance | 2026-09-14 (r5) | opus (r2), grok-4.3 (r3, struck), opus (r5) | r3 struck; 0/7 struck, 5/7 refined down (r5) | r5 measured: the per-turn hook import cost is the user-facing item (#295); three dashboard HIGHs refined to LOW-MED (optional UI; 8 sessions on this box) |
+| resilience | 2026-09-14 (r5) | opus (r2), grok-4.5 (r3), sonnet (r5) | 0/6 (r3), 0/4 struck + 2 refined (r5) | r5: full subprocess/network timeout table in the report; ratchet `_git` no timeout + evaluator no group-kill folded into #286 |
+| naming | 2026-09-14 (r5) | gpt-codex (r3), opus (r5) | 0/2 (r3), 0/8 struck but 7/8 refined down (r5) | r5: vocabulary map in the report; two HIGHs (advisory label on doers, engine namespaces) refined to LOW/MED (#300, #243) |
+| docs | 2026-09-14 (r5) | opus (r2), grok-4.20-0309-reasoning (r3, **no answer**), opus (r5) | 1/6 struck (r5: DOC-1 was already #280 verbatim) | r5: AGENTS.md `--ide` repeat silently drops IDEs (#296, executed); every `cohort <sub>`/flag in canonical, README, AGENTS resolves against `--help` |
 | ops | 2026-09-10 (r4) | grok-4.5 (r3), sonnet (r4) | 1/7 downgraded (r3), 0/4 (r4) | r4: ticket reconciliation (13/16 fixed in code), PVR disabled, v0.17.0 untagged |
-| accessibility | 2026-07-31 (r3) | opus (r2), gpt-codex (r3) | 0/6 (r3) | r2 found #232; r3 found the keyboard-operability gaps |
-| vendor-reachability | 2026-09-10 (r4) | opus (r3), coordinator (r4) | 0/6 (r3) | **always-on**; r4: codex reachable (ChatGPT login), **grok unreachable — no `XAI_API_KEY` in the session environment** (environment, not code). Record reachability before routing |
-| artifact-contract | 2026-09-10 (r4) | opus (r4) | 2 refined of 6 (r4) | **new dimension** (the surface a company harness pulls weekly): Cursor/Codex drop the `tools` allow-list; install path skips E080; no schema version or stability doc (#272, #273) |
-| go-to-market | 2026-09-10 (r4) | fable (r2), grok-4.5 (r3), fable + gpt-5.6 codex (r4) | r4: 1 refined, 2 self-struck of 6 | always-on; **two vendors met in r4**; both converged on "stop leading with multi-IDE" and "stop expanding topology" |
-| business-ops | 2026-09-10 (r4) | fable (r3), fable (r4) | 0/8 (r3), 1 struck + 3 refined of 7 (r4) | r4 re-confirmed every context row; corrected the inbound-licence count; added the GitHub processor and the `report` footnote |
+| accessibility | 2026-09-14 (r5) | opus (r2), gpt-codex (r3), sonnet (r5) | 0/6 (r3), 0/5 struck + 3 refined (r5) | r3 H6 and #232 verified fixed; r5: nameless dialog controls, `--faint` 4.32:1 inside cards (#298); one refuter strike overruled by coordinator measurement |
+| vendor-reachability | 2026-09-14 (r5) | opus (r3), coordinator (r4, r5) | — | **always-on**; r5: codex reachable, **grok unreachable (no `XAI_API_KEY`) — second run in a row**. Set the key before r6 or accept a two-vendor panel |
+| artifact-contract | 2026-09-14 (r5) | opus (r4), opus (r5) | 2 refined of 6 (r4), 1 struck + 5 refined of 8 (r5) | r5: field inventory clean (0 unknown fields; `version` used by 0/56); per-adapter loss table in the report; quick-reference descriptions wrong for 10/21 commands (#297); two HIGHs (dup keys, stray `.md`) refined to LOW |
+| go-to-market | 2026-09-14 (r5) | fable (r2), grok-4.5 (r3), fable + gpt-5.6 codex (r4), fable + codex (r5) | r4: 1 refined, 2 self-struck of 6; r5: 1 struck + 8 refined of 12 (both vendors) | always-on, two vendors; r5 convergence: zero loop-generated contributions ever; no value moment on the by-hand path; plugin boundary now precise (#302) |
+| business-ops | 2026-09-14 (r5) | fable (r3), fable (r4), fable (r5) | 0/8 (r3), 1 struck + 3 refined of 7 (r4), 0 struck + 5 refined of 6 (r5) | r5 re-confirmed every row; no new host; OpenAI Service Terms moved 2026-09-10 (B2 premise); both r5 HIGHs→LOW because the consequence falls on the user, not the owner |
 | privacy | 2026-09-10 (r4) | opus (r3 follow-up), sonnet (r4) | 0/1 (r3), 1 refined of 3 (r4) | r4: engine worktrees carry sessions/feedback/proposals with git author name+email (#275) |
 | dead-ends | 2026-09-10 (r4) | opus (r3 follow-up), haiku (r4) | 0/2 (r3), 0/0 (r4) | r4: clean; `office_reconcile` now wired (`update.py:758`) |
 
@@ -193,6 +193,8 @@ dimension to `cheap` when the target includes recently-changed code, and do not 
 `reasoning` at all until the iteration budget is raised.
 
 **r4 signal:** Fable on honesty and critical-path produced the run's three HIGHs with zero strikes; Haiku was sufficient for supply-chain and dead-ends (mechanical, 0 false positives); Sonnet on ops/privacy/tests was accurate but over-rated severity (3 of 5 HIGHs refined down); Codex (gpt-5.6, `codex exec`) found two real MEDs (TOML quoted key, ancestor symlink) and two by-design items — usable as a second vendor on critical-path with coordinator verification. **Operational:** two agents (Opus correctness, Fable refuter) hung >1h on a `PreToolUse` prompt for `rm -rf` on their own scratch dir — forbid `rm -rf` in worker prompts and treat a silent worker after 30 min as stalled.
+
+**r5 signal:** Fable on security and critical-path produced all three HIGHs, 3 of 4 surviving refutation at HIGH (the fourth, CON-class trigger width, went to MED); Codex found two real MEDs on critical-path (tracked-symlink preflight, scanner shapes) with 0 strikes and cross-vendor convergence on the scanner. **Opus opened eight findings at HIGH across five dimensions and closed none at HIGH** — every one was accurate, every trigger narrower than claimed; Sonnet the same on 2 of 2. Route Opus/Sonnet sections to a Fable refuter as a rule, not an option. A refuter is not infallible either: one strike rested on a wrong runtime claim and was overruled by a five-second measurement. Operational: forbidding `rm -rf` in worker prompts eliminated stalls (15/15 returned, longest 13 min).
 
 Both r3 losses landed on dimensions **r2 had already covered with Opus**, so the practical
 damage was smaller than the r3 report first implied — that report was written before the r2
@@ -211,7 +213,38 @@ spots. Record the phase each run and read the *next* one from here.
 | r2 (2026-07-31) | complex-heavy (retroactive — Fable + Opus throughout) |
 | r3 (2026-07-31) | complex-heavy — 50% grok / 25% GPT / 25% Claude, all grok API-direct |
 | r4 (2026-09-10) | simple-heavy — Haiku ×2, Sonnet ×3, Opus ×3, Fable ×4 (always-on + business + honesty), Codex ×2; grok unavailable |
-| **next run** | **balanced** — and weight `correctness` (partial in r4) and `security` (last r2) into the slice; keep `performance`/`docs` at a capable tier |
+| r5 (2026-09-14) | balanced — Sonnet ×2, Opus ×6, Fable ×4 (always-on + business + security), Codex ×2, 3 Fable refuters; grok unavailable |
+| **next run** | **complex-heavy** — the six r4 dimensions (honesty, tests, supply-chain, ops, dead-ends, privacy) come back into the slice; honesty and privacy at Fable. Get grok reachable first |
+
+## Run 5 — 2026-09-14 — four days after r4
+
+Full report: [`r5-2026-09-14.md`](r5-2026-09-14.md). Coordinator: Fable 5.1. 12 Claude
+reviewers + 2 Codex passes; round two = 3 Fable refuters, each assigned findings it did not write.
+Baseline 1,387 tests green. No reviewer stalled (`rm -rf` forbidden in every worker prompt).
+
+Headline: **three HIGHs, all on the critical path.** A symlinked artifact walks through the
+my-office quarantine (#285 — the #107 bypass); `ratchet` executes engine-authored code on the host
+unconfined via the evaluator (#286 — never raised r1–r4); the four-day-old #265 scanner fix is
+quadratic and hangs every egress path on a long quote-free line (#287 — found by executing the one
+file that changed since r4). Eleven MED, four LOW batches, one owner decision.
+
+Round two moved 55 of 84 findings: **29 confirmed · 50 refined · 5 struck.** Every Opus and Sonnet
+HIGH (10 of 10) was real but refined down one grade on trigger width; Fable HIGHs held 3 of 4.
+Business track: both vendors converged on the same four findings independently; two were signal
+(zero loop-generated contributions ever; the plugin boundary is now precise), two restated open
+#282 decisions.
+
+### Struck / downgraded (carry forward — do not re-raise without new evidence)
+- DOC-1 (README/DESIGN say 10, single source says 20, lint scans only canonical) — entirely inside #280.
+- CON-6 `reverse_full` unlocked — by design, disclosed at `install.py:619-622`.
+- AC-6 Codex/Copilot widen `pre_command`; Codex double `Stop` — disclosed design; latent (all hooks target claude); the doc-cited-not-verified theme is #272.
+- CX-G3 README audience vs architecture — re-raise of #282 decisions 2 and 4.
+- Refined down, do not re-open at the old grade: CON-1/CON-2 (ms windows, two processes); AC-1 dup YAML keys (shared loader, both keys visible); AC-2 stray `.md` (fail-closed is intent; `CompileError` carries the path); AC-3 unknown tools (same default every advisory agent gets; `bash` does map); NAM-1 advisory label (cosmetic, no consumer); COR-3 merge drops duplicates (indistinguishable from Cohort's own); PERF-1/2/3/4 (optional UI); A11Y-1/2; BO-1/BO-2 (consequence on the user); BO-4 "imperative" (page says "recommended default").
+- Coordinator overruled one refuter strike: A11Y-4 (Rich box glyphs under `TERM=dumb`) is real — Rich is Typer's renderer; 86 glyph lines observed. LOW.
+
+### Tickets
+New: #285–#302. Comments: #243 #268 #269 #271 #272 #277 #278 #282. Verified fixed this run: r3
+accessibility H6; #232.
 
 ## Run 4 — 2026-09-10 — six weeks after 0.17.0
 
