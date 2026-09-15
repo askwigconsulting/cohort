@@ -533,7 +533,9 @@ def discover_artifacts(root: Path | str) -> list[Path]:
     for dirpath, _dirnames, filenames in os.walk(root):
         parent = Path(dirpath)
         for filename in filenames:
-            if not filename.endswith(".md"):
+            # Case-insensitive like the old ``rglob("*.md")`` was on Windows, so a
+            # ``.MD`` artifact keeps loading there.
+            if os.path.splitext(filename)[1].lower() != ".md":
                 continue
             entry = parent / filename
             if entry.is_symlink():

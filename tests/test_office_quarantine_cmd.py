@@ -319,3 +319,46 @@ def test_office_review_reset_refuses_without_a_resolvable_source(
     # The corrupt store is left as-is: nothing was rebuilt from a tree we could not find.
     with pytest.raises(quarantine.QuarantineStateError):
         quarantine.office_pending_keys(_state(home))
+
+
+def test_office_review_reset_without_a_baseline_withholds_everything_and_says_so(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    office = _office_source(tmp_path)
+    monkeypatch.setenv("COHORT_SOURCE", str(office))
+    (_state(home) / "office_quarantine.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["office", "review", "--reset"])
+    assert result.exit_code == 0, result.output
+    assert "no trusted baseline found" in result.output
+    assert "1 gated artifact(s) withheld" in result.output
+    assert "memory pulled" in result.output
+    assert len(quarantine.office_pending_keys(_state(home))) == 1
+
+
+def test_office_review_reset_all_ignores_a_legacy_folded_baseline(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    office = _office_source(tmp_path)
+    monkeypatch.setenv("COHORT_SOURCE", str(office))
+    folded = quarantine.content_hash(office / "canonical" / "memories" / "pulled.md")
+    quarantine._save_office_baseline(_state(home), [("memory", "pulled", folded)])
+    (_state(home) / "office_quarantine.json").write_text("{ not json", encoding="utf-8")
+
+    default = runner.invoke(app, ["office", "review", "--reset", "--json"])
+    assert default.exit_code == 0, default.output
+    payload = json.loads(default.output)
+    assert payload["baseline_trusted"] is True and payload["pending"] == []
+    human = runner.invoke(app, ["office", "review", "--reset"])
+    assert "--reset --all" in human.output  # the plain statement of the limitation
+
+    forced = runner.invoke(app, ["office", "review", "--reset", "--all", "--json"])
+    assert forced.exit_code == 0, forced.output
+    payload = json.loads(forced.output)
+    assert payload["withhold_all"] is True
+    assert payload["pending"] == [{"kind": "memory", "name": "pulled", "content_hash": folded}]
+
+
+def test_office_review_all_without_reset_is_refused(home: Path):
+    result = runner.invoke(app, ["office", "review", "--all"])
+    assert result.exit_code == 1
+    assert "--all only applies with --reset" in result.output

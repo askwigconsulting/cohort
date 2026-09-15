@@ -2323,7 +2323,14 @@ def office_review(
         False, "--reset",
         help="Rebuild the pending list from the office source, fail closed: every gated "
         "office artifact the trusted baseline does not vouch for is withheld until "
-        "approved. The repair for an unreadable office quarantine store.",
+        "approved (with no readable baseline, every one of them). The repair for an "
+        "unreadable office quarantine store.",
+    ),
+    withhold_all: bool = typer.Option(
+        False, "--all",
+        help="With --reset: withhold every gated office artifact regardless of the "
+        "trusted baseline. Use it when the baseline itself may be over-trusting (a "
+        "pre-fix Cohort folded pulled identities into it before review).",
     ),
 ) -> None:
     """List office-layer artifacts an update pull held back for review (F3).
@@ -2339,6 +2346,10 @@ def office_review(
     from .source import resolve_source_lenient
 
     paths = CohortPaths.for_global(Path.home())
+    if withhold_all and not reset:
+        typer.echo("error: --all only applies with --reset", err=True)
+        raise typer.Exit(code=1)
+    baseline_trusted: Optional[bool] = None
     if reset:
         # The same resolution the recompile uses, so the rebuilt store gates exactly
         # the tree that will be placed — never a different clone.
@@ -2350,7 +2361,11 @@ def office_review(
                 err=True,
             )
             raise typer.Exit(code=1)
-        keys = {a.key for a in quarantine.reset_office_pending(paths.state, source)}
+        outcome = quarantine.reset_office_pending(
+            paths.state, source, ignore_baseline=withhold_all
+        )
+        keys = {a.key for a in outcome.pending}
+        baseline_trusted = outcome.baseline_trusted
     else:
         try:
             keys = quarantine.office_pending_keys(paths.state)
@@ -2366,6 +2381,8 @@ def office_review(
     report = {
         "action": "office-review",
         "reset": reset,
+        "withhold_all": withhold_all,
+        "baseline_trusted": baseline_trusted,
         "pending": [
             {"kind": k, "name": n, "content_hash": h} for (k, n, h) in sorted(keys)
         ],
@@ -2373,11 +2390,25 @@ def office_review(
 
     def human(r: dict) -> None:
         items = r["pending"]
-        if r["reset"]:
+        if r["reset"] and r["withhold_all"]:
+            typer.echo(
+                f"office review: rebuilt the office quarantine ignoring the baseline — "
+                f"{len(items)} gated artifact(s) withheld until approved."
+            )
+        elif r["reset"] and not r["baseline_trusted"]:
+            typer.echo(
+                "office review: no trusted baseline found; rebuilt the office quarantine "
+                f"from the source — {len(items)} gated artifact(s) withheld until "
+                "approved. Approve what you recognise."
+            )
+        elif r["reset"]:
             typer.echo(
                 f"office review: rebuilt the office quarantine from the source — "
-                f"{len(items)} gated artifact(s) now pending (withheld from every "
-                "recompile until approved)."
+                f"{len(items)} gated artifact(s) not in the trusted baseline now pending "
+                "(withheld from every recompile until approved).\n"
+                "  Identities a pre-fix Cohort already folded into the baseline before "
+                "review cannot be told from trusted ones; run `cohort office review "
+                "--reset --all` to withhold every gated office artifact instead."
             )
         elif not items:
             typer.echo(

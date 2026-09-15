@@ -759,28 +759,52 @@ def test_reset_office_pending_is_current_minus_the_trusted_baseline(tmp_path):
                        name="pulled")
     q._save_office_baseline(state, [("hook", "shipped", q.content_hash(shipped))])
     (state / "office_quarantine.json").write_text("{ truncated", encoding="utf-8")
-    rebuilt = q.reset_office_pending(state, office)
-    assert [a.key for a in rebuilt] == [("memory", "pulled", q.content_hash(pulled))]
+    outcome = q.reset_office_pending(state, office)
+    assert outcome.baseline_trusted is True
+    assert [a.key for a in outcome.pending] == [("memory", "pulled", q.content_hash(pulled))]
     assert q.office_pending_keys(state) == {("memory", "pulled", q.content_hash(pulled))}
 
 
-def test_reset_office_pending_with_a_corrupt_baseline_trusts_nothing(tmp_path):
+@pytest.mark.parametrize("baseline_state", ["absent", "corrupt"])
+def test_reset_office_pending_without_a_readable_baseline_withholds_everything(
+    tmp_path, baseline_state
+):
+    # "No baseline" is never read as "no pull ever happened": it can be deleted, lost
+    # with the corrupt store, or never written by an older install. The repair for
+    # a lost gate withholds the whole tree — the my-office reset's behaviour.
     state = _state(tmp_path)
     office = tmp_path / "office"
     hook = _art_file(office / "canonical" / "hooks" / "h.md", kind="hook", name="h",
                      extra=_HOOK_EXTRA)
-    (state / "office_baseline.json").write_text("{ truncated", encoding="utf-8")
-    rebuilt = q.reset_office_pending(state, office)
-    assert [a.key for a in rebuilt] == [("hook", "h", q.content_hash(hook))]
-    assert q.load_office_baseline(state) == set()  # repaired: nothing vouched for
+    mem = _art_file(office / "canonical" / "memories" / "m.md", kind="memory", name="m")
+    if baseline_state == "corrupt":
+        (state / "office_baseline.json").write_text("{ truncated", encoding="utf-8")
+    outcome = q.reset_office_pending(state, office)
+    assert outcome.baseline_trusted is False
+    assert {a.key for a in outcome.pending} == {
+        ("hook", "h", q.content_hash(hook)), ("memory", "m", q.content_hash(mem)),
+    }
+    assert q.office_pending_keys(state) == {a.key for a in outcome.pending}
+    assert q.load_office_baseline(state) == set()  # written empty: nothing vouched for
 
 
-def test_reset_office_pending_without_a_baseline_seeds_the_shipped_tree(tmp_path):
-    # No baseline ⇒ no update pull has ever happened ⇒ the tree is the one the user
-    # installed from (the existing first-install trust), so nothing is pending.
+def test_reset_office_pending_cannot_recover_a_legacy_folded_identity_unless_told_to(tmp_path):
+    # A pre-fix Cohort folded pulled identities into the baseline at record time. A
+    # default reset still withholds everything NOT in the baseline; `ignore_baseline`
+    # is the explicit way to withhold the folded ones too, leaving the baseline alone.
     state = _state(tmp_path)
     office = tmp_path / "office"
-    hook = _art_file(office / "canonical" / "hooks" / "h.md", kind="hook", name="h",
-                     extra=_HOOK_EXTRA)
-    assert q.reset_office_pending(state, office) == []
-    assert q.load_office_baseline(state) == {("hook", "h", q.content_hash(hook))}
+    folded = _art_file(office / "canonical" / "hooks" / "folded.md", kind="hook",
+                       name="folded", extra=_HOOK_EXTRA)
+    fresh = _art_file(office / "canonical" / "memories" / "fresh.md", kind="memory",
+                      name="fresh")
+    folded_key = ("hook", "folded", q.content_hash(folded))
+    fresh_key = ("memory", "fresh", q.content_hash(fresh))
+    q._save_office_baseline(state, [folded_key])
+    (state / "office_quarantine.json").write_text("{ truncated", encoding="utf-8")
+    assert {a.key for a in q.reset_office_pending(state, office).pending} == {fresh_key}
+    forced = q.reset_office_pending(state, office, ignore_baseline=True)
+    assert forced.baseline_trusted is True
+    assert {a.key for a in forced.pending} == {folded_key, fresh_key}
+    assert q.office_pending_keys(state) == {folded_key, fresh_key}
+    assert q.load_office_baseline(state) == {folded_key}  # untouched: approvals still fold

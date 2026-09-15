@@ -536,35 +536,54 @@ def record_office_delta(state_dir: Path, office_root: Path) -> list[QuarantinedA
     return added
 
 
-def reset_office_pending(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
+@dataclass(frozen=True)
+class OfficeReset:
+    """Outcome of ``reset_office_pending``: the rebuilt pending list, and whether a
+    readable trusted baseline vouched for the rest (False ⇒ nothing was trusted and
+    every gated artifact in the tree is now pending)."""
+
+    pending: list[QuarantinedArtifact]
+    baseline_trusted: bool
+
+
+def reset_office_pending(
+    state_dir: Path, office_root: Path, *, ignore_baseline: bool = False
+) -> OfficeReset:
     """Rebuild the office pending store fail closed: every gated identity in the
     office tree the trusted baseline does not vouch for becomes pending.
 
-    The office analogue of ``reset_pending`` (#294). A corrupt baseline is replaced
-    by an empty one — nothing is vouched for, so the whole current set is pending
-    until approved. An absent baseline means no update pull has ever run, so the
-    tree is the one the user installed from: it is seeded as trusted (the same
-    first-install trust ``record_office_delta`` applies) and nothing is pending.
-    Identities an older Cohort folded into the baseline at record time are
-    indistinguishable from trusted ones and are not recovered."""
+    The office analogue of ``reset_pending`` (#294). With no readable baseline —
+    absent (deleted, lost with the store, or never written by an older install) or
+    corrupt — nothing is vouched for: the WHOLE current set is pending until
+    approved and an empty baseline is written, so approvals fold into it from
+    here. "No baseline" is never read as "no pull ever happened": the repair for a
+    lost gate must withhold, not trust.
+
+    Identities a pre-fix Cohort folded into the baseline at record time are
+    indistinguishable from trusted ones and are not recovered by the default
+    rebuild; ``ignore_baseline`` withholds every gated identity present regardless
+    of the baseline (which is left untouched, so later approvals still fold)."""
     state_dir.mkdir(parents=True, exist_ok=True)
     with file_lock(_office_state_file(state_dir)):
         current = _current_office_identities(office_root)
         try:
             baseline = load_office_baseline(state_dir)
         except QuarantineStateError:
+            baseline = None
+        if baseline is None:
             baseline = set()
             _save_office_baseline(state_dir, baseline)
-        if baseline is None:
-            baseline = set(current)
-            _save_office_baseline(state_dir, baseline)
+            trusted = False
+        else:
+            trusted = True
+        vouched = set() if ignore_baseline else baseline
         items = [
             QuarantinedArtifact(kind, name, chash, now_iso())
             for kind, name, chash in sorted(current)
-            if (kind, name, chash) not in baseline
+            if (kind, name, chash) not in vouched
         ]
         _save_office_pending(state_dir, items)
-    return items
+    return OfficeReset(items, trusted)
 
 
 def approve_office(

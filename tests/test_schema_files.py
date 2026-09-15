@@ -86,3 +86,9 @@ def test_discovery_refuses_a_symlinked_entry_but_follows_a_symlinked_root(tmp_pa
     assert found == [link / "hooks" / "kept.md"]
     err = capsys.readouterr().err
     assert "evil.md" in err and "symlink" in err
+
+
+def test_discovery_matches_the_md_suffix_case_insensitively(tmp_path):
+    # The old rglob("*.md") was case-insensitive on Windows; a .MD artifact keeps loading.
+    _hook(tmp_path / "hooks" / "upper.MD", "upper")
+    assert discover_artifacts(tmp_path) == [tmp_path / "hooks" / "upper.MD"]
