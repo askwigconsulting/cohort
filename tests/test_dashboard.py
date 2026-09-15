@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -834,3 +835,139 @@ def test_action_create_project_skill_places(server, home):
     assert status == 200, data
     assert (repo / ".cohort" / "canonical" / "skills" / "repo-lint.md").exists()
     assert (repo / ".claude" / "skills" / "repo-lint" / "SKILL.md").exists()
+
+
+# === #295 item 3 / #299 item 5: cache tuning, the invalidate fence, limits ===
+
+
+def test_aggregate_ttl_is_at_least_the_ui_poll_interval():
+    """A TTL below the poll means the memo never hits in single-tab steady state —
+    every poll pays the cold scan (#295). Pinned against the poll the UI actually
+    uses, read out of dashboard.js rather than restated here."""
+    import re
+
+    from cohort import dashboard
+
+    js = (Path(dashboard.__file__).parent / "dashboard.js").read_text(encoding="utf-8")
+    match = re.search(r"setInterval\(\(\) => \{ if \(!PENDING\) refresh\(\); \}, (\d+)\)", js)
+    assert match, "dashboard.js poll interval not found — keep this pin in step with the UI"
+    poll_seconds = int(match.group(1)) / 1000.0
+    assert dashboard._AGGREGATE_TTL_SECONDS >= poll_seconds
+    assert dashboard._AGGREGATE_TTL_SECONDS >= 30.0
+
+
+def test_update_cache_invalidate_fences_an_inflight_refresh(home, tmp_path, source, monkeypatch):
+    """A refresh that started BEFORE ``invalidate()`` carries a pre-action answer; it
+    must not be stamped fresh for the whole TTL afterwards (#299 item 5)."""
+    from cohort import dashboard
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_update_status(src, hm):
+        started.set()
+        release.wait(timeout=10)
+        return {"available": False, "upstream": "STALE-PRE-UPDATE"}
+
+    monkeypatch.setattr(dashboard, "update_status", slow_update_status)
+    cache = dashboard._UpdateCache()
+    repo = inited_repo(tmp_path, source, home)
+
+    assert cache.get(repo, home) == {"available": False, "upstream": ""}  # kicks the refresh
+    assert started.wait(timeout=10)
+    cache.invalidate()  # the user ran Update while the fetch was in flight
+    release.set()
+    for _ in range(100):  # let the refresh thread finish
+        if not cache._refreshing:
+            break
+        time.sleep(0.02)
+    assert cache._value is None, "a pre-invalidate result must not be re-stamped fresh"
+
+    # ...and the fence must not starve later refreshes.
+    monkeypatch.setattr(dashboard, "update_status",
+                        lambda src, hm: {"available": True, "upstream": "FRESH"})
+    cache.get(repo, home)  # kicks a new refresh
+    for _ in range(100):
+        if cache._value is not None:
+            break
+        time.sleep(0.02)
+    assert cache._value == {"available": True, "upstream": "FRESH"}
+
+
+def test_cross_project_activity_parses_only_the_newest_records_per_project(
+    home, tmp_path, source, monkeypatch
+):
+    """The feed shows ``limit`` entries, so it must open at most ``limit`` files per
+    project — filenames are timestamp-prefixed, so the newest by name are the newest
+    by clock (#295 item 3)."""
+    from cohort import dashboard, improve
+
+    repo = make_git_repo(tmp_path / "many")
+    sessions = repo / ".cohort" / "sessions"
+    sessions.mkdir(parents=True)
+    for i in range(12):
+        (sessions / f"202607{i + 10:02d}T100000Z-{i:04x}-auto.md").write_text(
+            f"---\ntimestamp: '2026-07-{i + 10}T10:00:00+00:00'\nauthor: dev\n"
+            f"branch: b{i}\n---\nbody\n",
+            encoding="utf-8",
+        )
+    parses = {"n": 0}
+    real = improve.load_artifact
+
+    def counting(path):
+        parses["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(improve, "load_artifact", counting)
+    projects = [{"name": "many", "path": str(repo)}]
+    entries = dashboard.cross_project_activity(home, projects, limit=3)
+    assert parses["n"] == 3  # not 12
+    assert [e["branch"] for e in entries] == ["b11", "b10", "b9"]  # newest first
+
+
+def test_cross_project_activity_survives_an_unquoted_yaml_timestamp(home, tmp_path):
+    """An unquoted timestamp parses as a ``datetime``: it used to make the merge sort
+    raise ``TypeError`` (degrading the whole /api/state) and was not JSON-safe (#299)."""
+    from cohort import dashboard
+
+    repo = tmp_path / "hand-edited"
+    sessions = repo / ".cohort" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "20260701T090000Z-a-auto.md").write_text(
+        "---\ntimestamp: 2026-07-01T09:00:00Z\nauthor: dev\nbranch: hand\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (sessions / "20260701T100000Z-b-auto.md").write_text(
+        "---\ntimestamp: '2026-07-01T10:00:00+00:00'\nauthor: dev\nbranch: tool\n---\nbody\n",
+        encoding="utf-8",
+    )
+    entries = dashboard.cross_project_activity(home, [{"name": "p", "path": str(repo)}])
+    assert [e["branch"] for e in entries] == ["tool", "hand"]  # sorted, newest first
+    assert all(isinstance(e["timestamp"], str) for e in entries)
+    json.dumps(entries)  # a datetime would raise here
+
+
+def test_compute_aggregates_parses_canonical_once_for_every_ide(home, source, monkeypatch):
+    """``check_parity`` used to re-parse all canonical per IDE; the IR load is hoisted
+    so N IDEs cost one pass, and the per-IDE answers are unchanged (#295 item 3)."""
+    from cohort import parity
+    from cohort.compile import RENDERERS
+    from cohort.dashboard import _compute_aggregates
+    from cohort.schema import discover_artifacts
+
+    ides = [i for i in ("claude", "codex", "cursor", "copilot") if i in RENDERERS]
+    assert len(ides) > 1, "the hoist is only observable with more than one IDE"
+    artifact_count = len(list(discover_artifacts(source / "canonical")))
+
+    parses = {"n": 0}
+    real = parity.load_artifact
+
+    def counting(path):
+        parses["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(parity, "load_artifact", counting)
+    aggregates = _compute_aggregates(home, source, ides)
+    assert parses["n"] == artifact_count  # one pass, not len(ides) passes
+
+    for ide in ides:
+        assert aggregates["parity"][ide] == parity.check_parity(source, ide, RENDERERS).to_dict()

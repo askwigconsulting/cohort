@@ -675,13 +675,27 @@ def _read_staleness_hours(paths: CohortPaths) -> float:
 
 
 def _newest_activity(paths: CohortPaths) -> Optional[float]:
+    """Newest mtime across the project's activity markers: ``project_context.md`` and
+    the session store.
+
+    Only the newest-*named* session record is stat'd, never the whole store: records
+    are named ``<utc-compact>-<id>…`` (:func:`session_capture`, :func:`do_snapshot`),
+    so name order is write order and one stat answers the question a session-start
+    hook asks on every launch. The trade: re-editing an old record's body without
+    renaming it no longer counts as activity — staleness tracks when work was last
+    *captured*, which is what the warning is about."""
     candidates = []
     ctx = paths.cohort_home / "project_context.md"
     if ctx.exists():
         candidates.append(ctx.stat().st_mtime)
     sessions_dir = paths.cohort_home / "sessions"
-    if sessions_dir.exists():
-        candidates.extend(p.stat().st_mtime for p in sessions_dir.glob("*.md"))
+    try:
+        with os.scandir(sessions_dir) as entries:
+            newest = max((e.name for e in entries if e.name.endswith(".md")), default=None)
+        if newest is not None:
+            candidates.append((sessions_dir / newest).stat().st_mtime)
+    except OSError:  # no session store (or unreadable) — the context alone decides
+        pass
     return max(candidates) if candidates else None
 
 
