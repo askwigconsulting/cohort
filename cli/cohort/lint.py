@@ -21,14 +21,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# canonical kind (singular) -> its directory under canonical/
-_KIND_DIR = {
-    "agent": "agents",
-    "skill": "skills",
-    "command": "commands",
-    "hook": "hooks",
-    "memory": "memories",
-}
+from .schema import KIND_DIRS as _KIND_DIR  # single source (R1) — never a local copy
 
 # Human-facing docs scanned for count claims. CHANGELOG is excluded on purpose:
 # its dated entries legitimately record the counts that were true at the time.
@@ -165,16 +158,31 @@ def _declared_manager_cap(text: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _cap_scan_targets(repo_root: Path) -> list[Path]:
+    """Files scanned for a restated in-flight/per-manager cap: the canonical corpus,
+    ``README.md``, and the top-level ``docs/*.md`` docs. ``docs/audit/`` and
+    ``docs/rfcs/`` are excluded on purpose — a dated audit report or an RFC record
+    what a cap *was* at that point in time, not what it is now, so a stale number in
+    either is not drift."""
+    targets = sorted((repo_root / "canonical").rglob("*.md"))
+    readme = repo_root / "README.md"
+    if readme.is_file():
+        targets.append(readme)
+    targets.extend(sorted((repo_root / "docs").glob("*.md")))
+    return targets
+
+
 def _orchestration_cap_findings(repo_root: Path) -> list[LintFinding]:
     """The "≤N agents in flight" cap is restated in prose across the orchestration
-    canon (crew.md, scout.md, the office/adversarial-review skills, ...). This keeps
-    that *number* consistent: ``docs/model-tiers.md`` declares it once, and every
-    canonical file that restates an in-flight cap must use the same value — a drift is
-    a lint failure, not a silently divergent protocol.
+    canon (crew.md, scout.md, the office/adversarial-review skills, ...) as well as
+    README.md and the top-level docs. This keeps that *number* consistent:
+    ``docs/model-tiers.md`` declares it once, and every file that restates an
+    in-flight cap must use the same value — a drift is a lint failure, not a silently
+    divergent protocol.
 
     This checks agreement of the documented number only; it is not runtime enforcement.
     The cap itself is coordinator discipline plus the human PR gate by design (see the
-    DESIGN ``[S]`` decision) — the lint just stops the canon saying two different things.
+    DESIGN ``[S]`` decision) — the lint just stops the docs saying two different things.
     """
     doc = repo_root / _MODEL_TIERS_DOC
     if not doc.is_file():
@@ -196,7 +204,7 @@ def _orchestration_cap_findings(repo_root: Path) -> list[LintFinding]:
     checks = [(_ORCH_CAP_RE, cap, "in flight", "orchestration")]
     if manager_cap is not None:
         checks.append((_ORCH_MANAGER_RE, manager_cap, "agents per manager", "per-manager"))
-    for path in sorted((repo_root / "canonical").rglob("*.md")):
+    for path in _cap_scan_targets(repo_root):
         rel = path.relative_to(repo_root).as_posix()
         for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             for pattern, expected, phrase, label in checks:

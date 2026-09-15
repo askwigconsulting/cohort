@@ -341,6 +341,21 @@ def test_staleness_noop_outside_cohort_repo(tmp_path):
     assert project.staleness_check(plain) is None
 
 
+def test_staleness_check_cli_exits_0_on_an_unreadable_marker(repo, home):
+    # The throttle marker is expected to be a file; if `state/` is in some odd shape
+    # (e.g. a directory sits where the marker file should be — the shape a permissions
+    # mixup or a bad restore can leave behind), `.read_text()` raises. The `cohort
+    # staleness-check` CLI target is a session_start hook and must still exit 0
+    # rather than dump a traceback into every session start.
+    init(repo, home)
+    paths = CohortPaths.for_project(repo)
+    old = project._utc_now().timestamp() - 100 * 3600
+    os.utime(paths.cohort_home / "project_context.md", (old, old))
+    (paths.state / ".staleness-warned").mkdir(parents=True, exist_ok=True)
+    result = run_cli("staleness-check", repo=repo, home=home)
+    assert result.returncode == 0
+
+
 def test_staleness_hook_invokes_cli_not_a_script():
     r = load_artifact(COHORT_SRC / "canonical" / "hooks" / "staleness-warn.md")
     event, entry = render_hook_entry(build_ir(r.frontmatter, r.body))

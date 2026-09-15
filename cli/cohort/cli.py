@@ -3940,9 +3940,12 @@ def submit_proposals(
 @app.command("staleness-check", hidden=True)
 def staleness_check_cmd() -> None:
     """Internal: the session_start staleness hook target. Always exits 0."""
-    message = staleness_check(Path.cwd())
-    if message:
-        typer.echo(message, err=True)
+    try:
+        message = staleness_check(Path.cwd())
+        if message:
+            typer.echo(message, err=True)
+    except Exception:  # noqa: BLE001 - a staleness check must never break session start
+        pass
     raise typer.Exit(code=0)
 
 

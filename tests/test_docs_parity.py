@@ -37,7 +37,9 @@ def test_counts_are_derived_from_the_filesystem():
     # Derived, not stored: each equals the actual number of canonical .md files.
     assert counts["agent"] == len(list((REPO / "canonical" / "agents").glob("*.md")))
     assert counts["command"] == len(list((REPO / "canonical" / "commands").glob("*.md")))
-    assert set(counts) == {"agent", "skill", "command", "hook", "memory"}
+    # Derived from cohort.schema.KIND_DIRS (the single source, imported rather than
+    # copied) — includes "context" now that the copy no longer omits it.
+    assert set(counts) == {"agent", "skill", "command", "hook", "memory", "context"}
 
 
 def test_lint_flags_a_wrong_count(tmp_path):
@@ -126,6 +128,71 @@ def test_lint_flags_a_canon_cap_that_drifts_from_the_registry(tmp_path):
     assert '"8 ... in flight"' in findings[0].message and "cap is 10" in findings[0].message
 
 
+def test_lint_flags_a_readme_cap_that_disagrees_with_the_registry(tmp_path):
+    # The scan must cover README.md and top-level docs/*.md, not just canonical/ — a
+    # stale "10 agents in flight" in README (the #280 lint-gap bug) has to fail lint
+    # exactly like a canon file drifting, and pass again once the number is fixed.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "model-tiers.md").write_text(
+        "**In-flight cap:** at most **20** agents in flight.\n", encoding="utf-8"
+    )
+    (tmp_path / "canonical").mkdir()
+    (tmp_path / "README.md").write_text(
+        "`/crew` fans out with max 10 agents in flight.\n", encoding="utf-8"
+    )
+    findings = _orchestration_cap_findings(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].file == "README.md"
+    assert '"10 ... in flight"' in findings[0].message and "cap is 20" in findings[0].message
+
+    # Fixed to agree with the registry → clean.
+    (tmp_path / "README.md").write_text(
+        "`/crew` fans out with max 20 agents in flight.\n", encoding="utf-8"
+    )
+    assert _orchestration_cap_findings(tmp_path) == []
+
+
+def test_orchestration_cap_scan_excludes_dated_audit_and_rfc_records(tmp_path):
+    # docs/audit/ and docs/rfcs/ are dated records of what a cap *was*, not a present
+    # restatement — a stale number there is not drift and must not be flagged.
+    (tmp_path / "docs" / "audit").mkdir(parents=True)
+    (tmp_path / "docs" / "rfcs").mkdir(parents=True)
+    (tmp_path / "docs" / "model-tiers.md").write_text(
+        "**In-flight cap:** at most **20** agents in flight.\n", encoding="utf-8"
+    )
+    (tmp_path / "docs" / "audit" / "r1-2026-01-01.md").write_text(
+        "the sweep found the coordinator ran 10 agents in flight that day.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs" / "rfcs" / "0009-old-idea.md").write_text(
+        "the design targeted 10 agents in flight.\n", encoding="utf-8"
+    )
+    (tmp_path / "canonical").mkdir()
+    assert _orchestration_cap_findings(tmp_path) == []
+
+
+def test_orchestration_cap_missing_declaration_is_flagged(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "model-tiers.md").write_text("no cap here\n", encoding="utf-8")
+    (tmp_path / "canonical").mkdir()
+    findings = _orchestration_cap_findings(tmp_path)
+    assert len(findings) == 1 and "no in-flight cap is declared" in findings[0].message
+
+
+def test_lint_ignores_spaced_non_count_phrases(tmp_path):
+    # "10 agents in flight" is a cap, not a roster count — must NOT be flagged.
+    (tmp_path / "canonical" / "agents").mkdir(parents=True)
+    (tmp_path / "canonical" / "agents" / "a.md").write_text("x", encoding="utf-8")
+    for sub in ("skills", "commands", "hooks", "memories"):
+        (tmp_path / "canonical" / sub).mkdir(parents=True)
+    (tmp_path / "README.md").write_text(
+        "Fan out with max 10 agents in flight; the 1-agent roster is tiny.\n",
+        encoding="utf-8",
+    )
+    # No count finding — "10 agents in flight" is a cap, and "1-agent" is correct.
+    assert [f for f in run_lint(tmp_path) if "canonical has" in f.message] == []
+
+
 def test_lint_catches_the_fully_hyphenated_in_flight_form(tmp_path):
     # docs/DESIGN.md restates the cap as "≤10-in-flight" — the number joined straight to
     # "in-flight" with no space anywhere. The old `_ORCH_CAP_RE` required `\s+` right after
@@ -159,25 +226,3 @@ def test_lint_hyphenated_in_flight_form_matching_the_cap_is_clean(tmp_path):
         "the coordinator runs a ≤20-in-flight roster.\n", encoding="utf-8"
     )
     assert _orchestration_cap_findings(tmp_path) == []
-
-
-def test_orchestration_cap_missing_declaration_is_flagged(tmp_path):
-    (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "model-tiers.md").write_text("no cap here\n", encoding="utf-8")
-    (tmp_path / "canonical").mkdir()
-    findings = _orchestration_cap_findings(tmp_path)
-    assert len(findings) == 1 and "no in-flight cap is declared" in findings[0].message
-
-
-def test_lint_ignores_spaced_non_count_phrases(tmp_path):
-    # "10 agents in flight" is a cap, not a roster count — must NOT be flagged.
-    (tmp_path / "canonical" / "agents").mkdir(parents=True)
-    (tmp_path / "canonical" / "agents" / "a.md").write_text("x", encoding="utf-8")
-    for sub in ("skills", "commands", "hooks", "memories"):
-        (tmp_path / "canonical" / sub).mkdir(parents=True)
-    (tmp_path / "README.md").write_text(
-        "Fan out with max 10 agents in flight; the 1-agent roster is tiny.\n",
-        encoding="utf-8",
-    )
-    # No count finding — "10 agents in flight" is a cap, and "1-agent" is correct.
-    assert [f for f in run_lint(tmp_path) if "canonical has" in f.message] == []

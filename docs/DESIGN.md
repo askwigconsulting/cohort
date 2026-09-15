@@ -129,7 +129,7 @@ structural and testable.
   advisors to *orchestrated doers* (producing worktree-isolated, coordinator-verified
   diffs) is deliberately gated behind **RFC 0004 (#171)** because it crosses the
   "advisory by default" invariant — an engine registry, not hardcoded vendors, is the
-  intended shape. These orchestration invariants — the ≤10-in-flight cap, worker
+  intended shape. These orchestration invariants — the ≤20-in-flight cap, worker
   footprint-disjointness, honest signoff — are coordinator discipline plus the human PR
   gate *by design*, not runtime-enforced, because each binds live execution (how many
   agents are actually running, which files a worker really writes, whether signoff
