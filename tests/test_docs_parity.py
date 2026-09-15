@@ -126,6 +126,41 @@ def test_lint_flags_a_canon_cap_that_drifts_from_the_registry(tmp_path):
     assert '"8 ... in flight"' in findings[0].message and "cap is 10" in findings[0].message
 
 
+def test_lint_catches_the_fully_hyphenated_in_flight_form(tmp_path):
+    # docs/DESIGN.md restates the cap as "≤10-in-flight" — the number joined straight to
+    # "in-flight" with no space anywhere. The old `_ORCH_CAP_RE` required `\s+` right after
+    # the digits, so this compound form was invisible to the lint and a drifted cap here
+    # would report clean.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "model-tiers.md").write_text(
+        "## Agent model tier\n\n**In-flight cap:** at most **20** agents in flight.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "canonical" / "commands").mkdir(parents=True)
+    (tmp_path / "canonical" / "commands" / "crew.md").write_text(
+        "the coordinator runs a ≤10-in-flight roster.\n", encoding="utf-8"
+    )
+    findings = _orchestration_cap_findings(tmp_path)
+    assert len(findings) == 1
+    assert findings[0].file == "canonical/commands/crew.md"
+    assert '"10 ... in flight"' in findings[0].message and "cap is 20" in findings[0].message
+
+
+def test_lint_hyphenated_in_flight_form_matching_the_cap_is_clean(tmp_path):
+    # A restatement in the fully-hyphenated form that *agrees* with the registry must not
+    # be flagged — the fix widens what the regex recognizes, not what it objects to.
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "model-tiers.md").write_text(
+        "## Agent model tier\n\n**In-flight cap:** at most **20** agents in flight.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "canonical" / "commands").mkdir(parents=True)
+    (tmp_path / "canonical" / "commands" / "crew.md").write_text(
+        "the coordinator runs a ≤20-in-flight roster.\n", encoding="utf-8"
+    )
+    assert _orchestration_cap_findings(tmp_path) == []
+
+
 def test_orchestration_cap_missing_declaration_is_flagged(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "model-tiers.md").write_text("no cap here\n", encoding="utf-8")

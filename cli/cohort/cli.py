@@ -281,7 +281,7 @@ def gc(
         help="Ignore artifacts younger than this. Recent ones are usually still wanted.",
     ),
     keep_transcripts: int = typer.Option(
-        50, "--keep-transcripts",
+        50, "--keep-transcripts", min=0,
         help="Always retain this many newest engine transcripts, whatever their age.",
     ),
     all_projects: bool = typer.Option(

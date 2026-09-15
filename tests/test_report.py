@@ -114,3 +114,41 @@ def test_an_unreadable_feedback_entry_is_a_clean_error() -> None:
 
     with pytest.raises(rm.ReportError):
         rm.read_feedback_entry(Path("/nonexistent/feedback.md"))
+
+
+def test_file_issue_timeout_warns_it_may_already_be_filed(monkeypatch) -> None:
+    """`gh` can reach GitHub, have the issue created, and still time out waiting on the
+    response — the request is not undone just because the local process gave up on it.
+    A caller told this was a plain failure and retrying files the same issue twice, which
+    is the duplicate-on-retry this message exists to prevent."""
+    import subprocess
+
+    def _raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["gh"], timeout=rm._GH_TIMEOUT)
+
+    monkeypatch.setattr(subprocess, "run", _raise_timeout)
+    draft = rm.build_draft(title="t", body="b", cohort_version="0.17.0")
+
+    with pytest.raises(rm.ReportError) as excinfo:
+        rm.file_issue(draft, gh="/usr/bin/gh")
+
+    message = str(excinfo.value)
+    assert "already have been filed" in message
+    assert draft.repo in message
+
+
+def test_file_issue_other_subprocess_failures_stay_generic(monkeypatch) -> None:
+    """A non-timeout failure (`gh` missing, killed, etc.) never reached GitHub, so it must
+    not carry the "may already be filed" warning meant only for the timeout case."""
+    import subprocess
+
+    def _raise_oserror(*args, **kwargs):
+        raise OSError("no such file or directory")
+
+    monkeypatch.setattr(subprocess, "run", _raise_oserror)
+    draft = rm.build_draft(title="t", body="b", cohort_version="0.17.0")
+
+    with pytest.raises(rm.ReportError) as excinfo:
+        rm.file_issue(draft, gh="/usr/bin/gh")
+
+    assert "already have been filed" not in str(excinfo.value)

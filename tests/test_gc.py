@@ -13,7 +13,12 @@ import subprocess
 import time
 from pathlib import Path
 
+from typer.testing import CliRunner
+
 from cohort import gc
+from cohort.cli import app
+
+runner = CliRunner()
 
 
 def _aged(path: Path, days: float) -> Path:
@@ -138,6 +143,38 @@ def test_transcripts_keep_a_tail_however_old_they_are(tmp_path) -> None:
     assert names == ["0001.jsonl", "0002.jsonl"]  # the two oldest only
 
 
+def test_transcript_sort_is_numeric_across_the_9999_to_10000_boundary(tmp_path) -> None:
+    """Filenames are zero-padded (`{n:04d}.jsonl`) but nothing enforces that padding
+    forever. Lexicographic sort puts "10000.jsonl" between "1000.jsonl" and
+    "1001.jsonl" — a name sort would treat the two *newest* transcripts (10000, 10001)
+    as older than 9998/9999 and delete them instead of the actual oldest pair."""
+    tdir = tmp_path / "repo" / ".cohort" / "engine-transcripts"
+    tdir.mkdir(parents=True)
+    for stem in ("9998", "9999", "10000", "10001"):
+        transcript = tdir / f"{stem}.jsonl"
+        transcript.write_text("{}\n", encoding="utf-8")
+        _aged(transcript, 30)
+
+    report = gc.scan(
+        repo_root=tmp_path / "repo", min_age_days=7, keep_transcripts=2,
+        temp_root=tmp_path,
+    )
+    names = sorted(p.path.name for p in report.items if p.kind == "transcript")
+
+    # The two newest (10000, 10001) must be kept; 9998/9999 are the reclaim candidates.
+    assert names == ["9998.jsonl", "9999.jsonl"]
+
+
+def test_negative_keep_transcripts_is_rejected_by_the_cli(tmp_path, monkeypatch) -> None:
+    """A negative `--keep-transcripts` has no sane meaning (`transcripts[:-k]` with a
+    negative k would delete the |k| *newest*, not the excess), so the CLI must refuse it
+    outright rather than silently doing the opposite of what the flag promises."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = runner.invoke(app, ["gc", "--keep-transcripts", "-1"])
+    assert result.exit_code != 0
+    assert "keep-transcripts" in result.output
+
+
 def test_nothing_to_do_is_not_an_error(tmp_path) -> None:
     report = gc.scan(min_age_days=7, temp_root=tmp_path)
     assert report.items == [] and report.reclaimable_bytes == 0
@@ -249,3 +286,43 @@ def test_the_report_separates_worktrees_from_working_notes(tmp_path) -> None:
 
     assert sum(1 for i in withheld if i.kind == "working-note") == 3
     assert sum(1 for i in withheld if i.kind == "proposal-worktree") == 0
+
+
+# --------------------------------------------------------------------------- #
+# Scan budget: never run unbounded, never silently truncate
+# --------------------------------------------------------------------------- #
+
+
+def test_scan_stops_at_its_deadline_and_reports_what_it_missed(tmp_path) -> None:
+    """Classifying a candidate shells out to git, so a directory full of stale proposals
+    could otherwise make the supposedly-cheap, read-only `scan` run unbounded. Once the
+    budget is spent, scan must stop and *say* how much it skipped rather than reporting
+    a clean, empty-looking result that looks like nothing was ever there."""
+    for i in range(5):
+        _proposal(tmp_path, f"stale-{i}", days=30)
+
+    report = gc.scan(min_age_days=7, temp_root=tmp_path, scan_deadline_seconds=0.0)
+
+    assert report.items == []
+    assert report.unexamined == 5  # every candidate was skipped, and it says so
+
+
+def test_scan_with_a_generous_deadline_examines_everything(tmp_path) -> None:
+    """A deadline that is never hit must behave exactly like an unbudgeted scan."""
+    for i in range(5):
+        _proposal(tmp_path, f"stale-{i}", days=30)
+
+    report = gc.scan(min_age_days=7, temp_root=tmp_path, scan_deadline_seconds=60.0)
+
+    assert len(report.items) == 5
+    assert report.unexamined == 0
+
+
+def test_scan_deadline_none_disables_the_budget(tmp_path) -> None:
+    for i in range(5):
+        _proposal(tmp_path, f"stale-{i}", days=30)
+
+    report = gc.scan(min_age_days=7, temp_root=tmp_path, scan_deadline_seconds=None)
+
+    assert len(report.items) == 5
+    assert report.unexamined == 0

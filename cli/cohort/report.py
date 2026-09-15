@@ -121,6 +121,18 @@ def file_issue(draft: ReportDraft, *, gh: str) -> str:
              "--title", draft.title, "--body", draft.body],
             capture_output=True, text=True, timeout=_GH_TIMEOUT,
         )
+    except subprocess.TimeoutExpired as exc:
+        # `gh` can reach GitHub's API, have the issue created, and still time out
+        # waiting on the response — the request is not rolled back just because the
+        # local process gave up on it. A caller that reports this as a plain failure
+        # and retries risks filing the same issue twice, which is exactly what
+        # happened when this was reported as a generic "could not run gh".
+        raise ReportError(
+            f"gh timed out after {_GH_TIMEOUT}s. The issue may already have been "
+            f"filed — GitHub can receive the request before the timeout fires — so "
+            f"check https://github.com/{draft.repo}/issues for a duplicate before "
+            "filing again."
+        ) from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise ReportError(f"could not run gh: {type(exc).__name__}") from exc
     if proc.returncode != 0:
