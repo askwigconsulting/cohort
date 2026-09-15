@@ -879,3 +879,86 @@ def test_scan_still_finds_a_credential_longer_than_the_value_cap() -> None:
     # ...nor one glued behind a long harmless value on the same line.
     glued = "note=" + "a" * 300 + ";DB_PASSWORD=Xy9z-Path-2026-secretvals"
     assert scan_for_secrets(glued) == ["generic-assignment:PASSWORD"]
+
+
+# --------------------------------------------------------------------------- #
+# Residual shapes closed by #289
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    "shape, text",
+    [
+        ("escaped-json", r'{\"password\":\"Xy9z-2026-secretvals\"}'),
+        ("escaped-json-env", r'log: "{\"api_key\":\"Xy9z-2026-secretvals\"}"'),
+        ("dict-literal", 'PASSWORDS = {"admin": "Xy9z-2026-secretvals"}'),
+        ("list-literal", 'TOKENS = ["Xy9z-2026-secretvals"]'),
+        ("paren-literal", 'PASSWORD = ("Xy9z-2026-secretvals")'),
+        ("f-prefix", 'PASSWORD = f"Xy9z-2026-secretvals"'),
+        ("b-prefix", 'PASSWORD = b"Xy9z-2026-secretvals"'),
+        ("triple-quoted", 'PASSWORD = """Xy9z-2026-secretvals"""'),
+        ("walrus", 'password := "Xy9z-2026-secretvals"'),
+        ("yaml-block-scalar", "password: |\n  Xy9z-2026-secretvals\n"),
+        ("yaml-folded-scalar", "api_key: >-\n  Xy9z-2026-secretvals\n"),
+        ("yaml-block-scalar-crlf", "password: |\r\n  Xy9z-2026-secretvals\r\n"),
+    ],
+)
+def test_a_credential_behind_a_literal_lead_in_is_found(shape: str, text: str) -> None:
+    """#289: `_ASSIGNMENT_RE`'s value token must START at the credential, so anything
+    between the separator and the literal — a bracket, a string prefix, an escaped quote,
+    a newline — hid the value from it. Each of these is an executed miss from audit r5."""
+    assert scan_for_secrets(text), f"{shape} was not detected"
+
+
+def test_a_lowercase_authorization_bearer_header_is_found() -> None:
+    """HTTP scheme names are case-insensitive; `_BEARER_RE` was not."""
+    assert scan_for_secrets("Authorization: bearer abcdef0123456789xyz") == [
+        "bearer-token"
+    ]
+    assert scan_for_secrets('authorization="BEARER abcdef0123456789xyz"') == [
+        "bearer-token"
+    ]
+
+
+def test_a_capitalised_bearer_header_still_raises_exactly_one_finding() -> None:
+    """The two bearer rules must not both fire on one token: a second finding would mean
+    a declared-fake fixture needed two suppression lines to clear."""
+    findings = scan_for_secret_findings("Authorization: Bearer abcdef0123456789xyz")
+    assert len(findings) == 1
+    assert findings[0].label == "bearer-token"
+
+
+def test_an_aws_temporary_key_is_found() -> None:
+    """STS session keys (`ASIA…`) have AWS's shape and AWS's blast radius."""
+    assert scan_for_secrets("ASIAIOSFODNN7EXAMPLE") == ["aws-access-key-id"]
+    assert scan_for_secrets("AKIAIOSFODNN7EXAMPLE") == ["aws-access-key-id"]
+
+
+def test_an_xai_api_key_is_found() -> None:
+    """Cohort itself posts to xAI, so a bare `xai-` key is the one most likely to be
+    lying in a log on a Cohort user's machine."""
+    assert scan_for_secrets("xai-" + "A1b2C3d4E5" * 4) == ["xai-api-key"]
+
+
+def test_the_new_shapes_do_not_flag_ordinary_prose_or_templates() -> None:
+    """The inverse of the above: reading literals must not start flagging documentation.
+
+    Each of these tripped a draft of the #289 patterns, including two taken from this
+    repo's own tracked files.
+    """
+    assert scan_for_secrets("Zoom/Meet URLs are bearer credentials, not identifiers.") == []
+    assert scan_for_secrets("tokens: |\n  are described in the section below\n") == []
+    assert scan_for_secrets('LINE = f"{digest}  {path}  # a declared fixture"') == []
+    assert scan_for_secrets('{"name": "cohort", "keywords": ["agents", "office"]}') == []
+    assert scan_for_secrets('password: "Optional[str]"') == []
+
+
+def test_the_literal_shapes_do_not_reintroduce_the_quadratic_scan() -> None:
+    """#287 guard, restated for the #289 patterns: every optional part of them is
+    length-bounded, so a failed match backtracks a constant amount."""
+    import time
+
+    line = "&".join(f'k{i}="v{i}abcdef"' for i in range(512_000 // 16))
+    started = time.perf_counter()
+    assert scan_for_secrets(line) == []
+    assert time.perf_counter() - started < 2.0

@@ -8,6 +8,7 @@ are all exercised.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -1123,3 +1124,231 @@ def test_an_unreadable_marker_fails_open(tmp_path, monkeypatch):
     marker.write_text("not json", encoding="utf-8")
 
     assert cli_doer.cli_known_broken("grok") is None
+
+
+# === preflight: non-regular tracked entries (#288) ==========================
+
+
+def _commit_symlink(root: Path, link_rel: str, target: str) -> None:
+    """Commit a symlink at ``link_rel`` pointing at ``target``, as a hostile or careless
+    repo would. git tracks the link itself, so `git ls-files` lists it like any file."""
+    link = root / link_rel
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "link"],
+        cwd=root, check=True, capture_output=True,
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="git symlinks need developer mode on Windows")
+def test_a_tracked_symlink_refuses_the_dispatch_naming_the_path(tmp_path: Path) -> None:
+    """#288: `git ls-files` bounds the payload lexically, not structurally — a committed
+    link resolves wherever it likes. Preflight refuses, and the message names the link."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host file\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo, {"src/app.py": "value = 1\n"})
+    _commit_symlink(repo, "src/leak.txt", str(outside))
+
+    worktree = patch_proposal._create_worktree(repo)
+    try:
+        with pytest.raises(cli_doer.UnsafeWorktreeEntryError) as caught:
+            cli_doer._tracked_worktree_files(worktree)
+        assert "src/leak.txt" in str(caught.value)
+        assert "symbolic link" in str(caught.value)
+    finally:
+        patch_proposal.cleanup_worktree(repo, worktree)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="git symlinks need developer mode on Windows")
+def test_a_tracked_symlink_is_refused_before_its_target_is_read(tmp_path: Path) -> None:
+    """The refusal happens during listing, so the host file behind the link is never
+    opened: a credential in it would otherwise be read and scanned by Cohort, and its
+    size would otherwise be charged to the wire cap."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text('AWS_KEY = "AKIAIOSFODNN7EXAMPLE"\n' + "x" * 5000, encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo, {"src/app.py": "value = 1\n"})
+    _commit_symlink(repo, "src/leak.txt", str(outside))
+
+    worktree = patch_proposal._create_worktree(repo)
+    try:
+        # Not SecretFoundError: the target's content was never scanned, so it never had
+        # the chance to raise one.
+        with pytest.raises(cli_doer.UnsafeWorktreeEntryError):
+            cli_doer._assert_worktree_files_have_no_secrets(worktree, repo)
+        with pytest.raises(cli_doer.UnsafeWorktreeEntryError):
+            cli_doer._worktree_exposed_byte_count(worktree)
+    finally:
+        patch_proposal.cleanup_worktree(repo, worktree)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX FIFOs only")
+def test_a_tracked_non_regular_entry_refuses_the_dispatch(tmp_path: Path) -> None:
+    """Not only symlinks: a FIFO checked out in place of a tracked file would make the
+    byte count block forever. Anything that is not a regular file fails closed."""
+    _init_git_repo(tmp_path, {"pipe.txt": "placeholder\n"})
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        (worktree / "pipe.txt").unlink()
+        os.mkfifo(worktree / "pipe.txt")
+        with pytest.raises(cli_doer.UnsafeWorktreeEntryError, match="FIFO"):
+            cli_doer._tracked_worktree_files(worktree)
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="git symlinks need developer mode on Windows")
+def test_codex_doer_refuses_a_tracked_symlink_without_spawning_the_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
+) -> None:
+    """End to end: the dispatch is refused, the CLI is never spawned, and the throwaway
+    worktree does not leak."""
+    outside = tmp_path / "outside.txt"
+    outside.write_text("host file\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo, {"src/app.py": "value = 1\n"})
+    _commit_symlink(repo, "src/leak.txt", str(outside))
+    spawned = {"called": False}
+
+    def refuse_to_launch(*_args, **_kwargs):
+        spawned["called"] = True
+        raise AssertionError("the vendor CLI must not be launched")
+
+    monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", refuse_to_launch)
+
+    with pytest.raises(cli_doer.UnsafeWorktreeEntryError):
+        cli_doer.run_doer("gpt", "tidy up", repo_root=repo)
+
+    assert spawned["called"] is False
+    assert _worktree_count(repo) == 1  # cleaned up on refusal
+
+
+def test_unsafe_entry_is_both_a_doer_error_and_a_gate_error() -> None:
+    """The CLI catches doer failures and gate refusals at different entrypoints; this
+    refusal is both, so neither entrypoint prints a traceback for it."""
+    assert issubclass(cli_doer.UnsafeWorktreeEntryError, cli_doer.DoerError)
+    assert issubclass(cli_doer.UnsafeWorktreeEntryError, gates.GateError)
+
+
+def test_an_unstattable_tracked_file_still_reaches_its_callers_fail_closed_error(
+    tmp_path: Path,
+) -> None:
+    """Listing must not swallow an entry it cannot classify: the caller's own message
+    ("could not be measured") is the one that explains what to do."""
+    _init_git_repo(tmp_path, {"a.txt": "hello"})
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        (worktree / "a.txt").unlink()
+        assert cli_doer._tracked_worktree_files(worktree) == ["a.txt"]
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+# === doer worktrees exclude Cohort's own local records (#275) ===============
+
+
+_SESSION_RECORD = 'author = "Real Name <real@example.com>"\nnote = "a rough afternoon"\n'
+
+
+def _repo_with_local_records(root: Path) -> None:
+    _init_git_repo(
+        root,
+        {
+            "src/app.py": "value = 1\n",
+            ".cohort/sessions/2026-01-01-000000.md": _SESSION_RECORD,
+            ".cohort/feedback/2026-01-01-000000.md": "the CLI made me swear\n",
+            ".cohort/proposals/p1.json": '{"summary": "earlier engine payload"}\n',
+            ".cohort/state/local.json": '{"seen": true}\n',
+            ".cohort/project_context.md": "# context\n",
+        },
+    )
+
+
+def test_the_doer_worktree_never_contains_a_session_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
+) -> None:
+    """#275: session entries carry the git author's real name and email. They are tracked
+    by design, so only an explicit exclusion keeps them off the wire."""
+    _repo_with_local_records(tmp_path)
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer._launch_vendor_cli",
+        _fake_codex({"src/app.py": "value = 2\n"}),
+    )
+
+    result = cli_doer.run_doer("gpt", "bump the value", repo_root=tmp_path)
+
+    for rel in (
+        ".cohort/sessions/2026-01-01-000000.md",
+        ".cohort/feedback/2026-01-01-000000.md",
+        ".cohort/proposals/p1.json",
+        ".cohort/state/local.json",
+    ):
+        assert not (result.worktree / rel).exists(), rel
+    # ...and the repo itself is untouched.
+    assert (tmp_path / ".cohort/sessions/2026-01-01-000000.md").is_file()
+    # Project context stays: it is the repo's own instructions to the engine.
+    assert (result.worktree / ".cohort" / "project_context.md").is_file()
+
+
+def test_excluded_records_are_not_reported_as_engine_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
+) -> None:
+    """Deleting the records must not read as the engine deleting them — `--skip-worktree`
+    is what keeps the reviewable diff to the engine's actual work."""
+    _repo_with_local_records(tmp_path)
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer._launch_vendor_cli",
+        _fake_codex({"src/app.py": "value = 2\n"}),
+    )
+
+    result = cli_doer.run_doer("gpt", "bump the value", repo_root=tmp_path)
+
+    assert result.changed_files == ["src/app.py"]
+    assert ".cohort/sessions" not in result.diff
+
+
+def test_the_wire_byte_count_excludes_the_local_records(tmp_path: Path) -> None:
+    """The cap must bound what the vendor CLI can actually read — counting files that are
+    not in the checkout would over-charge every dispatch."""
+    _repo_with_local_records(tmp_path)
+    worktree = cli_doer._create_doer_worktree(tmp_path)
+    try:
+        listed = cli_doer._tracked_worktree_files(worktree)
+        assert not [rel for rel in listed if rel.startswith(".cohort/sessions/")]
+        expected = sum((worktree / rel).stat().st_size for rel in listed)
+        assert cli_doer._worktree_exposed_byte_count(worktree) == expected
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+def test_the_grok_gate_sequence_excludes_the_local_records(
+    tmp_path: Path, _grok_installed
+) -> None:
+    """Both vendors go through the same creation point, so neither can be given the
+    records by accident."""
+    _repo_with_local_records(tmp_path)
+    worktree = cli_doer._grok_gated_worktree(
+        "review this", repo_root=tmp_path, max_wire_bytes=10_000_000,
+        project_context_text="",
+    )
+    try:
+        assert not (worktree / ".cohort" / "sessions").exists()
+        assert (worktree / "src" / "app.py").is_file()
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+def test_a_repo_without_local_records_is_checked_out_unchanged(tmp_path: Path) -> None:
+    """The exclusion is a no-op on a repo that has none — no stray git call, no error."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    worktree = cli_doer._create_doer_worktree(tmp_path)
+    try:
+        assert cli_doer._tracked_worktree_files(worktree) == ["src/app.py"]
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
