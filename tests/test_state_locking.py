@@ -185,3 +185,30 @@ def test_without_pre_pull_seed_the_first_pull_would_be_trusted(tmp_path):
     added = q.record_office_delta(state, office)  # baseline absent → fallback trusts all
     assert added == []
     assert q.office_pending_keys(state) == set()
+
+
+# --- #292: concurrent rollback-ledger appends keep both entries ---------------
+
+
+def test_concurrent_record_update_keeps_both_ledger_entries(tmp_path, monkeypatch):
+    """Two ``_record_update`` writers (an update and a rollback in two processes)
+    read→append→write the same ledger. Without the lock the second's stale read
+    overwrites the first's entry; with it both survive. The write is slowed to
+    force the window open, as for the other state files above."""
+    from cohort import update as update_mod
+
+    home = tmp_path / "home"
+    real_dumps = json.dumps
+
+    def slow_dumps(obj, *args, **kwargs):
+        time.sleep(0.2)
+        return real_dumps(obj, *args, **kwargs)
+
+    monkeypatch.setattr(json, "dumps", slow_dumps)
+    errors = _run_both(
+        lambda: update_mod._record_update(home, "a1", "a2", "update", at="t-a"),
+        lambda: update_mod._record_update(home, "b1", "b2", "rollback", at="t-b"),
+    )
+    assert not errors
+    ledger = json.loads(update_mod._history_path(home).read_text(encoding="utf-8"))
+    assert {e["from"] for e in ledger["entries"]} == {"a1", "b1"}

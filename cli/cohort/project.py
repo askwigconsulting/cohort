@@ -243,22 +243,33 @@ def refresh_project_context(
     if not project_context.exists():
         return {"changed": False}  # nothing to merge into yet
     body = managed_context_block(paths)
-    stage_dir = Path(tempfile.mkdtemp()) if dry_run else (paths.compiled / "project")
-    src = _stage(stage_dir, "context-block.txt", body)
-    merge_op = Op(OpType.MERGE.value, PROJECT_IDE, str(project_context),
+
+    def merge_op_for(src: str) -> Op:
+        return Op(OpType.MERGE.value, PROJECT_IDE, str(project_context),
                   src=src, strategy="block", preserve=True)
+
     if dry_run:
-        pf = preflight([merge_op], manifest, force=force)
+        with tempfile.TemporaryDirectory() as tmp:
+            merge_op = merge_op_for(_stage(Path(tmp), "context-block.txt", body))
+            pf = preflight([merge_op], manifest, force=force)
         return {"changed": pf.classified[0].status.value != "satisfied"}
     # Serialize the load→apply→persist cycle: re-read the manifest under the lock
     # so a concurrent recompile/refresh in another process can't have its ops lost
     # to a stale-read overwrite. ``state/`` exists here (the manifest loaded above).
+    # The block is staged INSIDE the lock, to a name unique to this call: a fixed
+    # name written outside it let a concurrent refresh hand ``apply`` another
+    # process's bytes (#291). The recorded merge op keeps no ``src``, so the
+    # staged file is dropped once applied.
     with manifest_lock(paths.manifest):
         manifest = load_manifest(paths.manifest)
         if manifest is None:  # deinited under us between the check and the lock
             return {"error": "not a Cohort project (run cohort init)"}
-        outcomes = apply([merge_op], paths, manifest, force=force)
-        manifest.persist(paths.manifest)
+        src = _stage(paths.compiled / "project", f"context-block.{uuid.uuid4().hex}.txt", body)
+        try:
+            outcomes = apply([merge_op_for(src)], paths, manifest, force=force)
+            manifest.persist(paths.manifest)
+        finally:
+            Path(src).unlink(missing_ok=True)
     return {
         "changed": any(o.status == "applied" for o in outcomes),
         "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
@@ -338,9 +349,17 @@ def render_snapshot_entry(repo: Path) -> str:
 
 
 def _stage(stage_dir: Path, name: str, content: str) -> str:
+    """Write ``content`` to ``stage_dir/name`` atomically and return its path.
+
+    Staged files are read back by ``apply`` (possibly from another process for
+    the fixed-name ones), so the bytes land via a unique temp file + ``os.replace``
+    and a reader never sees a torn write.
+    """
     stage_dir.mkdir(parents=True, exist_ok=True)
     p = stage_dir / name
-    p.write_text(content, encoding="utf-8")
+    tmp = p.with_name(f"{name}.tmp-{uuid.uuid4().hex}")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, p)
     return str(p)
 
 

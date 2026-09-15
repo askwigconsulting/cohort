@@ -286,15 +286,17 @@ def _recompile_global_claude(home: Path, source: Path, gpaths: CohortPaths, kind
         source=source, dry_run=False,
         prune_stale=True, fresh_dests=planned_dests(gpaths, [result]), fresh_ides={"claude"},
     )
-    if subset is not None:
-        # #215: re-read and persist the roster under the lock so this RMW can't lose
-        # (or be lost against) a concurrent writer. ``do_install`` above released its
-        # own lock before returning, so this is a fresh, non-nested acquisition;
-        # ``state/`` exists (the install just wrote the manifest).
+    if subset is not None and kind == "agent":
+        # #292: re-read under the lock and APPEND to the roster on the current
+        # file — never overwrite it with ``subset``, which came from the unlocked
+        # read above and would drop an entry a concurrent writer persisted since
+        # (mirrors ``do_add_agent``). ``do_install`` above released its own lock
+        # before returning, so this is a fresh, non-nested acquisition; ``state/``
+        # exists (the install just wrote the manifest).
         with manifest_lock(gpaths.manifest):
             fresh = load_manifest(gpaths.manifest)
-            if fresh is not None:
-                fresh.roster = subset
+            if fresh is not None and fresh.roster and name not in fresh.roster:
+                fresh.roster = list(fresh.roster) + [name]
                 fresh.persist(gpaths.manifest)
     return report
 
