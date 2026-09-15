@@ -1,6 +1,7 @@
 # RFC 0002 — Trust bootstrap & signing-key rotation (design spike)
 
-Status: **Draft spike (revised after SecurityEngineer review)** · Depends on:
+Status: **Draft spike — merged into the repo as a design record; still decision-gated,
+not scheduled (revised after SecurityEngineer review)** · Depends on:
 RFC 0001 (#121) · Tracks: #125 · Gates: #124 · Owner: maintainer
 
 > **Review correction (load-bearing):** the v1 draft claimed an offline root would

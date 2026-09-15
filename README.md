@@ -152,11 +152,13 @@ a new Cohort write path.
 
 ## What leaves your machine
 
-Cohort itself sends nothing anywhere — no telemetry, no phone-home. But the commands that
-bring a **second model** into the room (`/consult-gpt`, `/consult-grok`, `/scout`, `/crew`,
-`cohort engine consult|review|propose`) send code to that vendor, and **they do so by
-default, without asking each time**. A second model with real context gives better answers,
-so the prompt-per-consult was deliberately removed.
+Cohort itself sends no telemetry — but it is not phone-home-free: the `update-check`
+session-start hook runs a `git fetch` against the source remote you cloned from, once per UTC
+day, with no command typed. No content moves, but it is automatic outbound traffic. Beyond
+that, the commands that bring a **second model** into the room (`/consult-gpt`,
+`/consult-grok`, `/scout`, `/crew`, `cohort engine consult|review|propose`) send code to that
+vendor, and **they do so by default, without asking each time**. A second model with real
+context gives better answers, so the prompt-per-consult was deliberately removed.
 
 | Command | Goes to | What it sends |
 |---|---|---|
@@ -164,6 +166,8 @@ so the prompt-per-consult was deliberately removed.
 | `cohort engine review` | xAI | files it chooses to read, one gated read at a time |
 | `cohort engine propose --agentic` | xAI | the same gated reads, plus the patch it proposes |
 | `/crew` external doers | OpenAI / xAI | the committed contents of a throwaway worktree |
+| `cohort report` | GitHub, as a public issue | the report body, only after you review it and confirm — not gated by the marker below |
+| `update-check` (automatic, daily) | GitHub, your source remote | nothing — a `git fetch` only, no confirmation and not gated by the marker below |
 
 Everything above is scanned for credential-shaped content first and refuses to send on a
 hit. Nothing untracked is ever included — a git-ignored `.env` is never checked out into the
@@ -183,6 +187,13 @@ structured so an ambiguous or negated sentence can never be misread as permissio
 
 Use it for client code, NDA work, or anything unreleased. If you are not sure whether a repo
 should egress, add the marker — it is one line to remove later.
+
+**Vendor dependency.** The commands above are single-vendor, not multi-vendor-redundant:
+`/consult-gpt`, the `/crew` Codex seat, and `ratchet`'s Codex path all run through the
+`codex` CLI, so a breaking change there breaks all three. The xAI path (`/consult-grok`,
+`cohort engine review|propose`) has the same shape with grok-cli. There is no fallback
+vendor if one of these breaks; treat these commands as best-effort, not guaranteed
+available.
 
 ## Scope model
 
@@ -235,6 +246,16 @@ by name at any time.
   which carries the office directory and triages).
 - **department** — a display label grouping agents in the office directory.
 
+`--to` (on `add-agent`/`add-skill`/`add-command`/`add-hook`/`promote`, and `--layer` on `edit`)
+picks a destination, but its value domain is not one fixed set — it varies by command: `my` |
+`office` on the five above, `my` | `office` | `project` on `add-memory`, and `my` | `project` on
+`adopt`. Two other pairs are easy to conflate but aren't the same axis: **layer** (`office` vs.
+`my`, within the global scope) and **scope** (`global` vs. `project`) are orthogonal; and
+"**specialist**" names a *topology* value (any agent, global or project, that isn't the
+generalist) as well as the `add-specialist`/`remove-specialist` command family, which always
+authors a **project**-scope agent regardless of topology. These are documented distinctions,
+not renames.
+
 ## Commands
 
 `validate` · `lint` · `setup` · `install` / `uninstall` · `compile` / `recompile` · `relink` · `update` /
@@ -257,7 +278,7 @@ outer loop that builds on a branch, has an independent judge verify each accepta
 (max 3 rounds), and ends at a **draft** PR a human reviews. `/crew` is the fan-out loop for
 larger work: a coordinator-tier session (Fable preferred, Opus a full coordinator too — never
 below Opus) researches and plans, routes each task to the cheapest capable model tier
-(fable/opus/sonnet/haiku, max 10 agents in flight), and verifies every task itself before signoff.
+(fable/opus/sonnet/haiku, max 20 agents in flight), and verifies every task itself before signoff.
 `/consult-gpt` brings a second vendor's model into the room — an advisory, read-only ChatGPT
 opinion via the OpenAI Codex CLI, cross-examined against Claude's own analysis, never executed
 blindly. `/code-simplify` reviews recently changed code for reuse, simplification, and

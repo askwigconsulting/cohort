@@ -1,7 +1,9 @@
 # RFC 0001 — Multi-install: individual vs enterprise, org config, and org sync
 
-Status: **Draft (revised after CloudArchitect + SecurityEngineer review,
-reconciled by ChiefOfStaff)** · Target: post-0.4.0 · Owner: maintainer
+Status: **Draft — merged into the repo as a design record; still decision-gated, not
+scheduled (revised after CloudArchitect + SecurityEngineer review, reconciled by
+ChiefOfStaff)** · Target: none set (the earlier "post-0.4.0" target is stale — Cohort
+has since passed 0.17.0) · Owner: maintainer
 
 ## Summary
 
@@ -273,6 +275,13 @@ the deterministic compile/merge model, and reopen the compromised-source questio
 boundary where it already is.
 
 ## Prerequisite (before Phase 1) — a present-tense code fix
+
+**Resolved** — shipped in commit `5ff0efe` (#129), ahead of and independent from this
+RFC's own phases: `update.py`'s `_git` now inherits the shared `GIT_ENV` transport ban
+(`GIT_CONFIG_*`-encoded `protocol.allow=never` plus an ssh/http(s)/file allowlist) from
+`gitutil.py:37-46`, the same hardening `myoffice.py` already applied inline. The
+paragraph below is kept as the historical record of what the fix was and why it was
+required before Phase 1.
 
 `update.py`'s `_git` inherits the shared `GIT_ENV` but does **not** set the
 `protocol.ext.allow=never` / `protocol.fd.allow=never` bans that `myoffice.py`
