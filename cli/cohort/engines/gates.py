@@ -223,8 +223,20 @@ _SECRET_KEYWORDS: tuple[str, ...] = (
 # config dump or an API error body takes) and ``'api_key': ...`` (YAML/TOML) put the
 # credential's NAME in quotes, and requiring the separator to follow the identifier
 # directly exempted every one of them.
+#
+# The value token is bounded above (#287). The scan loop below resumes at the START of
+# each value so a credential glued inside it is not skipped — but an unbounded token runs
+# to the next whitespace or quote, so on a long quote-free, separator-dense line (a
+# minified stylesheet, a query string) every one of O(n) candidates re-consumed O(n)
+# characters: 129 KB took 4 s, 3 MB about an hour, on every egress path. Capping the
+# token makes each candidate constant-cost and the whole scan linear again. Detection is
+# unchanged — a value still needs >=6 characters to count, and a credential longer than
+# the cap is a key block or a token with its own high-signal rule above; only the digest
+# of such an oversized value would differ, since the digest covers the capped prefix.
+_MAX_ASSIGNMENT_VALUE_CHARS = 256
 _ASSIGNMENT_RE = re.compile(
-    r"\b([A-Za-z_][A-Za-z0-9_\-]*)['\"]?[ \t]*([:=])[ \t]*['\"]?([^\s'\"]{6,})",
+    r"\b([A-Za-z_][A-Za-z0-9_\-]*)['\"]?[ \t]*([:=])[ \t]*['\"]?"
+    rf"([^\s'\"]{{6,{_MAX_ASSIGNMENT_VALUE_CHARS}}})",
 )
 
 # Trailing syntax that rides along on the captured value because the value pattern

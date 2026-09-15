@@ -852,3 +852,30 @@ def test_scan_stays_clean_on_labelled_prose_and_quoted_names() -> None:
     assert scan_for_secrets("WARN: disk almost full, 91% used") == []
     assert scan_for_secrets('{"name": "cohort", "version": "0.17.0"}') == []
     assert scan_for_secrets("x=1;y=2;z=3;total=123456") == []
+
+
+def test_scan_is_linear_on_a_long_quote_free_separator_dense_line() -> None:
+    """#287: the #265 rescan loop was quadratic on a single long quote-free line.
+
+    Resuming at the value start is what finds a glued credential, but with an unbounded
+    value token every candidate re-consumed the rest of the line: 64 KB of ``k=v&k=v``
+    took a second, 129 KB four seconds, and a vendored minified asset could hang every
+    engine dispatch for an hour with no output. Half a megabyte must scan in well under
+    a second; the pre-fix loop needed minutes.
+    """
+    import time
+
+    line = "&".join(f"k{i}=v{i}abcdef" for i in range(512_000 // 12))
+    started = time.perf_counter()
+    assert scan_for_secrets(line) == []
+    assert time.perf_counter() - started < 2.0
+
+
+def test_scan_still_finds_a_credential_longer_than_the_value_cap() -> None:
+    """Bounding the value token must not exempt an oversized credential."""
+    assert scan_for_secrets("PASSWORD=" + "Xy9z-Path-2026-secretvals" * 20) == [
+        "generic-assignment:PASSWORD"
+    ]
+    # ...nor one glued behind a long harmless value on the same line.
+    glued = "note=" + "a" * 300 + ";DB_PASSWORD=Xy9z-Path-2026-secretvals"
+    assert scan_for_secrets(glued) == ["generic-assignment:PASSWORD"]
