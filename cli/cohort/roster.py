@@ -199,16 +199,17 @@ def do_add_agent(
         prune_stale=True, fresh_dests=planned_dests(paths, [result]), fresh_ides={"claude"},
     )
     if to == "office" and subset is not None:
-        # #4: re-read and persist the roster under the lock so this RMW can't lose
-        # (or be lost against) a concurrent writer. Reload anyway — do_install
-        # persisted its own manifest instance, so extend the roster on the current
-        # file rather than overwriting with a stale copy. Unconditional racy (b):
-        # do_install just ran (creating ``state/``) and released its own lock before
-        # returning, so this is a fresh, non-nested acquisition.
+        # #292: re-read under the lock and APPEND to the roster on the current
+        # file — never overwrite it with ``subset``, which was computed from an
+        # unlocked read above and would drop an entry a concurrent add-agent
+        # persisted since. An emptied roster (untailored since the read) already
+        # includes every office agent, so there is nothing to extend. Racy (b):
+        # do_install just ran (creating ``state/``) and released its own lock
+        # before returning, so this is a fresh, non-nested acquisition.
         with manifest_lock(paths.manifest):
             fresh = load_manifest(paths.manifest)
-            if fresh is not None:
-                fresh.roster = subset
+            if fresh is not None and fresh.roster and name not in fresh.roster:
+                fresh.roster = list(fresh.roster) + [name]
                 fresh.persist(paths.manifest)
     return {
         "action": "add-agent", "dry_run": False, "name": name, "path": str(dest),

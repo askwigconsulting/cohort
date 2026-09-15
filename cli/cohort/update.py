@@ -554,22 +554,35 @@ def _record_update(home: Path, from_sha: str, to_sha: str, action: str, *, at: s
     the advertised one-shot undo is simply gone, and the user finds out only when they
     reach for it.
 
+    The read→append→write runs under ``file_lock`` so two writers (an update and
+    a rollback in separate processes) cannot lose one another's entry, and the
+    write is tmp + ``os.replace`` like ``Manifest.persist``, so a reader never
+    sees a truncated ledger — which ``_last_rollback_point`` would take as "no
+    recorded update" (#292).
+
     Returns:
         True if the ledger now records this move; False if it could not be written.
     """
     import json
+    import uuid
+
+    from .filelock import LockTimeout, file_lock
 
     path = _history_path(home)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        entries = data.get("entries", []) if isinstance(data, dict) else []
-    except Exception:  # noqa: BLE001 - a corrupt ledger must not block the operation
-        entries = []
-    entries.append({"from": from_sha, "to": to_sha, "action": action, "at": at})
+    tmp = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"entries": entries[-20:]}, indent=2), encoding="utf-8")
-    except OSError:
+        with file_lock(path):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                entries = data.get("entries", []) if isinstance(data, dict) else []
+            except Exception:  # noqa: BLE001 - a corrupt ledger must not block the operation
+                entries = []
+            entries.append({"from": from_sha, "to": to_sha, "action": action, "at": at})
+            tmp.write_text(json.dumps({"entries": entries[-20:]}, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+    except (OSError, LockTimeout):
+        tmp.unlink(missing_ok=True)
         return False
     return True
 
