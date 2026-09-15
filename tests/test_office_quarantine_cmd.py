@@ -266,3 +266,41 @@ def test_office_reconcile_prunes_records_whose_bytes_are_gone(home: Path, tmp_pa
 
     assert survivors == set()                                 # nothing left to review
     assert quarantine.office_pending_keys(state) == set()     # and the prune persisted
+
+
+# --- approve(dry_run=True): the CLI's --dry-run preview shares the real selector ---------
+
+
+def test_approve_dry_run_returns_what_would_clear_and_saves_nothing(home: Path):
+    """One selector for the preview and the act: a dry-run that re-implemented name/hash
+    matching could predict a clearance the real approve refuses, or vice versa."""
+    state = _state(home)
+    _seed(state, "quarantine.json", [_rec("foo", _HASH_A), _rec("bar", _HASH_B)])
+    before = (state / "quarantine.json").read_bytes()
+
+    assert quarantine.approve(state, ["foo"], dry_run=True) == ["foo"]
+    assert quarantine.approve(state, approve_all=True, dry_run=True) == ["bar", "foo"]
+
+    assert (state / "quarantine.json").read_bytes() == before
+    assert not (state / "quarantine.json.lock").exists()  # a preview takes no lock
+
+
+def test_approve_dry_run_refuses_an_ambiguous_name_like_the_real_thing(home: Path):
+    state = _state(home)
+    _seed(state, "quarantine.json", [_rec("foo", _HASH_A), _rec("foo", _HASH_B)])
+    with pytest.raises(quarantine.AmbiguousApprovalError):
+        quarantine.approve(state, ["foo"], dry_run=True)
+    assert len(quarantine.pending_keys(state)) == 2
+
+
+def test_approve_office_dry_run_returns_what_would_clear_and_saves_nothing(home: Path):
+    state = _state(home)
+    _seed(state, "office_quarantine.json", [_rec("foo", _HASH_A), _rec("foo", _HASH_B)])
+    before = (state / "office_quarantine.json").read_bytes()
+
+    assert quarantine.approve_office(state, ["foo@aaaa"], dry_run=True) == ["foo"]
+    with pytest.raises(quarantine.AmbiguousApprovalError):
+        quarantine.approve_office(state, ["foo"], dry_run=True)
+
+    assert (state / "office_quarantine.json").read_bytes() == before
+    assert len(quarantine.office_pending_keys(state)) == 2

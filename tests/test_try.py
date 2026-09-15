@@ -125,6 +125,25 @@ def test_place_sandboxes_into_the_project(source, home, tmp_path):
     assert not placed.exists()
 
 
+def test_place_under_dry_run_reports_the_path_and_places_nothing(source, home, tmp_path):
+    """The global ``--dry-run`` reaches ``do_try`` as ``dry_run``: the sandbox path is
+    reported, not written (#267)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@e.st"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "T"], cwd=repo, check=True)
+    run_cli("init", "--source", str(source), home=home, cwd=repo)
+    draft = repo / "risk-draft.md"
+    draft.write_text(DRAFT, encoding="utf-8")
+    report = do_try(source, home, str(draft), place=True, repo=repo, dry_run=True)
+    assert report["dry_run"] is True
+    assert report["would_place"].endswith("risk-draft.md")
+    assert "placed" not in report
+    assert not (repo / ".claude" / "agents" / "risk-draft.md").exists()
+    assert not (repo / ".cohort" / "canonical" / "agents" / "risk-draft.md").exists()
+
+
 def test_cli_preview_is_read_only(source, home):
     proc = run_cli("try", "counsel", "--source", str(source), home=home)
     assert proc.returncode == 0

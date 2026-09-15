@@ -242,9 +242,16 @@ by name at any time.
 `adopt` / `personalize` / `edit` / `try` (global) · `add-specialist` /
 `remove-specialist` (project) · `promote` · `snapshot` · `distill` · `context refresh` · `status` · `dashboard` ·
 `projects` · `weekly-report` / `monthly-report` · `feedback` / `propose-improvement` / `submit-proposals` ·
-`engine consult` / `engine propose` · `my-office sync` / `my-office review` / `my-office approve`. Every
-command supports `--dry-run` (`dashboard`, a read-mostly server, and `relink`, a repair command,
-excepted); installs/compiles are idempotent and reversible. `cohort --version` prints the release.
+`engine consult` / `engine propose` · `my-office sync` / `my-office review` / `my-office approve`. The
+global `cohort --dry-run <command>` previews every command that changes something: installs, compiles
+and authoring print their plan; `try --place`, `my-office approve` / `office approve` and `report` say
+what they would place, release or file and do nothing; every `engine …` command runs the gates and
+prints the limits and the prospective egress without launching or sending anything (for the agentic
+`review` / `propose --agentic` / `ratchet` the later payloads depend on model-selected reads and are
+not enumerable up front). `reference`, `relink` and the hook targets refuse with exit 2 rather than
+proceed; `dashboard` and the read-only commands (`status`, `validate`, `lint`, `projects`, the two
+`review`s) ignore it. Installs/compiles are idempotent and reversible. `cohort --version` prints the
+release; `cohort status` exits 1 when it printed a `!` diagnostic (`--json` carries `ok`).
 
 Daily life happens in the IDE — `/feedback`, `/snapshot`, and `/update` wrap the same human-gated
 commands; the `cohort` CLI is the plumbing and scripting layer; the dashboard is a viewer. `/plan`

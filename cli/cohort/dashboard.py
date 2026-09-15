@@ -196,11 +196,13 @@ def _compute_aggregates(home: Path, source: Optional[Path], ides: list[str]) -> 
         for ide in ides:
             if ide in RENDERERS:
                 parity[ide] = check_parity(source, ide, RENDERERS).to_dict()
+    skipped: list[str] = []
     return {
         "projects": projects,
-        "activity": cross_project_activity(home, projects),
-        "scorecards": cross_project_scorecards(home, projects),
+        "activity": cross_project_activity(home, projects, skipped=skipped),
+        "scorecards": cross_project_scorecards(home, projects, skipped=skipped),
         "parity": parity,
+        "skipped": sorted(set(skipped)),
     }
 
 
@@ -266,7 +268,7 @@ def _agent_cards(agents_dir: Path) -> list[dict[str, Any]]:
 
 def cross_project_activity(
     home: Path, projects: Optional[list[dict[str, Any]]] = None,
-    limit: int = _ACTIVITY_LIMIT,
+    limit: int = _ACTIVITY_LIMIT, skipped: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """Recent session records aggregated across every initialized Cohort project —
     the office-wide activity feed (#145). Loops ``list_projects`` over
@@ -277,7 +279,8 @@ def cross_project_activity(
 
     ``projects`` may be supplied to reuse a single ``list_projects`` scan across the
     other aggregates in one poll. A project whose session store is unreadable (e.g.
-    a corrupt/non-UTF-8 ``.md``) is skipped and logged, never fatal (#226)."""
+    a corrupt/non-UTF-8 ``.md``) is skipped and logged, never fatal (#226) — and its
+    name is appended to ``skipped`` when given, so the feed can say it is partial (#270)."""
     if projects is None:
         projects = list_projects(home, include_private=False)
     merged: list[dict[str, Any]] = []
@@ -293,12 +296,15 @@ def cross_project_activity(
                 })
         except Exception as exc:  # noqa: BLE001 - one bad project must not sink the feed
             _log.warning("cross_project_activity: skipping %s: %s", proj.get("name"), exc)
+            if skipped is not None:
+                skipped.append(str(proj.get("name")))
     merged.sort(key=lambda e: e["timestamp"] or "", reverse=True)
     return merged[:limit]
 
 
 def cross_project_scorecards(
     home: Path, projects: Optional[list[dict[str, Any]]] = None,
+    skipped: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """Per-agent up/down scorecards aggregated across every initialized Cohort
     project — Cohort's lightweight answer to agent benchmarking (#145). Agents are
@@ -308,7 +314,8 @@ def cross_project_scorecards(
     merged entries with ``improve.agent_scorecards``.
 
     ``projects`` may be supplied to reuse a single ``list_projects`` scan. A project
-    whose feedback store is unreadable is skipped and logged, never fatal (#226)."""
+    whose feedback store is unreadable is skipped and logged, never fatal (#226) — its
+    name is appended to ``skipped`` when given, so a partial score is visibly partial (#270)."""
     if projects is None:
         projects = list_projects(home, include_private=False)
     entries: list[dict[str, Any]] = []
@@ -318,6 +325,8 @@ def cross_project_scorecards(
             entries.extend(load_feedback_entries(paths))
         except Exception as exc:  # noqa: BLE001 - one bad project must not sink scoring
             _log.warning("cross_project_scorecards: skipping %s: %s", proj.get("name"), exc)
+            if skipped is not None:
+                skipped.append(str(proj.get("name")))
     return agent_scorecards(entries)
 
 
@@ -382,6 +391,9 @@ def collect_state(
     # every initialized project contributes, never just the one being managed.
     state["activity"] = agg["activity"]
     state["scorecards"] = agg["scorecards"]
+    # Projects the two feeds dropped as unreadable — so a partial total is visibly
+    # partial rather than silently smaller (#270).
+    state["skipped"] = agg["skipped"]
     state["global"]["update"] = (update_cache or _UpdateCache()).get(source, home)
     state["global"]["parity"] = agg["parity"]
 
