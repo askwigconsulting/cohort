@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .ir import build_ir
+from .ir import IRArtifact, build_ir
 from .loader import load_artifact
 from .schema import discover_artifacts, validate_frontmatter
 
@@ -103,22 +103,43 @@ class ParityResult:
         }
 
 
-def check_parity(source: Path, ide: str, renderers: dict) -> ParityResult:
-    """Coverage parity for one IDE against the canonical IR set."""
-    renderer = renderers[ide]
-    supported = set(renderer.supported_kinds)
-    gaps = load_gaps(ide)
+def load_canonical_irs(source: Path) -> list[IRArtifact]:
+    """Every valid canonical artifact as an IR, parsed once.
 
-    kinds_present: set[str] = set()
+    The IDE-independent half of :func:`check_parity`: discovery, load, validation and
+    IR build depend only on ``source``, while the ``targets_ide``/kind filtering below
+    is the only per-IDE part. A caller checking several IDEs (the dashboard's
+    per-poll aggregate) does this once and hands the result to each check instead of
+    re-reading all of ``canonical/`` per IDE. Artifacts that fail to load or validate
+    are skipped, exactly as the per-IDE check skipped them."""
+    irs: list[IRArtifact] = []
     for p in discover_artifacts(source / "canonical"):
         loaded = load_artifact(p)
         if loaded.load_error is not None:
             continue
         if validate_frontmatter(loaded.frontmatter, p.stem):
             continue
-        ir = build_ir(loaded.frontmatter, loaded.body, p)
-        if ir.targets_ide(ide) and ir.kind not in _NON_IDE_KINDS:
-            kinds_present.add(ir.kind)
+        irs.append(build_ir(loaded.frontmatter, loaded.body, p))
+    return irs
+
+
+def check_parity(
+    source: Path, ide: str, renderers: dict, *, irs: list[IRArtifact] | None = None
+) -> ParityResult:
+    """Coverage parity for one IDE against the canonical IR set.
+
+    ``irs`` supplies an already-parsed canonical set (from :func:`load_canonical_irs`)
+    so a multi-IDE caller pays one parse instead of one per IDE; omitted, the set is
+    parsed here and the call is self-contained as before."""
+    renderer = renderers[ide]
+    supported = set(renderer.supported_kinds)
+    gaps = load_gaps(ide)
+
+    if irs is None:
+        irs = load_canonical_irs(source)
+    kinds_present = {
+        ir.kind for ir in irs if ir.targets_ide(ide) and ir.kind not in _NON_IDE_KINDS
+    }
 
     covered = {k for k in kinds_present if k in supported}
     undeclared = {k for k in kinds_present if k not in supported and k not in gaps}

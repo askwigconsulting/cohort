@@ -31,12 +31,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .timeutil import parse_iso8601
 from .frontmatter import dump_frontmatter
 from .gitutil import GIT_ENV, GIT_TIMEOUT
 from .install_model import CohortPaths
 from .loader import load_artifact, load_artifact_text
 from .project import _short_id, _stage, _utc_compact, now_iso
+from .reports import _to_utc
 from .update import resolve_upstream
 
 RATINGS = ("up", "down")
@@ -287,36 +287,69 @@ def validate_enrichment_body(text: str) -> str:
     return text
 
 
-def load_feedback_entries(paths: CohortPaths) -> list[dict[str, Any]]:
+def _newest_records(directory: Path, limit: Optional[int]) -> list[Path]:
+    """A record store's ``.md`` files, oldest first, capped to the ``limit`` newest.
+
+    Records are named ``<utc-compact>-<id>…`` (``do_feedback``,
+    ``project.session_capture``), so name order *is* write order and the newest N
+    can be selected before anything is parsed — the difference between opening a
+    store of thousands and opening the handful a capped view will show. ``None``
+    selects every record; a ``limit`` of zero or less selects none.
+
+    The listing goes through ``os.scandir`` rather than ``Path.glob`` (same
+    selection, ~10x cheaper on a large store: no ``Path`` per entry, and the sort
+    runs on plain names). A missing or unreadable store is an empty one."""
+    try:
+        with os.scandir(directory) as entries:
+            names = sorted(e.name for e in entries if e.name.endswith(".md"))
+    except OSError:
+        return []
+    if limit is not None:
+        names = names[-limit:] if limit > 0 else []
+    return [directory / name for name in names]
+
+
+def load_feedback_entries(
+    paths: CohortPaths, limit: Optional[int] = None
+) -> list[dict[str, Any]]:
     """Raw ``feedback/*.md`` records (rating, agent, command, timestamp), oldest
     first. The dated half of the shared extraction ``aggregate_signals`` composes
     into project-scoped, dateless counts; the dashboard's cross-project activity
     feed and per-agent scorecards (#145) loop ``project.list_projects`` over this
-    directly, because they need the timestamps ``aggregate_signals`` discards."""
+    directly, because they need the timestamps ``aggregate_signals`` discards.
+
+    ``limit`` caps the read at the newest records and is applied *before* parsing
+    (see :func:`_newest_records`) — only for a caller that shows a capped view, never
+    for one that counts or scores every record. Timestamps are normalized here (see
+    :func:`normalized_timestamp`), so a consumer never has to cope with the
+    ``datetime`` PyYAML returns for an unquoted record."""
     fb_dir = paths.cohort_home / "feedback"
     entries = []
-    for f in sorted(fb_dir.glob("*.md")) if fb_dir.exists() else []:
+    for f in _newest_records(fb_dir, limit):
         fm = load_artifact(f).frontmatter or {}
         entries.append({
             "rating": fm.get("rating"),
             "agent": fm.get("agent"),
             "command": fm.get("command"),
-            "timestamp": fm.get("timestamp"),
+            "timestamp": normalized_timestamp(fm.get("timestamp")),
         })
     return entries
 
 
-def load_session_entries(paths: CohortPaths) -> list[dict[str, Any]]:
+def load_session_entries(
+    paths: CohortPaths, limit: Optional[int] = None
+) -> list[dict[str, Any]]:
     """Raw ``sessions/*.md`` records (timestamp, author, branch), oldest first —
     the sessions-side counterpart to ``load_feedback_entries``, used the same way
     by ``aggregate_signals`` (count only) and the cross-project activity feed
-    (needs the dates)."""
+    (needs the dates). ``limit`` caps the read at the newest records before parsing,
+    and timestamps are normalized exactly as in ``load_feedback_entries``."""
     sessions_dir = paths.cohort_home / "sessions"
     entries = []
-    for f in sorted(sessions_dir.glob("*.md")) if sessions_dir.exists() else []:
+    for f in _newest_records(sessions_dir, limit):
         fm = load_artifact(f).frontmatter or {}
         entries.append({
-            "timestamp": fm.get("timestamp"),
+            "timestamp": normalized_timestamp(fm.get("timestamp")),
             "author": fm.get("author"),
             "branch": fm.get("branch"),
         })
@@ -351,15 +384,30 @@ def aggregate_signals(paths: CohortPaths) -> dict[str, Any]:
 
 
 def _parse_timestamp(value: Any) -> Optional[datetime]:
-    """Best-effort ISO-8601 parse of a feedback timestamp; ``None`` if missing or
-    malformed (a hand-edited or pre-migration record shouldn't crash the trend)."""
-    if not isinstance(value, str) or not value.strip():
+    """Best-effort UTC parse of a stored timestamp; ``None`` if missing or malformed
+    (a hand-edited or pre-migration record shouldn't crash the trend).
+
+    Accepts both forms a record can hold: the quoted string Cohort writes, and the
+    ``datetime`` PyYAML hands back for the unquoted, YAML-native form a human typing
+    into the file produces. Both go through ``reports._to_utc`` — the one timestamp
+    normalizer in the package — rather than a second parser that disagrees with it."""
+    if value is None or (isinstance(value, str) and not value.strip()):
         return None
     try:
-        dt = parse_iso8601(value)
+        return _to_utc(value)
     except ValueError:
         return None
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def normalized_timestamp(value: Any) -> Optional[str]:
+    """A stored timestamp as a UTC ISO-8601 string, or ``None`` when unparseable.
+
+    The JSON-safe, sortable form. An unquoted record yields a ``datetime``, which
+    neither compares against the quoted string form (``TypeError`` mid-sort) nor
+    survives ``json.dumps``; a consumer that hands timestamps to a client normalizes
+    through this so every entry is one comparable, serializable shape."""
+    dt = _parse_timestamp(value)
+    return dt.isoformat() if dt is not None else None
 
 
 def agent_scorecards(
