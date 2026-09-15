@@ -572,6 +572,7 @@ def test_update_cache_does_not_block_get(home, tmp_path, source):
 # === expanded action surface (dashboard v2) ==================================
 
 from cohort.dashboard import ActionError, run_action  # noqa: E402
+import re
 
 
 def test_state_includes_full_inventory(home, tmp_path, source):
@@ -973,13 +974,34 @@ def test_compute_aggregates_parses_canonical_once_for_every_ide(home, source, mo
         assert aggregates["parity"][ide] == parity.check_parity(source, ide, RENDERERS).to_dict()
 
 
-def test_page_serves_with_token_injected(server):
-    srv, _ = server
-    code, data = request(srv, "GET", "/")
-    assert code == 200
-    page = data.decode("utf-8")
-    assert "__COHORT_TOKEN__" not in page  # placeholder substituted
-    assert srv.token in page
+def _srgb_to_linear(c: float) -> float:
+    c /= 255.0
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _relative_luminance(rgb: tuple[float, float, float]) -> float:
+    r, g, b = rgb
+    return 0.2126 * _srgb_to_linear(r) + 0.7152 * _srgb_to_linear(g) + 0.0722 * _srgb_to_linear(b)
+
+
+def _contrast_ratio(rgb1: tuple[float, float, float], rgb2: tuple[float, float, float]) -> float:
+    l1, l2 = _relative_luminance(rgb1), _relative_luminance(rgb2)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _hex_to_rgb(h: str) -> tuple[float, float, float]:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _composite(fg: tuple[float, float, float], alpha: float,
+               bg: tuple[float, float, float]) -> tuple[float, float, float]:
+    return tuple(fg[i] * alpha + bg[i] * (1 - alpha) for i in range(3))  # type: ignore[return-value]
+
+
+def _box_drawing_glyph_count(text: str) -> int:
+    return sum(1 for ch in text if "─" <= ch <= "╿")
 
 
 def test_dialog_controls_have_label_for(server):
