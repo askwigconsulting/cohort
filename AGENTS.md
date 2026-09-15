@@ -186,6 +186,10 @@ That exact string is what the code checks. **A sentence saying "do not send this
 anywhere" will not work** — the marker is deliberately structured so no prose can be misread
 as permission or refusal.
 
+`/consult-gpt` is on that code path too: it runs `cohort engine consult gpt --prompt-file <f>`
+— never raw `codex exec` — so the marker check and the secret scan run on the assembled
+prompt before codex starts, and what leaves is that prompt.
+
 If you are operating in a repository whose contents you have any reason to think are
 confidential, set the marker first and tell the user you did.
 

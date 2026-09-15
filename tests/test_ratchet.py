@@ -592,3 +592,57 @@ def test_ratchet_codex_path_runs_codex_when_the_worktree_clears_both_gates(
         "gpt", "t", repo_root=tmp_path, evaluator_cmd=_EVAL, budget=1,
     )
     assert result.best == 9.0
+
+
+# === #243/#300: engine names resolve through the registry — `ratchet xai` == `ratchet grok`
+
+
+def test_ratchet_resolves_every_codex_alias_to_the_codex_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _init_git_repo(tmp_path, {"metric.txt": "10\n"})
+    seen: list[str] = []
+    monkeypatch.setattr(
+        cli_doer, "run_codex_in_worktree", lambda worktree, task, **kw: seen.append(task)
+    )
+    for alias in ("gpt", "chatgpt", "openai", "codex", "GPT"):
+        ratchet._propose_into_worktree(
+            alias, alias, tmp_path, repo_root=tmp_path, model=None, footprint=None,
+            project_context_text="", timeout=1.0, max_wire_bytes=10_000,
+        )
+    assert seen == ["gpt", "chatgpt", "openai", "codex", "GPT"]
+
+
+def test_ratchet_resolves_xai_to_the_grok_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r5 NAM-2: `ratchet xai` died on a bare ``== "grok"`` while `work xai` ran."""
+    from cohort.engines import xai_agentic
+
+    reached: list[str] = []
+
+    class _Stopped:
+        stopped_reason = "budget"
+        text = ""
+
+    def fake_agentic(instruction, *, root, model, engine_name, **kw):
+        reached.append(engine_name)
+        return _Stopped()
+
+    monkeypatch.setattr(xai_agentic, "run_agentic", fake_agentic)
+    with pytest.raises(ratchet.RatchetError, match="grok did not produce a patch"):
+        ratchet._propose_into_worktree(
+            "xai", "t", tmp_path, repo_root=tmp_path, model=None, footprint=None,
+            project_context_text="", timeout=1.0, max_wire_bytes=10_000,
+        )
+    assert reached == ["grok"]
+
+
+def test_ratchet_names_the_registered_engines_for_an_unknown_one(tmp_path: Path) -> None:
+    with pytest.raises(ratchet.RatchetError) as excinfo:
+        ratchet._propose_into_worktree(
+            "gemini", "t", tmp_path, repo_root=tmp_path, model=None, footprint=None,
+            project_context_text="", timeout=1.0, max_wire_bytes=10_000,
+        )
+    assert "codex (aliases: chatgpt, gpt, openai)" in str(excinfo.value)
+    assert "grok (aliases: xai)" in str(excinfo.value)

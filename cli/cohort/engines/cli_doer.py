@@ -73,7 +73,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
 
-from cohort.engines import gates
+from cohort.engines import aliases_of, gates
 from cohort.engines import patch_proposal
 
 # A hard wall-clock cap on an external doer run — an agentic CLI that has not finished
@@ -95,11 +95,10 @@ _GIT_TIMEOUT_SECONDS: float = 30.0
 # or raise this deliberately.
 _DEFAULT_MAX_WIRE_BYTES: int = 50_000_000
 
-# Engine names that resolve to the Codex-sandboxed doer.
-_CODEX_ENGINE_ALIASES = frozenset({"gpt", "chatgpt", "codex", "openai"})
-
-# Engine names that resolve to the bubblewrap-sandboxed grok-cli doer.
-_GROK_ENGINE_ALIASES = frozenset({"grok", "xai"})
+# Engine names that resolve to each CLI doer. One alias set, owned by the registry, so
+# `work`, `ratchet` and `consult` agree on what "gpt" or "xai" means (#243).
+_CODEX_ENGINE_ALIASES = aliases_of("codex")
+_GROK_ENGINE_ALIASES = aliases_of("grok")
 # Bound grok-cli's agentic loop (its own default is 400 rounds — far too loose here).
 _GROK_MAX_TOOL_ROUNDS = "60"
 
@@ -712,7 +711,7 @@ def run_codex_in_worktree(
 
 
 def _launch_vendor_cli(
-    cmd: list[str], *, timeout: float, env: dict[str, str]
+    cmd: list[str], *, timeout: float, env: dict[str, str], stdin_text: str | None = None
 ) -> subprocess.CompletedProcess:
     """Run a vendor CLI non-interactively and, on timeout, kill its **whole process group**.
 
@@ -727,7 +726,10 @@ def _launch_vendor_cli(
     that a group kill becomes *possible*. This performs it.
 
     stdin is ``DEVNULL``: these doers are non-interactive, and a TTY the child inherited
-    could otherwise be used to inject keystrokes back into Cohort (TIOCSTI).
+    could otherwise be used to inject keystrokes back into Cohort (TIOCSTI). A caller
+    that must hand the CLI a payload (the codex consult's prompt, which is too large and
+    too sensitive for argv) passes ``stdin_text``: it is written to a pipe and the pipe
+    is closed — still never an inherited descriptor.
     """
     with subprocess.Popen(
         cmd,
@@ -735,11 +737,15 @@ def _launch_vendor_cli(
         stderr=subprocess.PIPE,
         text=True,
         env=env,
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
         start_new_session=True,
     ) as proc:
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = (
+                proc.communicate(input=stdin_text, timeout=timeout)
+                if stdin_text is not None
+                else proc.communicate(timeout=timeout)
+            )
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
             # Drain whatever the tree produced before it died — on a timeout that output

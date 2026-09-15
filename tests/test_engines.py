@@ -260,7 +260,7 @@ def test_get_engine_returns_grok_spec() -> None:
     assert spec.transport == "xai_chat_completions"
     assert spec.endpoint == "https://api.x.ai/v1/chat/completions"
     assert spec.auth_env == "GROK_API_KEY"
-    assert spec.roles == frozenset({"consult", "patch_proposal"})
+    assert spec.roles == frozenset({"consult", "review", "patch_proposal"})
     assert spec.cost_class == "metered"
     # Concrete verified ids, not moving aliases: `grok-4-latest`/`grok-code-fast-1`
     # resolve server-side to `grok-4.3`/`grok-build-0.1`, so the flagship alias served
@@ -388,3 +388,84 @@ def test_a_complete_answer_is_not_flagged(capsys) -> None:
 
     assert _parse_assistant_text(done) == "done."
     assert capsys.readouterr().err == ""
+
+
+# --------------------------------------------------------------------------- #
+# #266 / #243: one alias set, resolved through the registry, for every command
+# --------------------------------------------------------------------------- #
+
+
+def test_get_engine_returns_codex_spec() -> None:
+    from cohort.engines import codex_cli
+
+    spec = get_engine("codex")
+    assert spec.name == "codex"
+    assert spec.transport == codex_cli.TRANSPORT
+    assert spec.endpoint is None  # the CLI owns the wire; Cohort never POSTs itself
+    assert spec.auth_env == "OPENAI_API_KEY"  # optional — a saved `codex login` is the default
+    assert spec.roles == frozenset({"consult"})  # review/propose deliberately not registered
+    assert spec.model_tiers == {}  # the CLI's default flagship; `--model` pins one
+
+
+@pytest.mark.parametrize("alias", ["gpt", "chatgpt", "openai", "codex", "GPT", " gpt "])
+def test_every_codex_alias_resolves_to_the_same_spec(alias: str) -> None:
+    assert get_engine(alias) is get_engine("codex")
+
+
+@pytest.mark.parametrize("alias", ["grok", "xai", "XAI"])
+def test_every_grok_alias_resolves_to_the_same_spec(alias: str) -> None:
+    assert get_engine(alias) is get_engine("grok")
+
+
+def test_resolve_engine_name_returns_the_canonical_name_or_raises() -> None:
+    from cohort.engines import resolve_engine_name
+
+    assert resolve_engine_name("chatgpt") == "codex"
+    assert resolve_engine_name("xai") == "grok"
+    with pytest.raises(UnknownEngineError):
+        resolve_engine_name("gemini")
+
+
+def test_aliases_of_lists_every_name_that_reaches_an_engine() -> None:
+    from cohort.engines import aliases_of
+
+    assert aliases_of("codex") == frozenset({"codex", "gpt", "chatgpt", "openai"})
+    assert aliases_of("grok") == frozenset({"grok", "xai"})
+    assert aliases_of("gpt") == aliases_of("codex")  # an alias is as good as the name
+
+
+def test_no_alias_collides_with_another_engine() -> None:
+    seen: dict[str, str] = {}
+    for spec in ENGINES.values():
+        for name in (spec.name, *spec.aliases):
+            assert name not in seen, f"{name!r} reaches both {seen[name]!r} and {spec.name!r}"
+            seen[name] = spec.name
+
+
+def test_describe_registered_engines_names_canonical_engines_with_their_aliases() -> None:
+    from cohort.engines import describe_registered_engines
+
+    text = describe_registered_engines()
+    assert text == "codex (aliases: chatgpt, gpt, openai), grok (aliases: xai)"
+
+
+def test_grok_is_trusted_with_review_and_codex_is_not() -> None:
+    from cohort.engines import KNOWN_ROLES
+
+    assert "review" in KNOWN_ROLES
+    assert "review" in get_engine("grok").roles
+    assert "review" not in get_engine("codex").roles
+
+
+def test_codex_is_refused_the_patch_proposal_role_with_a_clear_error() -> None:
+    from cohort.engines.patch_proposal import ProposalError, _require_patch_proposal_engine
+
+    with pytest.raises(ProposalError, match="'patch_proposal' role"):
+        _require_patch_proposal_engine("gpt")
+
+
+def test_every_registered_role_is_a_known_role() -> None:
+    from cohort.engines import KNOWN_ROLES
+
+    for spec in ENGINES.values():
+        assert spec.roles <= KNOWN_ROLES, spec.name

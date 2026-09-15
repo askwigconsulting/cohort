@@ -119,7 +119,7 @@ from .specialists import (
 from .dashboard import do_dashboard
 from .status import do_status
 from .trial import TryError, do_try
-from .engines import ENGINES, UnknownEngineError, get_engine
+from .engines import ENGINES, UnknownEngineError, describe_registered_engines, get_engine
 from .engines import xai as engine_xai
 from . import quarantine as _quarantine_help
 
@@ -1212,10 +1212,12 @@ def _is_grok_engine(engine: str) -> bool:
     """Whether ``engine`` names Grok (the only engine with a local CLI to prefer here).
 
     Codex is already CLI-first through its own code path; the CLI-vs-API preference this
-    guards is grok-only, so every dispatch check narrows to grok via this alias set."""
-    from .engines import cli_doer
-
-    return engine.strip().lower() in cli_doer._GROK_ENGINE_ALIASES
+    guards is grok-only, so every dispatch check narrows to grok via the registry's alias
+    set (``xai`` included). An unknown name is simply not grok."""
+    try:
+        return get_engine(engine).name == "grok"
+    except UnknownEngineError:
+        return False
 
 
 def _warn_if_doer_exited_nonzero(result) -> None:
@@ -1431,10 +1433,78 @@ def _grok_channel_note(engine: str) -> str:
     return "xAI API-direct (grok CLI/bwrap not found)"
 
 
+def _consult_channel_note(engine: str, spec, timeout: Optional[float]) -> str:
+    """Which channel a consult would take, decided by transport: the codex CLI (and
+    whether bubblewrap will jail it) or the xAI path via :func:`_grok_channel_note`."""
+    from .engines import codex_cli
+
+    if spec.transport != codex_cli.TRANSPORT:
+        return _grok_channel_note(engine)
+    jail = (
+        "inside a bubblewrap jail (nothing of this repo or your home mounted)"
+        if codex_cli.jailed()
+        else "UNJAILED — bwrap not found, so codex can read any file you can"
+    )
+    return (
+        "codex CLI — `codex exec --sandbox read-only` in an empty scratch working root, "
+        f"the prompt on stdin, {jail}"
+    )
+
+
+def _consult_limits_note(spec, max_tokens: int, timeout: Optional[float]) -> str:
+    """The limits a consult would run under; ``--max-tokens`` is not a codex CLI cap."""
+    from .engines import codex_cli
+
+    if spec.transport == codex_cli.TRANSPORT:
+        budget = codex_cli.CONSULT_TIMEOUT_SECONDS if timeout is None else timeout
+        return f"--timeout {budget:g}s (--max-tokens does not apply to the codex CLI)"
+    when = "default (scales with --max-tokens)" if timeout is None else f"{timeout:g}s"
+    return f"--max-tokens {max_tokens}, --timeout {when}"
+
+
+def _run_codex_consult(prompt: str, *, model: Optional[str], timeout: Optional[float]) -> None:
+    """Run the already-gated ``prompt`` through the codex CLI transport and print the reply.
+
+    Exit 2 when the CLI is not installed (setup missing — the recovery steps are in the
+    message), 1 when it ran and failed or timed out, 0 with the reply on stdout. The
+    reply is engine-controlled and untrusted, so each line is escaped before it reaches
+    the terminal, exactly as the xAI path does.
+    """
+    from .engines import codex_cli
+
+    budget = codex_cli.CONSULT_TIMEOUT_SECONDS if timeout is None else timeout
+    if codex_cli.available() and codex_cli.jailed():
+        typer.echo(
+            f"note: consulting codex inside a bubblewrap jail — read-only sandbox, empty "
+            f"scratch root, ephemeral HOME holding only ~/.codex; nothing of this repo or "
+            f"your home is mounted (up to {budget:g}s)",
+            err=True,
+        )
+    elif codex_cli.available():
+        typer.echo(
+            "note: bubblewrap (bwrap) not found — codex runs UNJAILED: its read-only "
+            "sandbox blocks writes and network for the commands it runs, but it can read "
+            "any file you can and send it. The prompt is gated; the reads are not. "
+            f"Install bwrap to jail it (up to {budget:g}s)",
+            err=True,
+        )
+    try:
+        text = codex_cli.consult(prompt, model=model, timeout=budget)
+    except codex_cli.CodexUnavailableError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=2)
+    except codex_cli.ConsultError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    for line in text.splitlines():
+        typer.echo(_display_safe(line))
+    raise typer.Exit(code=0)
+
+
 @engine_app.command("consult")
 def engine_consult(
     ctx: typer.Context,
-    engine: str = typer.Argument(..., help="Registered engine name (e.g. 'grok')."),
+    engine: str = typer.Argument(..., help="Registered engine name or alias (e.g. 'gpt', 'grok')."),
     prompt_file: Optional[Path] = typer.Option(
         None,
         "--prompt-file",
@@ -1476,12 +1546,14 @@ def engine_consult(
     process list. The response is capped by ``--max-tokens`` to bound cost. ``--tier``
     (flagship|cheap) or an explicit ``--model`` selects which model answers.
     """
+    from .engines import codex_cli
+
     try:
         spec = get_engine(engine)
     except UnknownEngineError:
         typer.echo(
             f"error: unknown engine {engine!r}; registered engines: "
-            f"{', '.join(sorted(ENGINES))}",
+            f"{describe_registered_engines()}",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -1493,7 +1565,16 @@ def engine_consult(
         )
         raise typer.Exit(code=2)
 
-    chosen_model = _resolve_engine_model(spec, tier, model)
+    # Model selection is a transport property: the codex CLI picks its own default
+    # flagship (no tiers to downgrade through), the API engines resolve a tier to an id.
+    if spec.transport == codex_cli.TRANSPORT:
+        try:
+            chosen_model = codex_cli.resolve_model(tier, model)
+        except codex_cli.ConsultError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=2)
+    else:
+        chosen_model = _resolve_engine_model(spec, tier, model)
 
     if prompt_file is not None:
         try:
@@ -1539,10 +1620,9 @@ def engine_consult(
             gates=_engine_dry_run_gates(prompt, project_context_text, max_bytes=200_000),
             facts=[
                 ("engine", f"{engine} · model {chosen_model}"),
-                ("channel", _grok_channel_note(engine)),
+                ("channel", _consult_channel_note(engine, spec, timeout)),
                 ("would send", f"the prompt from {_payload_origin(prompt_file, '--prompt-file', prompt)}"),
-                ("limits", f"--max-tokens {max_tokens}, --timeout "
-                           f"{'default (scales with --max-tokens)' if timeout is None else f'{timeout:g}s'}"),
+                ("limits", _consult_limits_note(spec, max_tokens, timeout)),
             ],
             later_payloads=None,
         )
@@ -1561,6 +1641,12 @@ def engine_consult(
     except engine_gates.GateError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
+
+    # Dispatch by transport, never by name. The codex CLI owns its wire (and its
+    # sandbox); everything below this line is the xAI chat/completions transport, with
+    # the grok-CLI preference layered on top of it.
+    if spec.transport == codex_cli.TRANSPORT:
+        _run_codex_consult(prompt, model=chosen_model, timeout=timeout)
 
     # Prefer the local grok CLI (real, worktree-scoped file access under bubblewrap) over
     # the xAI API-direct path, which sees only this prompt. grok-only — other engines stay
@@ -1724,9 +1810,9 @@ def engine_review(
         )
         raise typer.Exit(code=2)
 
-    if "consult" not in spec.roles:
+    if "review" not in spec.roles:
         typer.echo(
-            f"error: engine {engine!r} is not registered for the 'consult' role",
+            f"error: engine {engine!r} is not registered for the 'review' role",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -2356,7 +2442,11 @@ def engine_ratchet(
         if not task.strip():
             typer.echo("error: task is empty", err=True)
             raise typer.Exit(code=1)
-        if doer_name not in ratchet._CODEX_ENGINES and doer_name != "grok":
+        from .engines import UnknownEngineError, get_engine
+
+        try:
+            get_engine(doer_name)
+        except UnknownEngineError:
             typer.echo(f"error: unknown ratchet engine {engine!r} (use 'gpt' or 'grok')", err=True)
             raise typer.Exit(code=1)
         _print_engine_dry_run(

@@ -162,7 +162,8 @@ context gives better answers, so the prompt-per-consult was deliberately removed
 
 | Command | Goes to | What it sends |
 |---|---|---|
-| `/consult-gpt`, `cohort engine consult` | OpenAI (Codex CLI) / xAI | the prompt you packaged — no repo access |
+| `/consult-gpt`, `cohort engine consult gpt` | OpenAI (Codex CLI) | the assembled prompt file, gated in code first (egress marker, secret scan, 200 KB cap). Jailed to the prompt where bubblewrap is available (empty scratch root, ephemeral HOME holding only `~/.codex`, nothing of your repo or home mounted); otherwise codex can read what you can — the prompt is gated, the reads are not, and the command says so before it starts |
+| `/consult-grok`, `cohort engine consult grok` | xAI | the prompt you packaged (API-direct, no repo access); with grok-cli + bwrap installed, also the tracked files of a throwaway worktree it chooses to read |
 | `cohort engine review` | xAI | files it chooses to read, one gated read at a time |
 | `cohort engine propose --agentic` | xAI | the same gated reads, plus the patch it proposes |
 | `/crew` external doers | OpenAI / xAI | the committed contents of a throwaway worktree |
@@ -170,8 +171,11 @@ context gives better answers, so the prompt-per-consult was deliberately removed
 | `update-check` (automatic, daily) | GitHub, your source remote | nothing — a `git fetch` only, no confirmation and not gated by the marker below |
 
 Everything above is scanned for credential-shaped content first and refuses to send on a
-hit. Nothing untracked is ever included — a git-ignored `.env` is never checked out into the
-worktree an engine sees.
+hit. For the consult rows that is code, not an instruction to the model: `/consult-gpt` runs
+`cohort engine consult gpt`, never raw `codex exec`, and the marker check, the secret scan and
+the size cap run on the assembled prompt before the vendor CLI or API is touched. Nothing
+untracked is ever included — a git-ignored `.env` is never checked out into the worktree an
+engine sees.
 
 **To turn it off for a repo**, put this literal marker on its own line in
 `.cohort/project_context.md`:

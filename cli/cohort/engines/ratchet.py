@@ -33,12 +33,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cohort import gitutil
-from cohort.engines import gates, patch
-from cohort.engines import cli_doer, patch_proposal, xai_agentic
+from cohort.engines import UnknownEngineError, describe_registered_engines, gates, get_engine, patch
+from cohort.engines import cli_doer, codex_cli, patch_proposal, xai_agentic
 
 # A change is "kept" only if the metric strictly moved the right way; ties revert, so the
 # lineage only advances on a real gain (Karpathy's ratchet).
-_CODEX_ENGINES = frozenset({"gpt", "chatgpt", "codex", "openai"})
 _DEFAULT_EVAL_TIMEOUT = 300.0  # seconds per evaluator run
 # Windows cannot start a python (or most anything) without these; they are paths and
 # switches, never secrets. POSIX needs nothing beyond what ``_scrubbed_env`` already keeps.
@@ -246,15 +245,21 @@ def _propose_into_worktree(
     :func:`cli_doer.run_codex_doer` does — the total exposed bytes are capped and those
     files are secret-scanned before every dispatch (#237). Every iteration, not just the
     first: a kept proposal changes what the next dispatch exposes."""
-    name = engine.strip().lower()
-    if name in _CODEX_ENGINES:
+    try:
+        spec = get_engine(engine)
+    except UnknownEngineError:
+        raise RatchetError(
+            f"engine {engine!r} has no ratchet doer; registered engines: "
+            f"{describe_registered_engines()}"
+        ) from None
+    if spec.transport == codex_cli.TRANSPORT:
         cli_doer._assert_worktree_within_wire_budget(
             worktree, task, max_wire_bytes=max_wire_bytes
         )
         cli_doer._assert_worktree_files_have_no_secrets(worktree, repo_root)
         cli_doer.run_codex_in_worktree(worktree, task, model=model, timeout=timeout)
         return
-    if name == "grok":
+    if spec.transport == "xai_chat_completions":
         instruction = patch_proposal._assemble_agentic_task(
             task, footprint or ["."], project_context_text
         )
@@ -273,7 +278,7 @@ def _propose_into_worktree(
         patch.apply_patch(proposal, worktree)
         return
     raise RatchetError(
-        f"engine {engine!r} has no ratchet doer (use 'gpt' or 'grok')"
+        f"engine {spec.name!r} (transport {spec.transport!r}) has no ratchet doer"
     )
 
 
