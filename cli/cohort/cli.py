@@ -121,6 +121,7 @@ from .status import do_status
 from .trial import TryError, do_try
 from .engines import ENGINES, UnknownEngineError, get_engine
 from .engines import xai as engine_xai
+from . import quarantine as _quarantine_help
 
 app = typer.Typer(
     add_completion=False,
@@ -2166,8 +2167,9 @@ def my_office_sync(
             )
         if r.get("quarantine_state_unreadable"):
             typer.echo(
-                "  ⚠ quarantine state is unreadable — every pulled hook/memory is "
-                "withheld. Run `cohort my-office review` to repair and see what is held."
+                f"  ⚠ quarantine state is unreadable — every pulled "
+                f"{_quarantine_help.gated_kinds_phrase()} is withheld. Run `cohort "
+                "my-office review` to repair and see what is held."
             )
         held = r.get("quarantined") or []
         if held:
@@ -2186,10 +2188,12 @@ def my_office_sync(
 def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
     """List pulled-but-unreviewed artifacts held back by the quarantine (#107).
 
-    ``my-office sync`` withholds hooks and memories a pull introduced — a hook runs
-    on IDE events and a memory loads into every session, so on a shared remote they
-    are code/prompt-injection sinks. They stay withheld from *every* recompile until
-    you review the file in ~/.cohort/my/canonical and run ``my-office approve``.
+    ``my-office sync`` withholds {kinds} a pull introduced — each is an
+    auto-activating sink (a hook runs on IDE events, a memory loads into every
+    session, a skill's/agent's description auto-loads too and is model-invocable
+    or -spawnable), so on a shared remote they are all prompt-injection risks.
+    They stay withheld from *every* recompile until you review the file in
+    ~/.cohort/my/canonical and run ``my-office approve``.
     """
     from . import quarantine
     from .install_model import CohortPaths
@@ -2200,7 +2204,8 @@ def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
     except quarantine.QuarantineStateError as exc:
         typer.echo(
             f"error: {exc}\nThe quarantine state is unreadable, so every pulled "
-            "hook/memory stays withheld. Delete the file to reset, then re-sync.",
+            f"{quarantine.gated_kinds_phrase()} stays withheld. Delete the file to "
+            "reset, then re-sync.",
             err=True,
         )
         raise typer.Exit(code=1)
@@ -2224,6 +2229,14 @@ def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
 
     _emit(report, json_output, human)
     raise typer.Exit(code=0)
+
+
+# #300 item 2: the docstring above names every GATED_KINDS entry — single-sourced
+# here rather than hand-listed, so a future gated kind is reflected in `--help`
+# without a separate text edit.
+my_office_review.__doc__ = my_office_review.__doc__.format(
+    kinds=_quarantine_help.gated_kinds_phrase(plural=True)
+)
 
 
 @my_office_app.command("approve")
@@ -2561,6 +2574,18 @@ def projects(json_output: bool = typer.Option(False, "--json")) -> None:
     raise typer.Exit(code=0)
 
 
+def _resolve_layer_alias(primary: str, alias: Optional[str]) -> str:
+    """Reconcile a canonical ``--to``/``--layer`` option with its hidden alias
+    (#300 item 3: the two flags name the same "my|office[|project]" domain
+    across commands — kept as aliases rather than renamed, since the flag names
+    are public API). The alias wins only when the caller actually passed it;
+    otherwise the canonical option's own value (default or explicit) is used
+    unchanged, so downstream domain validation still reports the same message
+    shape regardless of which spelling was used.
+    """
+    return alias if alias is not None else primary
+
+
 def _echo_layer_note(report: dict) -> None:
     """Say where an authored artifact landed and how to choose the other layer."""
     if report.get("dry_run"):
@@ -2597,11 +2622,13 @@ def add_agent(
         "my", "--to",
         help="my (default: the personal layer, ~/.cohort/my) | office (the shared clone).",
     ),
+    layer: Optional[str] = typer.Option(None, "--layer", hidden=True, help="Alias for --to."),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a new agent into the global roster (my office by default), then recompile."""
+    to = _resolve_layer_alias(to, layer)
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -2834,6 +2861,7 @@ def add_memory(
         help="my (default: the personal layer, ~/.cohort/my) | office (the shared clone) | "
              "project (this repo — travels with it).",
     ),
+    layer: Optional[str] = typer.Option(None, "--layer", hidden=True, help="Alias for --to."),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
@@ -2843,6 +2871,7 @@ def add_memory(
     `--to project` writes it into this repo, where it loads in every session here
     and travels with the repo — commit it and everyone who clones gets it.
     """
+    to = _resolve_layer_alias(to, layer)
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -2936,11 +2965,13 @@ def add_skill(
     triggers: Optional[str] = typer.Option(None, "--triggers", help="Comma-separated trigger phrases."),
     body_file: Optional[str] = typer.Option(None, "--body-file"),
     to: str = typer.Option("my", "--to", help="my (default) | office (the shared clone)."),
+    layer: Optional[str] = typer.Option(None, "--layer", hidden=True, help="Alias for --to."),
     source: Optional[str] = typer.Option(None, "--source"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a skill into my office (default) or the shared office, then recompile."""
+    to = _resolve_layer_alias(to, layer)
     trig = [t.strip() for t in triggers.split(",") if t.strip()] if triggers else None
     body = _read_body_file(body_file)
     _run_authoring("skill", lambda: do_add_skill(
@@ -2956,11 +2987,13 @@ def add_command(
     invocation: Optional[str] = typer.Option(None, "--invocation", help="Slash name (default: the slug)."),
     body_file: Optional[str] = typer.Option(None, "--body-file"),
     to: str = typer.Option("my", "--to", help="my (default) | office (the shared clone)."),
+    layer: Optional[str] = typer.Option(None, "--layer", hidden=True, help="Alias for --to."),
     source: Optional[str] = typer.Option(None, "--source"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a slash command (always dry_run-safe) into my office or the shared office."""
+    to = _resolve_layer_alias(to, layer)
     body = _read_body_file(body_file)
     _run_authoring("command", lambda: do_add_command(
         resolve_source(source), Path.home(), name, description,
@@ -2978,11 +3011,13 @@ def add_hook(
     matcher: Optional[str] = typer.Option(None, "--matcher"),
     body_file: Optional[str] = typer.Option(None, "--body-file"),
     to: str = typer.Option("my", "--to", help="my (default) | office (the shared clone)."),
+    layer: Optional[str] = typer.Option(None, "--layer", hidden=True, help="Alias for --to."),
     source: Optional[str] = typer.Option(None, "--source"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a hook into my office or the shared office, then recompile."""
+    to = _resolve_layer_alias(to, layer)
     body = _read_body_file(body_file)
     _run_authoring("hook", lambda: do_add_hook(
         resolve_source(source), Path.home(), name, description, event, action,
@@ -2997,6 +3032,7 @@ def edit(
     body_file: Optional[str] = typer.Option(None, "--body-file", help="New body (markdown)."),
     description: Optional[str] = typer.Option(None, "--description", help="New description."),
     layer: str = typer.Option("my", "--layer", help="my (default) | office (edits the shared clone)."),
+    to: Optional[str] = typer.Option(None, "--to", hidden=True, help="Alias for --layer."),
     source: Optional[str] = typer.Option(None, "--source"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
@@ -3006,6 +3042,7 @@ def edit(
     Round-trips the existing frontmatter (keeps hand-added keys and a personalized
     copy's override markers). Editing `--layer office` rewrites the shared clone.
     """
+    layer = _resolve_layer_alias(layer, to)
     body = _read_body_file(body_file)
     try:
         report = do_edit(
@@ -3280,11 +3317,13 @@ def promote(
         help="my (default: direct copy into your personal layer) | office (a human-gated "
         "proposal for the shared roster — consumed by submit-proposals).",
     ),
+    layer: Optional[str] = typer.Option(None, "--layer", hidden=True, help="Alias for --to."),
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     dry_run: bool = typer.Option(False, "--dry-run"),
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Lift a project specialist to my office (direct) or propose it for the shared office."""
+    to = _resolve_layer_alias(to, layer)
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     source_path = None
     if to == "my":

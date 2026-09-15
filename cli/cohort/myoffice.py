@@ -213,7 +213,7 @@ def do_my_sync(
         )
     pushed = True
 
-    # Quarantine any gated (hook/memory) artifact this pull introduced BEFORE the
+    # Quarantine any gated (hook/memory/skill/agent) artifact this pull introduced BEFORE the
     # recompile, so the recompile withholds it instead of activating it (#107). No
     # pull attempted (no origin/main yet) → nothing to record.
     newly_quarantined: list[quarantine.QuarantinedArtifact] = []

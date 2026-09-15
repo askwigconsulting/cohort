@@ -86,6 +86,35 @@ def test_office_review_fails_closed_on_corrupt_state(home: Path):
     assert "unreadable" in result.output
 
 
+# --- #300 item 2: the gated-kinds phrase is single-sourced from GATED_KINDS --
+
+
+def test_gated_kinds_phrase_names_every_gated_kind_singular():
+    phrase = quarantine.gated_kinds_phrase()
+    for kind in quarantine.GATED_KINDS:
+        assert kind in phrase.split("/")
+
+
+def test_gated_kinds_phrase_pluralizes_every_gated_kind():
+    phrase = quarantine.gated_kinds_phrase(plural=True)
+    assert phrase.split("/") == ["hooks", "memories", "skills", "agents"]
+
+
+def test_my_office_review_help_names_every_gated_kind():
+    result = runner.invoke(app, ["my-office", "review", "--help"])
+    assert result.exit_code == 0, result.output
+    for kind in quarantine.GATED_KINDS:
+        assert kind in result.output
+
+
+def test_my_office_review_corrupt_state_message_names_every_gated_kind(home: Path):
+    (_state(home) / "quarantine.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["my-office", "review"])
+    assert result.exit_code == 1
+    for kind in quarantine.GATED_KINDS:
+        assert kind in result.output
+
+
 # --- cohort office approve --------------------------------------------------
 
 
