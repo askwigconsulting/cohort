@@ -11,10 +11,19 @@ and authoring/edit (add-agent/skill/command/hook, edit). Authoring defaults to
 explicit per-action choice, exactly as on the CLI. Submitting proposals as draft
 PRs deliberately stays in the CLI.
 
-Hardening (the server is loopback-only but shares the machine with browsers):
+Hardening. The server is loopback-only, but loopback is shared with two kinds
+of principal: browsers (any web page the user has open, cross-origin) and other
+same-machine processes that are *not* cross-origin — another uid on a shared
+host, or a sandboxed doer whose jail keeps the network (the grok jail runs
+``--unshare-all --share-net``, so a prompt-injected engine can reach
+``127.0.0.1:<port>``). Against both:
 - binds 127.0.0.1 only, never 0.0.0.0;
-- every ``/api`` call must carry the per-launch random token (embedded in the
-  served page), so a hostile web page cannot drive the API cross-origin;
+- every ``/api`` call must carry the per-launch random token in
+  ``X-Cohort-Token``, so a hostile web page cannot drive the API cross-origin;
+- the token is never in anything the server serves. It travels only in the
+  URL fragment of the address the CLI prints and opens (``/#<token>``): the
+  browser keeps a fragment client-side, so a bare ``GET /`` from any loopback
+  client yields a page with no credential in it and ``/api`` stays 401 (#293);
 - the Host header must be loopback, which defeats DNS-rebinding token theft;
 - no CORS headers are ever emitted.
 """
@@ -646,7 +655,7 @@ def load_page() -> str:
 
 def load_js() -> str:
     """The page script, served as a same-origin static file so the CSP can drop
-    ``script-src 'unsafe-inline'``. It carries no token (read from a meta tag)."""
+    ``script-src 'unsafe-inline'``. It carries no token (read from the URL fragment)."""
     return (resources.files("cohort") / "dashboard.js").read_text(encoding="utf-8")
 
 
@@ -666,10 +675,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         if content_type.startswith("text/html"):
             # No 'unsafe-inline' for scripts: the page JS is an external same-origin
-            # file (dashboard.js) and the per-launch token rides a <meta> tag, so an
-            # injected <script> in rendered briefing/job output cannot execute and
-            # read the in-DOM token. img-src is 'none' (no connector/job-derived
-            # image can beacon out). style-src stays inline for the single <style>.
+            # file (dashboard.js) and the per-launch token arrives in the URL
+            # fragment, never in the served page, so an injected <script> in
+            # rendered briefing/job output cannot execute and read it. img-src is
+            # 'none' (no connector/job-derived image can beacon out). style-src
+            # stays inline for the single <style>.
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
@@ -694,11 +704,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         if self.path == "/":
+            # The page is static and carries no token: the fragment of the URL
+            # the CLI printed never reaches the server, so there is nothing to
+            # check here beyond Host, and nothing for a bare GET to scrape (#293).
             if not _host_is_loopback(self.headers.get("Host", "")):
                 self._send_json(403, {"error": "forbidden host"})
                 return
-            page = load_page().replace("__COHORT_TOKEN__", self.server.token)
-            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            self._send(200, load_page().encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/dashboard.js":
             # Same-origin static script (no token inside it). Loopback Host is
             # still required; it needs no token because a <script src> cannot
@@ -799,11 +811,19 @@ class DashboardServer(ThreadingHTTPServer):
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.server_address[1]}/"
+        """The address to print and open. The token rides in the fragment: the
+        browser hands it to the page script but never sends it on the wire, so
+        the CLI's terminal line and the browser launch are the only two places
+        the credential is ever handed out."""
+        return f"http://127.0.0.1:{self.server_address[1]}/#{self.token}"
 
 
 def do_dashboard(home: Path, cwd: Path, port: int, open_browser: bool) -> DashboardServer:
-    """Start the dashboard server (caller owns serve_forever / shutdown)."""
+    """Start the dashboard server (caller owns serve_forever / shutdown).
+
+    ``webbrowser.open`` passes the URL as a single argv element (``xdg-open``,
+    ``open``, ``ShellExecute``) — never through a shell — so the ``#`` fragment
+    survives the launch on every platform."""
     server = DashboardServer(home, cwd, port)
     if open_browser:
         import webbrowser

@@ -3036,6 +3036,8 @@ def dashboard(
     except OSError as exc:
         typer.echo(f"error: could not bind 127.0.0.1:{port} ({exc.strerror}); try --port", err=True)
         raise typer.Exit(code=1)
+    # The URL's fragment is the per-launch token; this line and the browser launch
+    # are the only places it is handed out (a bare GET / serves none, #293).
     typer.echo(f"cohort dashboard: {server.url} (Ctrl-C to stop)")
     try:
         server.serve_forever()

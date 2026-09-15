@@ -278,13 +278,96 @@ def test_collect_state_scorecards_aggregate_feedback_across_projects(home, tmp_p
 # === server: guard rails =====================================================
 
 
-def test_page_serves_with_token_injected(server):
+def test_page_serves_without_the_token(server):
+    """Any loopback client can GET / (another uid, a `--share-net` doer jail), so
+    the served page must not carry the per-launch token (#293). It travels in
+    the URL fragment instead, which the browser never sends to the server."""
     srv, _ = server
     code, data = request(srv, "GET", "/")
     assert code == 200
     page = data.decode("utf-8")
-    assert "__COHORT_TOKEN__" not in page  # placeholder substituted
-    assert srv.token in page
+    assert srv.token not in page
+    assert "cohort-token" not in page  # no meta-tag carrier left to scrape
+    assert "__COHORT_TOKEN__" not in page
+
+
+def test_served_script_carries_no_token_and_reads_the_fragment(server):
+    srv, _ = server
+    code, data = request(srv, "GET", "/dashboard.js")
+    assert code == 200
+    script = data.decode("utf-8")
+    assert srv.token not in script
+    assert "location.hash" in script
+    assert "history.replaceState" in script  # the fragment is cleared once read
+    assert 'meta[name="cohort-token"]' not in script
+
+
+def test_url_carries_the_token_in_the_fragment(server):
+    srv, _ = server
+    assert srv.url == f"http://127.0.0.1:{srv.server_address[1]}/#{srv.token}"
+
+
+def test_bare_page_fetch_does_not_unlock_the_api(server):
+    """The r5 probe: scrape /, then drive /api with whatever was found."""
+    srv, _ = server
+    code, data = request(srv, "GET", "/")
+    assert code == 200
+    assert srv.token not in data.decode("utf-8")
+    assert request(srv, "GET", "/api/state")[0] == 401
+    code, _ = request(srv, "POST", "/api/action",
+                      body={"action": "add-hook",
+                            "args": {"name": "x", "event": "session_start", "action_cmd": "id"}})
+    assert code == 401
+
+
+def test_do_dashboard_opens_the_browser_on_the_fragment_url(home, tmp_path, source, monkeypatch):
+    import webbrowser
+
+    from cohort.dashboard import do_dashboard
+
+    repo = inited_repo(tmp_path, source, home)
+    opened: list[str] = []
+    done = threading.Event()
+
+    def fake_open(url: str) -> bool:
+        opened.append(url)
+        done.set()
+        return True
+
+    monkeypatch.setattr(webbrowser, "open", fake_open)
+    srv = do_dashboard(home, repo, 0, open_browser=True)
+    try:
+        assert done.wait(timeout=10)
+    finally:
+        srv.server_close()
+    assert opened == [srv.url]
+    assert opened[0].endswith("/#" + srv.token)
+
+
+def test_cli_prints_the_fragment_url(home, tmp_path, source):
+    """The printed URL is the only place the token is handed out."""
+    import re
+
+    repo = inited_repo(tmp_path, source, home)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env.pop("COHORT_SOURCE", None)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "cohort", "dashboard", "--no-open", "--port", "0"],
+        cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    first_line: list[str] = []
+    reader = threading.Thread(target=lambda: first_line.append(proc.stdout.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout=60)
+    proc.terminate()
+    proc.wait(timeout=30)
+    assert first_line, "the CLI printed nothing before the timeout"
+    assert re.fullmatch(
+        r"cohort dashboard: http://127\.0\.0\.1:\d+/#[A-Za-z0-9_-]{32,} \(Ctrl-C to stop\)\n",
+        first_line[0],
+    ), first_line[0]
 
 
 def test_state_requires_token(server):
