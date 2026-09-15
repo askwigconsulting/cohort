@@ -411,7 +411,7 @@ def _remove_stale_placed(stale: list[Op], manifest: Manifest, paths: CohortPaths
     if not stale:
         return []
     result = ReverseResult()
-    _reverse_place_ops(stale, result, purge=True)
+    _reverse_place_ops(stale, result, paths, purge=True)
     acted = {id(o.op) for o in result.outcomes}  # removed/restored ops only
     manifest.ops = [o for o in manifest.ops if id(o) not in acted]
     return result.outcomes

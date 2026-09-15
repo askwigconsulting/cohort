@@ -96,13 +96,30 @@ def _config_text(home: Path) -> Optional[str]:
     return cfg.read_text(encoding="utf-8")
 
 
+def _strip_toml_key_quotes(raw_key: str) -> str:
+    """Strip one layer of matching quotes from a raw TOML key token.
+
+    Valid TOML allows a quoted key (``"require_signed" = true`` or
+    ``'require_signed' = true``) as an exact synonym for the bare form. The
+    scanner in :func:`_update_table_value` must recognise both, or a config
+    that merely writes the quoted (but equally valid) spelling silently fails
+    to set a security flag like ``require_signed``."""
+    if len(raw_key) >= 2 and raw_key[0] == raw_key[-1] and raw_key[0] in "\"'":
+        return raw_key[1:-1]
+    return raw_key
+
+
 def _update_table_value(text: str, key: str) -> Optional[str]:
     """The raw right-hand side of ``key`` inside the ``[update]`` table, or None.
 
     A minimal, stdlib-only line scan scoped to that one table — deliberately not
     ``tomllib``, which is absent on Python 3.10 (the project floor) and would make
     a security flag silently unreadable there. Enough for the simple ``key =
-    value`` lines Cohort itself writes."""
+    value`` lines Cohort itself writes, including a quoted key
+    (``"require_signed" = true``), which is valid TOML and must not be read as
+    absent. A line inside ``[update]`` the scanner cannot parse (no ``=``) is
+    warned about on stderr rather than silently skipped, so a typo in a
+    security-relevant table doesn't fail open without a trace."""
     in_update = False
     for line in text.splitlines():
         s = line.strip()
@@ -111,10 +128,18 @@ def _update_table_value(text: str, key: str) -> Optional[str]:
         if s.startswith("[") and s.endswith("]"):
             in_update = s == "[update]"
             continue
-        if in_update and "=" in s:
-            k, _, v = s.partition("=")
-            if k.strip() == key:
-                return v.strip()
+        if not in_update:
+            continue
+        if "=" not in s:
+            warnings.warn(
+                f"cohort.toml: unparseable line in [update]: {s!r}",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        k, _, v = s.partition("=")
+        if _strip_toml_key_quotes(k.strip()) == key:
+            return v.strip()
     return None
 
 
