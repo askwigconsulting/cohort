@@ -719,7 +719,17 @@ def staleness_check(cwd: Path) -> Optional[str]:
 
 def _read_auto_capture(paths: CohortPaths) -> bool:
     # Default-on (opt-out): exit context is captured unless the repo sets false.
-    return bool(read_project_config(paths).get("auto_capture", True))
+    # `bool(value)` treated a *quoted* "false" as truthy (any non-empty string is
+    # truthy in Python), so a repo that wrote `auto_capture = "false"` kept
+    # capturing despite opting out. Mirror `read_dashboard_private`: only a real
+    # TOML boolean is honored. Absent still means the documented default (on);
+    # present-but-malformed fails closed to off rather than silently keeping the
+    # unrecognized value's truthiness.
+    config = read_project_config(paths)
+    if "auto_capture" not in config:
+        return True
+    value = config["auto_capture"]
+    return value if isinstance(value, bool) else False
 
 
 def render_auto_capture_entry(repo: Path) -> str:

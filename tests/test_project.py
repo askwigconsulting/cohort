@@ -379,6 +379,34 @@ def test_session_capture_respects_opt_out(repo, home):
     assert not list(sessions.glob("*-auto.md")) if sessions.exists() else True
 
 
+def test_read_auto_capture_treats_quoted_false_as_off(repo, home):
+    # `auto_capture = "false"` (a quoted string, not a bare TOML boolean) must not
+    # be treated as truthy just because the string is non-empty.
+    init(repo, home)
+    paths = CohortPaths.for_project(repo)
+    toml = paths.cohort_home / "cohort.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            "auto_capture = true", 'auto_capture = "false"'
+        ),
+        encoding="utf-8",
+    )
+    assert project._read_auto_capture(paths) is False
+    assert project.session_capture(repo) is None
+
+
+def test_read_auto_capture_defaults_on_when_unset(repo, home):
+    init(repo, home)
+    paths = CohortPaths.for_project(repo)
+    toml = paths.cohort_home / "cohort.toml"
+    lines = [
+        ln for ln in toml.read_text(encoding="utf-8").splitlines()
+        if not ln.strip().startswith("auto_capture")
+    ]
+    toml.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert project._read_auto_capture(paths) is True
+
+
 # === session recall (the exit -> next-session bridge) ========================
 
 
