@@ -286,7 +286,7 @@ def test_cross_project_views_name_the_projects_they_skipped(home, tmp_path, sour
     repo_b = inited_repo(tmp_path, source, home, name="repo-b")
     run_cli("feedback", "--rating", "up", "--agent", "counsel", home=home, cwd=repo_b)
 
-    def unreadable(paths):
+    def unreadable(paths, **_kwargs):  # the loaders also take limit= (#295)
         if paths.cohort_home == repo_b / ".cohort":
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad feedback file")
         return []
