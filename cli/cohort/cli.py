@@ -37,41 +37,26 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import typer
 
+# Import policy (#295). Every `cohort` hook process pays this module's import cost
+# before it runs a line of code, and `~/.claude/settings.json` wires six of them —
+# five on SessionStart, `working-capture` on every Stop. So the modules only a
+# handful of commands ever touch (`compile`, `install`, `update`, `improve`,
+# `dashboard`, `adopt`, `trial`, and their proxies `office_setup`, `roster`,
+# `specialists`) are imported inside the command bodies that use them, not here.
+# What stays module-level: every name bound before a command runs — the ones the
+# suite patches on this module (`find_repo_root`, `engine_xai`), anything an
+# `except` clause could reach at module scope, and anything read at decoration
+# time (`distill.DEFAULT_DAYS` is a Typer option default, so it must exist when
+# the decorator runs). `tests/test_import_time.py` pins both halves.
 from . import __version__
 from . import report as report_mod
-from .compile import CompileError, CompileResult, compile_ide, planned_dests, write_staging
 from .executor import ClobberRefused
-from .install import (
-    CancelledSelection,
-    InstallReport,
-    UninstallReport,
-    UsageError,
-    _isatty as _install_isatty,
-    do_install,
-    do_uninstall,
-    resolve_selection,
-)
-from .improve import (
-    FeedbackError,
-    do_feedback,
-    do_propose_improvement,
-    do_submit_proposals,
-    validate_enrichment_body,
-)
 from .install_model import CohortPaths, resolve_mode
 from .lint import run_lint
-from .office_setup import (
-    SetupError,
-    do_setup,
-    effective_roster,
-    persist_roster,
-    prompt_setup_inputs,
-)
-from .update import UpdateResult, do_relink, do_rollback, do_update, do_update_check
 from .logconf import emit_log
 from .project import (
     do_context_refresh,
@@ -88,40 +73,18 @@ from .project import (
     staleness_check,
 )
 from .reports import do_report
-from .distill import DEFAULT_DAYS, do_distill
-from .adopt import AdoptError, do_adopt
-from .roster import (
-    AddAgentError,
-    AddMemoryError,
-    AuthoringError,
-    EditError,
-    PersonalizeError,
-    do_add_agent,
-    do_add_command,
-    do_add_hook,
-    do_add_memory,
-    do_add_skill,
-    do_edit,
-    do_personalize,
-    prompt_add_agent_inputs,
-)
+from .distill import DEFAULT_DAYS
 from .schema import TreeResult, validate_tree
 from .source import SourceUnresolved, resolve_source
-from .specialists import (
-    AddSpecialistError,
-    PromoteError,
-    RemoveSpecialistError,
-    do_add_specialist,
-    do_promote,
-    do_remove_specialist,
-    prompt_add_specialist_inputs,
-)
-from .dashboard import do_dashboard
 from .status import do_status
-from .trial import TryError, do_try
 from .engines import ENGINES, UnknownEngineError, describe_registered_engines, get_engine
 from .engines import xai as engine_xai
 from . import quarantine as _quarantine_help
+
+if TYPE_CHECKING:  # annotation-only; PEP 563 keeps these out of the runtime tree
+    from .compile import CompileResult
+    from .install import InstallReport, UninstallReport
+    from .update import UpdateResult
 
 # Rich's help/error panels draw box-drawing glyphs (a bordered Panel) even
 # under NO_COLOR: Typer's own color/markup honor it, but the Panel border
@@ -580,6 +543,8 @@ def install(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Install Cohort's global home and the selected IDE experiences."""
+    from .install import CancelledSelection, UsageError, do_install, resolve_selection
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         selection = resolve_selection(ide)
@@ -663,6 +628,8 @@ def _print_compile_human(results: list[CompileResult]) -> None:
 
 def _resolve_for_compile(ide: Optional[str], source: Optional[str]):
     """Shared selection + source resolution for compile/recompile."""
+    from .install import resolve_selection
+
     selection = resolve_selection(ide)
     source_path = resolve_source(source)
     return selection, source_path
@@ -678,6 +645,10 @@ def compile(  # noqa: A001 - matches the user-facing command name
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Render canonical artifacts into staging (no install)."""
+    from .compile import CompileError, compile_ide, write_staging
+    from .install import CancelledSelection, UsageError
+    from .office_setup import SetupError, effective_roster
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         selection, source_path = _resolve_for_compile(ide, source)
@@ -740,6 +711,10 @@ def recompile(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Compile canonical → staging, then install (idempotent when unchanged)."""
+    from .compile import CompileError, compile_ide, planned_dests, write_staging
+    from .install import CancelledSelection, UsageError, do_install
+    from .office_setup import SetupError, effective_roster, persist_roster
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         selection, source_path = _resolve_for_compile(ide, source)
@@ -839,6 +814,9 @@ def setup(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Guided first-run interview — company office, IDEs, roster — then compile + install."""
+    from .install import UsageError, _isatty as _install_isatty
+    from .office_setup import SetupError, do_setup, prompt_setup_inputs
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -889,6 +867,8 @@ def relink(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Re-point a moved/renamed install at the source and recompile installed IDEs."""
+    from .update import do_relink
+
     if _global_dry_run(ctx):
         _refuse_dry_run("relink", "it is a repair that re-points the install and recompiles")
     try:
@@ -1030,6 +1010,8 @@ def rollback(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Roll the Cohort clone back to an earlier version and recompile (reversible)."""
+    from .update import do_rollback
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -1059,6 +1041,8 @@ def update(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Update Cohort to the latest upstream and recompile installed IDEs (ff-only)."""
+    from .update import do_update
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -1093,12 +1077,12 @@ def uninstall(
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Reverse a Cohort install (whole, or a per-IDE slice with --ide)."""
+    from .install import UsageError, do_uninstall, parse_ide
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     selection = None
     if ide is not None:
         try:
-            from .install import parse_ide
-
             selection = parse_ide(ide)
         except UsageError as exc:
             typer.echo(f"error: {exc}", err=True)
@@ -3138,6 +3122,8 @@ def add_agent(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a new agent into the global roster (my office by default), then recompile."""
+    from .roster import AddAgentError, do_add_agent, prompt_add_agent_inputs
+
     to = _resolve_layer_alias(to, layer)
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
@@ -3197,6 +3183,8 @@ def adopt(
     safety invariant applies (a doer is imported read-only and flagged). Originals
     are backed up under ~/.cohort/state/adopt-backups/, never deleted.
     """
+    from .adopt import AdoptError, do_adopt
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     if to not in ("my", "project"):
         typer.echo("error: --to must be my|project", err=True)
@@ -3277,6 +3265,8 @@ def personalize(
     compile time; `cohort status` flags it if the office version later changes
     (stale) or disappears (dangling).
     """
+    from .roster import PersonalizeError, do_personalize
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         source_path = resolve_source(source)
@@ -3320,6 +3310,8 @@ def try_agent(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Preview a compiled agent (the exact system prompt Claude loads) before installing it."""
+    from .trial import TryError, do_try
+
     try:
         source_path = resolve_source(source)
     except SourceUnresolved as exc:
@@ -3390,6 +3382,8 @@ def add_memory(
     `--to project` writes it into this repo, where it loads in every session here
     and travels with the repo — commit it and everyone who clones gets it.
     """
+    from .roster import AddMemoryError, do_add_memory
+
     to = _resolve_layer_alias(to, layer)
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
@@ -3465,6 +3459,8 @@ def _read_body_file(body_file: Optional[str]) -> Optional[str]:
 
 
 def _run_authoring(kind: str, call, json_output: bool) -> None:
+    from .roster import AuthoringError
+
     try:
         report = call()
     except (AuthoringError, SourceUnresolved) as exc:
@@ -3491,6 +3487,8 @@ def add_skill(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a skill into my office (default) or the shared office, then recompile."""
+    from .roster import do_add_skill
+
     to = _resolve_layer_alias(to, layer)
     trig = [t.strip() for t in triggers.split(",") if t.strip()] if triggers else None
     body = _read_body_file(body_file)
@@ -3515,6 +3513,8 @@ def add_command(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a slash command (always dry_run-safe) into my office or the shared office."""
+    from .roster import do_add_command
+
     to = _resolve_layer_alias(to, layer)
     body = _read_body_file(body_file)
     effective_dry_run = dry_run or _global_dry_run(ctx)
@@ -3541,6 +3541,8 @@ def add_hook(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Author a hook into my office or the shared office, then recompile."""
+    from .roster import do_add_hook
+
     to = _resolve_layer_alias(to, layer)
     body = _read_body_file(body_file)
     effective_dry_run = dry_run or _global_dry_run(ctx)
@@ -3568,6 +3570,8 @@ def edit(
     Round-trips the existing frontmatter (keeps hand-added keys and a personalized
     copy's override markers). Editing `--layer office` rewrites the shared clone.
     """
+    from .roster import EditError, do_edit
+
     layer = _resolve_layer_alias(layer, to)
     body = _read_body_file(body_file)
     effective_dry_run = dry_run or _global_dry_run(ctx)
@@ -3595,6 +3599,8 @@ def dashboard(
     no_open: bool = typer.Option(False, "--no-open", help="Do not open the browser."),
 ) -> None:
     """Serve the local office dashboard (loopback-only; Ctrl-C to stop)."""
+    from .dashboard import do_dashboard
+
     try:
         server = do_dashboard(Path.home(), Path.cwd(), port, open_browser=not no_open)
     except OSError as exc:
@@ -3804,6 +3810,12 @@ def add_specialist(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Add a project-isolated specialist to the current repo (requires `cohort init`)."""
+    from .specialists import (
+        AddSpecialistError,
+        do_add_specialist,
+        prompt_add_specialist_inputs,
+    )
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     if name is None:
         inputs = prompt_add_specialist_inputs()
@@ -3855,6 +3867,8 @@ def remove_specialist(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Remove (prune) a project specialist: source, compiled output, and manifest records."""
+    from .specialists import RemoveSpecialistError, do_remove_specialist
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     try:
         report = do_remove_specialist(find_repo_root(Path.cwd()), Path.home(), name, effective_dry_run)
@@ -3886,6 +3900,8 @@ def promote(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Lift a project specialist to my office (direct) or propose it for the shared office."""
+    from .specialists import PromoteError, do_promote
+
     to = _resolve_layer_alias(to, layer)
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     source_path = None
@@ -3942,6 +3958,8 @@ def feedback(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Record one feedback entry (conflict-free file) for the Steward to learn from."""
+    from .improve import FeedbackError, do_feedback
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     if note and note_file:
         typer.echo("error: --note and --note-file are mutually exclusive", err=True)
@@ -3977,6 +3995,8 @@ def propose_improvement(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Synthesize a structured improvement proposal from feedback + sessions (deterministic core)."""
+    from .improve import FeedbackError, do_propose_improvement, validate_enrichment_body
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     enrich = None
     if body_file is not None:
@@ -4028,6 +4048,8 @@ def distill(
     untrusted input; the confirm diff is the security gate — review provenance before
     approving. Deterministic (no LLM, no network); never invoked from a hook.
     """
+    from .distill import do_distill
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
 
     def _confirm(diff: str) -> bool:
@@ -4083,6 +4105,8 @@ def submit_proposals(
     json_output: bool = typer.Option(False, "--json"),
 ) -> None:
     """Open a draft PR per proposal against the source repo (human reviews + merges)."""
+    from .improve import do_submit_proposals
+
     effective_dry_run = dry_run or ctx.obj.get("dry_run", False)
     if upstream and repo:
         typer.echo(
@@ -4301,6 +4325,8 @@ def autonomy_recall_cmd() -> None:
 def update_check_cmd(ctx: typer.Context) -> None:
     """Internal: the session_start update-advisory hook target. Always exits 0 (the hook
     never passes ``--dry-run``; under it, refuses with 2 rather than fetch and stamp)."""
+    from .update import do_update_check
+
     if _global_dry_run(ctx):
         _refuse_dry_run("update-check", "it fetches upstream and stamps the daily marker")
     try:
