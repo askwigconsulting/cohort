@@ -33,12 +33,12 @@ because the next audit will silently build on it. Re-confirm the whole block eac
 | **Entity form & filings** | **None.** Unregistered, operated personally, so there is no filing calendar to own (owner, 2026-08-01). The consequence to keep visible: liability for the tool's behaviour sits with the owner personally, not a company | owner |
 | **Insurance** | 🔲 — not stated; follows from the unregistered/personal posture rather than being an independent decision | owner |
 | **Licence (outbound)** | MIT | `LICENSE` |
-| **Licence (inbound)** | Implicit GitHub ToS — no DCO or CLA, and one external contributor's commit is in the tree | `CONTRIBUTING.md`, `git log` |
+| **Licence (inbound)** | Implicit GitHub ToS until `CONTRIBUTING.md` stated terms (2026-08-01). Before that commit the tree carries **1 non-owner commit author + 2 non-owner human `Co-authored-by` trailers (one malformed/unresolvable)** — r3's "two users" counted people, the old row counted commits (r4 correction). None after | `CONTRIBUTING.md`, `git log` (r4) |
 | **Dependencies** | `typer`, `click`, `PyYAML` (+ their trees) — all permissive, none copyleft | `pyproject.toml`, `requirements.lock` |
-| **Personal data — collected by us** | **None.** No telemetry, no analytics, no phone-home, no accounts, no server | `grep` over `cli/` returns zero hits |
+| **Personal data — collected by us** | **None automatically.** No telemetry, no analytics, no accounts, no server. Footnotes (r4): `cohort report` (0.17.0) is an explicit, user-confirmed **public GitHub issue** whose environment block is version/OS/Python only — an inbound channel by which the owner receives user content, with GitHub as processor; the `update-check` session hook runs one `git fetch` per day against the source remote (no content, but automatic outbound traffic — README's "no phone-home" needs the qualifier, #271) | `grep` over `cli/` (r4: only `xai.py:270`, `xai_agentic.py:444` open sockets); `report.py:58-70` |
 | **Personal data — on the user's machine** | Session records, snapshots, feedback, proposals, engine transcripts, working memory — all local, under `~/.cohort/` and `<repo>/.cohort/`. Never transmitted to us | `project.py`, `myoffice.py` |
-| **Third-party processors** | Anthropic, OpenAI, xAI — reached **with the user's own API keys**, under the user's own agreements with them. Cohort orchestrates the call; it is not a party to it | `engines/` |
-| **Egress default** | **Allow**, opt-out per repo via the literal `cohort:egress=deny` marker | `engines/gates.py`, README |
+| **Third-party processors** | Anthropic (as the harness Cohort runs inside — never called directly), OpenAI (`codex exec`), xAI (`api.x.ai`) — reached **with the user's own credentials**; **GitHub** (`gh`/`git` for `report`, `submit-proposals`, `my-office sync`, `update`). Cohort orchestrates the call; it is not a party to it. Complete reachable-host list re-derived r4 | `engines/`, `report.py`, `improve.py:637-639`, `myoffice.py:170,209`, `update.py:306,369` |
+| **Egress default** | **Allow**, opt-out per repo via the literal `cohort:egress=deny` marker — enforced in code for every `cohort engine …` path and `ratchet`; **prose-only for `/consult-gpt`** (#266) and **not consulted by `cohort report`** (#268); GitHub-bound commands are outside the marker's documented scope | `engines/gates.py`, README, r4 |
 | **Regulatory posture** | The claim: Cohort is a **locally-run developer tool**, not a service, not a processor, and holds no user data off-machine. What keeps it true: no telemetry, no server, no account system — verifiable by the greps above, and worth re-verifying each run rather than assuming | derived |
 
 ### Adoption evidence — and what it does to the go-to-market premise
@@ -163,24 +163,25 @@ baked into its history.
 
 | Dimension | Last run | Tiers seen | FP rate | Notes |
 |---|---|---|---|---|
-| critical-path | 2026-07-31 (r3) | opus (r1), fable (r2), fable (r3) | 0/5 (r1), 0/2 (r2) | swept every run; r3 caught two scanner regressions by *executing* both versions |
-| security | 2026-07-31 (r2) | opus (r1), fable (r2) | 0/6 (r1) | |
-| correctness | 2026-07-29 (r1) | opus (r1) | 1/8 struck (#7 office-quarantine "inert" — wrong, it's wired) | stale — due next rotation |
+| critical-path | 2026-09-10 (r4) | opus (r1), fable (r2), fable (r3), fable + gpt-5.6 codex (r4) | 0/5 (r1), 0/2 (r2), 0/8 (r4 Fable), 2/6 struck (r4 Codex) | swept every run; r4 found two scanner shapes by executing the scanner; Codex's two strikes were by-design/moot items |
+| security | 2026-07-31 (r2) | opus (r1), fable (r2) | 0/6 (r1) | not in the r4 slice (critical-path overlapped); due r5 |
+| correctness | 2026-09-10 (r4, **partial**) | opus (r1), opus (r4, stalled) + coordinator probes | 1/8 struck (r1) | r4: the Opus reviewer hung on a permission prompt and returned nothing; coordinator executed scanner/timeout/gc-age probes and verified the reviewer's one lead (session-capture `diff --stat` blind spot, #280). **Weight into r5** |
 | concurrency | 2026-07-31 (r2) | opus (r1), opus (r2) | 0/7 (r1) | r2 downgraded the filelock finding on likelihood (#230) |
-| honesty | 2026-07-29 (r1) | opus (r1) | 0/2 | stale — due next rotation |
-| tests | 2026-07-29 (r1) | opus (r1) | 0/4 | stale — due next rotation |
-| supply-chain | 2026-07-29 (r1) | opus (r1) | 0/5 | stale — due next rotation |
+| honesty | 2026-09-10 (r4) | opus (r1), fable (r4) | 0/2 (r1), 0/12 (r4; 2 HIGH) | r4's richest dimension: `/consult-gpt` prose-only, global `--dry-run` placebo, four wrong README egress rows |
+| tests | 2026-09-10 (r4) | opus (r1), sonnet (r4) | 0/4 (r1), 1/3 downgraded (r4: Copilot killing test HIGH→LOW, E060 pre-empts) | r4 ran a real copy-and-mutate probe; found the real-venv test never runs in CI |
+| supply-chain | 2026-09-10 (r4) | opus (r1), haiku (r4) | 0/5 (r1), 0/4 (r4, all LOW) | r1 fixes hold; lockfile is decorative; Haiku was adequate for this mechanical sweep |
 | performance | 2026-07-31 (r2) | opus (r2), grok-4.3 (r3) | r3 review **struck** | r2 covered it (found #226); the r3 *re-review* was struck as unreliable, so r2 remains the real coverage |
 | resilience | 2026-07-31 (r3) | opus (r2), grok-4.5 (r3) | 0/6 (r3) | strongest external review of r3 |
 | naming | 2026-07-31 (r3) | gpt-codex (r3) | 0/2 | first coverage |
 | docs | 2026-07-31 (r2) | opus (r2), grok-4.20-0309-reasoning (r3, **no answer**) | — | r2 covered it; the r3 attempt hit max_iterations and returned nothing |
-| ops | 2026-07-31 (r3) | grok-4.5 (r3) | 1/7 downgraded (#5 quarantine "contradiction" is a false *comment*, not a runtime bug — grok correctly hedged) | first coverage |
+| ops | 2026-09-10 (r4) | grok-4.5 (r3), sonnet (r4) | 1/7 downgraded (r3), 0/4 (r4) | r4: ticket reconciliation (13/16 fixed in code), PVR disabled, v0.17.0 untagged |
 | accessibility | 2026-07-31 (r3) | opus (r2), gpt-codex (r3) | 0/6 (r3) | r2 found #232; r3 found the keyboard-operability gaps |
-| vendor-reachability | 2026-07-31 (r3) | opus (r3) | 0/6 | **always-on**; added after grok was found unreachable despite correct code |
-| go-to-market | 2026-07-31 (r3) | fable (r2), grok-4.5 (r3) | — | always-on; r3 was **single-vendor — protocol requires two, not met** |
-| business-ops | 2026-07-31 (r3) | fable (r3) | 0/8 | first coverage; found the business context itself was undeclared — now declared above, with the owner-only fields marked |
-| privacy | 2026-07-31 (r3 follow-up) | opus | 0/1 | first coverage; found engine transcripts were not gitignored by the scaffold |
-| dead-ends | 2026-07-31 (r3 follow-up) | opus | 0/2 | first coverage; found `office_reconcile` written but never wired |
+| vendor-reachability | 2026-09-10 (r4) | opus (r3), coordinator (r4) | 0/6 (r3) | **always-on**; r4: codex reachable (ChatGPT login), **grok unreachable — no `XAI_API_KEY` in the session environment** (environment, not code). Record reachability before routing |
+| artifact-contract | 2026-09-10 (r4) | opus (r4) | 2 refined of 6 (r4) | **new dimension** (the surface a company harness pulls weekly): Cursor/Codex drop the `tools` allow-list; install path skips E080; no schema version or stability doc (#272, #273) |
+| go-to-market | 2026-09-10 (r4) | fable (r2), grok-4.5 (r3), fable + gpt-5.6 codex (r4) | r4: 1 refined, 2 self-struck of 6 | always-on; **two vendors met in r4**; both converged on "stop leading with multi-IDE" and "stop expanding topology" |
+| business-ops | 2026-09-10 (r4) | fable (r3), fable (r4) | 0/8 (r3), 1 struck + 3 refined of 7 (r4) | r4 re-confirmed every context row; corrected the inbound-licence count; added the GitHub processor and the `report` footnote |
+| privacy | 2026-09-10 (r4) | opus (r3 follow-up), sonnet (r4) | 0/1 (r3), 1 refined of 3 (r4) | r4: engine worktrees carry sessions/feedback/proposals with git author name+email (#275) |
+| dead-ends | 2026-09-10 (r4) | opus (r3 follow-up), haiku (r4) | 0/2 (r3), 0/0 (r4) | r4: clean; `office_reconcile` now wired (`update.py:758`) |
 
 ### Tier signal so far
 
@@ -190,6 +191,8 @@ produced a false negative** on code changed hours earlier, and **grok-4.20-0309-
 could not finish** a normal review within the default iteration budget. Do not route a
 dimension to `cheap` when the target includes recently-changed code, and do not route to
 `reasoning` at all until the iteration budget is raised.
+
+**r4 signal:** Fable on honesty and critical-path produced the run's three HIGHs with zero strikes; Haiku was sufficient for supply-chain and dead-ends (mechanical, 0 false positives); Sonnet on ops/privacy/tests was accurate but over-rated severity (3 of 5 HIGHs refined down); Codex (gpt-5.6, `codex exec`) found two real MEDs (TOML quoted key, ancestor symlink) and two by-design items — usable as a second vendor on critical-path with coordinator verification. **Operational:** two agents (Opus correctness, Fable refuter) hung >1h on a `PreToolUse` prompt for `rm -rf` on their own scratch dir — forbid `rm -rf` in worker prompts and treat a silent worker after 30 min as stalled.
 
 Both r3 losses landed on dimensions **r2 had already covered with Opus**, so the practical
 damage was smaller than the r3 report first implied — that report was written before the r2
@@ -207,7 +210,41 @@ spots. Record the phase each run and read the *next* one from here.
 | r1 (2026-07-29) | balanced (retroactive — routing predates the rotation) |
 | r2 (2026-07-31) | complex-heavy (retroactive — Fable + Opus throughout) |
 | r3 (2026-07-31) | complex-heavy — 50% grok / 25% GPT / 25% Claude, all grok API-direct |
-| **next run** | **simple-heavy** — but keep `performance` and `docs` at a capable tier; both were lost this run to cheap/reasoning tiers (see above) |
+| r4 (2026-09-10) | simple-heavy — Haiku ×2, Sonnet ×3, Opus ×3, Fable ×4 (always-on + business + honesty), Codex ×2; grok unavailable |
+| **next run** | **balanced** — and weight `correctness` (partial in r4) and `security` (last r2) into the slice; keep `performance`/`docs` at a capable tier |
+
+## Run 4 — 2026-09-10 — six weeks after 0.17.0
+
+Full report: [`r4-2026-09-10.md`](r4-2026-09-10.md). Coordinator: Fable 5.1. 12 Claude
+reviewers + 2 Codex passes; round two = 2 Fable refuters (business track completed; the
+code-track refuter stalled and the coordinator finished its pass). Baseline 1,383 tests green.
+
+Headline: **three HIGHs, all honesty-shaped** — the secret scanner misses `{"password": …}` and
+`WARN: PASSWORD=…` on every egress path (#265); `/consult-gpt` is prose-only while README and
+AGENTS.md say the code checks the marker (#266); the global `--dry-run` is ignored by
+`approve`, every `engine …`, `report` and `try` (#267). Thirteen MED findings, one LOW batch.
+**13 of 16 open audit tickets were already fixed in code** and are ready to close (#236, #237,
+#259 stay open). `v0.17.0` was never tagged.
+
+Business track (two vendors on GTM for the first time): both converged that the orchestration
+and adapter layers are being commoditised and the governance layer is the durable asset;
+1.0.0 needs per-population promises; the untested assumption is that anyone consumes a
+non-Claude compile. Market scan filed as a ranked candidates list (#281); owner decisions and
+counsel questions routed in #282.
+
+### Struck / downgraded (carry forward — do not re-raise without new evidence)
+- Codex: empty `.cohort` passes provenance — by design (F5).
+- Codex: SCAFFOLD reverse without hash — moot under `deinit --purge`.
+- BO-M3 Anthropic hook canary — no trigger; events current; function hooks additive/default-off.
+- GTM: Cursor `/goal` collision (never compiled to Cursor); Copilot AGENTS.md support (2025).
+- Refined down: report/marker (category), AC tools-drop (README promises `readonly` only),
+  E080 duplicate (CI + quarantine mitigate), PII in worktrees (disclosed as "committed
+  contents"), Copilot killing test (E060 pre-empts), OpenAI "steers away" (docs: default is
+  saved login, keys *recommended* for CI).
+
+### Tickets
+New: #265–#282. Verified fixed, owner to close: #225 #226 #227 #228 #229 #230 #231 #232 #244
+#245 #246 #258 #260.
 
 ## Run 3 — 2026-07-31 — the path to 1.0.0
 

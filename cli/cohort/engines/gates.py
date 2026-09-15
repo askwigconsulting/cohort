@@ -218,8 +218,13 @@ _SECRET_KEYWORDS: tuple[str, ...] = (
 # as its value: no secret keyword in "Repro", no finding, and `finditer` had consumed the
 # real assignment so it was never scanned on its own. A prose label above a credential is
 # the most common shape in a bug report or a doc, so this hid exactly the case that matters.
+#
+# An optional quote may close the identifier: ``{"password": "..."}`` (JSON, the shape a
+# config dump or an API error body takes) and ``'api_key': ...`` (YAML/TOML) put the
+# credential's NAME in quotes, and requiring the separator to follow the identifier
+# directly exempted every one of them.
 _ASSIGNMENT_RE = re.compile(
-    r"\b([A-Za-z_][A-Za-z0-9_\-]*)[ \t]*([:=])[ \t]*['\"]?([^\s'\"]{6,})",
+    r"\b([A-Za-z_][A-Za-z0-9_\-]*)['\"]?[ \t]*([:=])[ \t]*['\"]?([^\s'\"]{6,})",
 )
 
 # Trailing syntax that rides along on the captured value because the value pattern
@@ -416,7 +421,15 @@ def scan_for_secret_findings(text: str) -> list[SecretFinding]:
         for match in pattern.finditer(text):
             findings.add(SecretFinding(label, secret_digest(match.group(0))))
 
-    for match in _ASSIGNMENT_RE.finditer(text):
+    # A hand-rolled loop rather than ``finditer``: the value token runs to the next
+    # whitespace, so a harmless label consumes any assignment glued to it — ``WARN:
+    # DB_PASSWORD=...``, ``x=1;PASSWORD=...``, ``Repro: `PASSWORD=...` `` — and
+    # ``finditer`` would resume past the credential without ever scanning it. Resuming
+    # at the START of the value rescans it as its own candidate. The value always begins
+    # after the identifier and separator, so the cursor strictly advances.
+    position = 0
+    while (match := _ASSIGNMENT_RE.search(text, position)) is not None:
+        position = match.start(3)
         identifier, separator, raw_value = match.group(1), match.group(2), match.group(3)
         keyword = _assignment_keyword(identifier)
         if keyword is None:
