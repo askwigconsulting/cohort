@@ -103,6 +103,31 @@ def test_require_signed_fails_closed_on_an_unreadable_config(tmp_path, monkeypat
     assert _require_signed(home) is True
 
 
+def test_require_signed_reads_a_double_quoted_key(tmp_path):
+    # #276: a quoted key ('"require_signed" = true') is valid TOML and equivalent
+    # to the bare form — the hand scanner must not treat it as absent (which
+    # would silently leave the security flag off).
+    home = tmp_path / "home"
+    _write_config(home, '[update]\n"require_signed" = true\n')
+    assert _require_signed(home) is True
+
+
+def test_require_signed_reads_a_single_quoted_key(tmp_path):
+    home = tmp_path / "home"
+    _write_config(home, "[update]\n'require_signed' = true\n")
+    assert _require_signed(home) is True
+
+
+def test_update_table_value_warns_on_an_unparseable_update_line(tmp_path):
+    # A line inside [update] with no '=' can't be scanned; warn on stderr
+    # instead of silently ignoring it, so a typo in a security-relevant table
+    # leaves a trace rather than failing open without a word.
+    home = tmp_path / "home"
+    _write_config(home, "[update]\nrequire_signed true\n")
+    with pytest.warns(UserWarning, match="unparseable line in \\[update\\]"):
+        assert _require_signed(home) is False
+
+
 # === the gate in do_update ===================================================
 
 

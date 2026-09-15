@@ -42,6 +42,22 @@ class ClobberRefused(Exception):
         super().__init__(f"refusing to overwrite pre-existing file(s): {names}")
 
 
+class DestinationEscapesRoot(Exception):
+    """Raised when a write/unlink destination's parent resolves outside the
+    declared install root — an ancestor symlink (#276), e.g. ``<repo>/.claude ->
+    ~/somewhere``, would otherwise let a compiled artifact or a merged
+    ``CLAUDE.md`` block land outside the tree Cohort is supposed to be confined
+    to."""
+
+    def __init__(self, dest: Path, root: Path) -> None:
+        self.dest = dest
+        self.root = root
+        super().__init__(
+            f"refusing to write/unlink {dest}: an ancestor symlink resolves "
+            f"outside the declared install root {root}"
+        )
+
+
 class InvalidJSONError(Exception):
     """Raised when a file Cohort must parse as JSON is not valid JSON (O4).
 
@@ -96,6 +112,28 @@ def _symlink_points_to(dest: Path, src: str) -> bool:
     if not dest.is_symlink():
         return False
     return Path(_strip_extended_prefix(os.readlink(dest))) == Path(_strip_extended_prefix(src))
+
+
+def _assert_dest_under_root(dest: Path, root: Path) -> None:
+    """Refuse ``dest`` if its resolved *parent* directory would land outside
+    ``root`` (#276) — e.g. an ancestor symlink like ``<repo>/.claude ->
+    ~/somewhere`` planted by a hostile checkout.
+
+    Only the parent is checked, never ``dest`` itself: the leaf may legitimately
+    be a symlink Cohort placed in link mode (``classify``/``_place``/
+    ``_reverse_place_ops`` already own that decision — see ``OpType.LINK``).
+    Both the parent and ``root`` are resolved (following any existing symlinks)
+    before comparing, so a ``root`` that is itself a symlink — e.g. ``~/.claude``
+    pointing at a dotfiles checkout — is honored rather than rejected; only a
+    symlink *inside* the tree that diverges from the resolved root is refused.
+    A parent that does not exist yet (e.g. a not-yet-created nested directory)
+    resolves fine — ``Path.resolve()`` normalizes any not-yet-existing tail
+    without touching the filesystem for it.
+    """
+    resolved_root = root.resolve()
+    resolved_parent = dest.parent.resolve()
+    if not resolved_parent.is_relative_to(resolved_root):
+        raise DestinationEscapesRoot(dest, root)
 
 
 def _load_json(path: Path) -> dict:
@@ -302,6 +340,7 @@ def _apply_merge(
     """
     plan = _plan_merge(op, prior, force)
     dest = Path(op.dest)
+    _assert_dest_under_root(dest, paths.home)
     # `created` is sticky: if Cohort created the file at first install, that holds
     # across recompiles even though the file now exists.
     created = prior.created if prior is not None else plan["created"]
@@ -330,6 +369,7 @@ def _apply_merge(
 
 
 def _inject_backup(op: Op, paths: CohortPaths, manifest: Manifest, dest: Path) -> Op:
+    _assert_dest_under_root(dest, paths.home)
     backup_dest = _backup_path(paths, manifest.install_id, dest)
     backup_dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(dest), str(backup_dest))
@@ -389,6 +429,7 @@ def _copy_atomic(src: Path, dest: Path) -> None:
 
 def _place(op: Op, paths: CohortPaths, manifest: Manifest, recorded: dict[str, str]) -> OpOutcome:
     dest = Path(op.dest)
+    _assert_dest_under_root(dest, paths.home)
     if op.op == OpType.MKDIR.value:
         dest.mkdir()
         recorded_op = Op(op=op.op, ide=op.ide, dest=op.dest, created=True)
@@ -440,11 +481,18 @@ class ReverseResult:
         return sum(1 for o in self.outcomes if o.status == "dir_removed")
 
 
-def _reverse_place_ops(ops: list[Op], result: ReverseResult, purge: bool = False) -> None:
+def _reverse_place_ops(
+    ops: list[Op], result: ReverseResult, paths: CohortPaths, purge: bool = False
+) -> None:
     """Reverse non-mkdir ops LIFO, verifying Cohort ownership before removing.
 
     ``preserve: true`` ops (team-owned scaffolded content) are skipped unless
     ``purge`` — non-purge deinit never removes ``project_context.md`` etc.
+
+    Every ``dest`` is checked against the declared install root (``paths.home``)
+    before any unlink/write below (#276) — an ancestor symlink refuses the op
+    on reverse exactly as it does on apply, rather than only guarding the
+    forward direction.
     """
     for op in reversed(ops):
         if op.op == OpType.MKDIR.value:
@@ -453,6 +501,7 @@ def _reverse_place_ops(ops: list[Op], result: ReverseResult, purge: bool = False
             result.skipped += 1
             continue
         dest = Path(op.dest)
+        _assert_dest_under_root(dest, paths.home)
         if op.op == OpType.SCAFFOLD.value:
             if dest.exists() and not dest.is_dir():
                 dest.unlink()
@@ -552,14 +601,22 @@ def _restore_backup(op: Op, dest: Path, result: ReverseResult) -> None:
         result.skipped += 1
 
 
-def _reverse_created_dirs(ops: list[Op], result: ReverseResult, purge: bool = False) -> None:
-    """rmdir created dirs LIFO, only if empty (never remove a pre-existing dir)."""
+def _reverse_created_dirs(
+    ops: list[Op], result: ReverseResult, paths: CohortPaths, purge: bool = False
+) -> None:
+    """rmdir created dirs LIFO, only if empty (never remove a pre-existing dir).
+
+    Guarded against an ancestor symlink (#276) the same way as
+    ``_reverse_place_ops``: a directory's resolved parent must stay under the
+    declared install root before it is rmdir'd.
+    """
     for op in reversed(ops):
         if op.op != OpType.MKDIR.value or not op.created:
             continue
         if op.preserve and not purge:
             continue  # team-owned dir (e.g. sessions/) — keep on non-purge deinit
         d = Path(op.dest)
+        _assert_dest_under_root(d, paths.home)
         if d.is_dir() and not d.is_symlink() and not any(d.iterdir()):
             d.rmdir()
             result.outcomes.append(OpOutcome(op=op, status="dir_removed"))
@@ -576,7 +633,7 @@ def reverse_full(manifest: Manifest, paths: CohortPaths, purge: bool = False) ->
     keeps team-owned content, so the home is not swept while content remains.
     """
     result = ReverseResult()
-    _reverse_place_ops(manifest.ops, result, purge)
+    _reverse_place_ops(manifest.ops, result, paths, purge)
 
     backups_dir = paths.backups / manifest.install_id
     if backups_dir.exists():
@@ -596,7 +653,7 @@ def reverse_full(manifest: Manifest, paths: CohortPaths, purge: bool = False) ->
     if paths.compiled.exists():
         shutil.rmtree(paths.compiled)
 
-    _reverse_created_dirs(manifest.ops, result, purge)
+    _reverse_created_dirs(manifest.ops, result, paths, purge)
     # Safety sweep: compile pre-creates ~/.cohort (via the staging dir) before
     # install records its mkdir, so the home may not be a recorded created dir.
     # It is unambiguously Cohort's namespace — rmdir it (and state/) if now empty.
@@ -622,8 +679,8 @@ def reverse_slice(manifest: Manifest, paths: CohortPaths, ide: str) -> ReverseRe
     if ide not in manifest.ides:
         return result  # unrecorded IDE → no-op
     ide_ops = [o for o in manifest.ops if o.ide == ide]
-    _reverse_place_ops(ide_ops, result)
-    _reverse_created_dirs(ide_ops, result)
+    _reverse_place_ops(ide_ops, result, paths)
+    _reverse_created_dirs(ide_ops, result, paths)
     manifest.ides.remove(ide)
     manifest.ops = [o for o in manifest.ops if o.ide != ide]
     manifest.persist(paths.manifest)

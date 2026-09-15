@@ -61,6 +61,14 @@ jobs:
           shellcheck installer/bootstrap.sh
       - name: Schema lint (zero-tolerance)
         run: cohort validate ./canonical
+      - name: Create a real .venv for the bootstrap round-trip test
+        # test_bootstrap_real_venv_round_trip (#277) skip-gates on REPO_ROOT/.venv
+        # existing; nothing here ever created one, so the real end-to-end
+        # bootstrap round-trip never ran on any job. An empty venv is enough —
+        # bootstrap.sh installs `cohort` into it itself, on demand — so this
+        # doesn't duplicate the dev-extras install a few steps up.
+        if: runner.os == 'Linux'
+        run: python -m venv .venv
       - name: Windows entry-point smoke (copy-mode default, changes nothing)
         if: runner.os == 'Windows'
         run: cohort recompile --ide claude --source . --dry-run

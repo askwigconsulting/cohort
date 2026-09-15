@@ -15,6 +15,7 @@ import pytest
 
 from cohort.executor import (
     ClobberRefused,
+    DestinationEscapesRoot,
     InvalidJSONError,
     apply,
     path_hash,
@@ -167,6 +168,70 @@ def test_apply_refuses_dest_that_turned_foreign_after_preflight(home, src):
     with pytest.raises(ClobberRefused):
         apply([op], paths, make_manifest(), force=False)
     assert dest.read_text(encoding="utf-8") == "APPEARED\n"
+
+
+# --- behavioral: ancestor-symlink escape (#276) ----------------------------
+
+
+@requires_symlinks
+def test_apply_refuses_write_through_an_ancestor_symlink(home, src, tmp_path):
+    # A hostile checkout planting `<root>/.claude -> outside` must be refused
+    # before any write, not merely detected as a leaf clobber: the leaf
+    # (dest.parent's parent, ".claude") doesn't itself change, only where it
+    # points, so ordinary CLOBBER classification never sees it.
+    paths = paths_for(home)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / ".claude").symlink_to(outside)
+    dest = home / ".claude" / "agents" / "evil.md"
+    op = Op(OpType.SCAFFOLD.value, "claude", str(dest), src=str(src / "file.txt"))
+    m = make_manifest()
+    with pytest.raises(DestinationEscapesRoot):
+        apply([op], paths, m, force=False)
+    assert not (outside / "agents").exists()  # refused before any write
+    assert m.ops == []  # nothing recorded
+
+
+@requires_symlinks
+def test_reverse_refuses_unlink_through_an_ancestor_symlink(home, src, tmp_path):
+    # The same escape, discovered only at reverse time (e.g. the ancestor was
+    # re-pointed after install): reverse must refuse the unlink, not follow the
+    # symlink and delete whatever now lives outside the root.
+    paths = paths_for(home)
+    outside = tmp_path / "outside"
+    (outside / "agents").mkdir(parents=True)
+    target = src / "file.txt"
+    link_path = outside / "agents" / "link"
+    link_path.symlink_to(target)
+    (home / ".claude").symlink_to(outside)
+    dest = home / ".claude" / "agents" / "link"
+    op = Op(OpType.LINK.value, "claude", str(dest), src=str(target))
+    m = make_manifest()
+    m.ops.append(op)
+    m.ides.append("claude")
+    with pytest.raises(DestinationEscapesRoot):
+        reverse_full(m, paths)
+    assert link_path.is_symlink()  # never removed
+
+
+@requires_symlinks
+def test_root_itself_a_symlink_is_honored_not_rejected(tmp_path, src):
+    # A declared root that is itself a symlink (e.g. `~/.claude` pointing at a
+    # dotfiles checkout) is a legitimate, supported layout (gate 3) — the guard
+    # resolves the root before comparing, so writes through it are not rejected.
+    real_home = tmp_path / "real_home"
+    real_home.mkdir()
+    home_link = tmp_path / "home_link"
+    home_link.symlink_to(real_home)
+    paths = CohortPaths(home=home_link)
+    plan = [
+        Op(OpType.MKDIR.value, GLOBAL_IDE, str(home_link / "a")),
+        Op(OpType.LINK.value, GLOBAL_IDE, str(home_link / "a" / "link"), src=str(src / "file.txt")),
+    ]
+    m = make_manifest()
+    outcomes = apply(plan, paths, m, force=False)
+    assert [o.status for o in outcomes] == ["applied", "applied"]
+    assert (real_home / "a" / "link").is_symlink()
 
 
 # --- behavioral: copy idempotency ------------------------------------------

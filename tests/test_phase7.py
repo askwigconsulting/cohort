@@ -144,6 +144,31 @@ def test_cursor_project_doer_renders_readonly_false():
     assert "readonly: false" in text
 
 
+def test_copilot_forces_readonly_for_a_non_project_agent_even_if_non_advisory():
+    # #277: Copilot had no mirror of the Claude/Codex/Cursor backstop — mutating
+    # `copilot_tools` from `is_doer(ir)` to `advisory is False` left every
+    # existing Copilot test green. A mis-scoped global agent that somehow
+    # carries advisory:false must still render only the read-only tool
+    # aliases, never the write-capable ones (Copilot has no single readonly
+    # switch, so the strip is a filter over `tools:` — see `copilot_tools`).
+    from cohort.adapters.copilot import copilot_tools
+    from cohort.ir import build_ir
+
+    ir = build_ir(_doer_agent_fm(scope="global", advisory=False), "b")
+    tools = copilot_tools(ir)
+    assert "edit" not in tools and "execute" not in tools
+
+
+def test_copilot_project_doer_keeps_write_tools():
+    from cohort.adapters.copilot import copilot_tools
+    from cohort.ir import build_ir
+
+    # A real scope:project doer keeps its requested write-capable aliases.
+    ir = build_ir(_doer_agent_fm(scope="project", advisory=False), "b")
+    tools = copilot_tools(ir)
+    assert "edit" in tools and "execute" in tools
+
+
 # === model tier (#143): Codex/Cursor omit it gracefully, no compile break ===
 
 
