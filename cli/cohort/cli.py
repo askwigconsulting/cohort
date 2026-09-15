@@ -122,10 +122,24 @@ from .trial import TryError, do_try
 from .engines import ENGINES, UnknownEngineError, get_engine
 from .engines import xai as engine_xai
 
+# Rich's help/error panels draw box-drawing glyphs (a bordered Panel) even
+# under NO_COLOR: Typer's own color/markup honor it, but the Panel border
+# shape doesn't — rich_utils._print_options_panel/_print_commands_panel
+# build that Panel() with no `box=` kwarg, so there is no public knob to
+# swap it for rich.box.ASCII without reaching into Typer's internals. The
+# documented, non-monkeypatching way to silence the glyphs is to turn Rich
+# rendering off outright: rich_markup_mode=None makes Typer's format_help()
+# fall back to Click's plain formatter (no glyphs, no color), while a bare
+# "rich" (the default when Rich is installed) leaves normal output unchanged.
+_RICH_MARKUP_MODE = (
+    None if ("NO_COLOR" in os.environ or os.environ.get("TERM", "") == "dumb") else "rich"
+)
+
 app = typer.Typer(
     add_completion=False,
     help="Cohort — portable, multi-IDE agentic office harness.",
     no_args_is_help=True,
+    rich_markup_mode=_RICH_MARKUP_MODE,
 )
 
 

@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -696,3 +697,133 @@ def test_action_create_project_skill_places(server, home):
     assert status == 200, data
     assert (repo / ".cohort" / "canonical" / "skills" / "repo-lint.md").exists()
     assert (repo / ".claude" / "skills" / "repo-lint" / "SKILL.md").exists()
+
+
+# === accessibility (audit r5, #298) ==========================================
+
+
+def test_dialog_controls_have_label_for(server):
+    """Every Create/Edit dialog control has an accessible name via <label for=>
+    (audit r5 #298 item 1: six controls had no name by any mechanism)."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/")
+    page = data.decode("utf-8")
+    control_ids = [
+        "cr-kind", "cr-name", "cr-desc", "cr-display", "cr-dept", "cr-triggers",
+        "cr-invocation", "cr-event", "cr-action", "cr-matcher", "cr-priority",
+        "cr-body", "ed-desc", "ed-body",
+    ]
+    for control_id in control_ids:
+        assert f'for="{control_id}"' in page, f"no <label for={control_id!r}> in dashboard.html"
+    # Every <label> in the page is bound to a control (none is a bare sibling).
+    assert page.count("<label") == page.count("for=")
+
+
+def _srgb_to_linear(c: float) -> float:
+    c /= 255.0
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _relative_luminance(rgb: tuple[float, float, float]) -> float:
+    r, g, b = rgb
+    return 0.2126 * _srgb_to_linear(r) + 0.7152 * _srgb_to_linear(g) + 0.0722 * _srgb_to_linear(b)
+
+
+def _contrast_ratio(rgb1: tuple[float, float, float], rgb2: tuple[float, float, float]) -> float:
+    l1, l2 = _relative_luminance(rgb1), _relative_luminance(rgb2)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _hex_to_rgb(h: str) -> tuple[float, float, float]:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _composite(fg: tuple[float, float, float], alpha: float,
+               bg: tuple[float, float, float]) -> tuple[float, float, float]:
+    return tuple(fg[i] * alpha + bg[i] * (1 - alpha) for i in range(3))  # type: ignore[return-value]
+
+
+def test_faint_meets_aa_over_card_on_both_backgrounds():
+    """--faint must be >= 4.5:1 (WCAG AA) over .card on both --bg0 and --bg1 —
+    the surface .dept h4 / .proj-path / .pipeline .caption actually render on
+    (audit r5 #298 item 2: #717c94 was only 4.32:1 / 4.03:1 there)."""
+    html_path = COHORT_SRC / "cli" / "cohort" / "dashboard.html"
+    css = html_path.read_text(encoding="utf-8")
+    faint = _hex_to_rgb(re.search(r"--faint:#([0-9a-fA-F]{6});", css).group(1))
+    bg0 = _hex_to_rgb("070b14")
+    bg1 = _hex_to_rgb("0b1222")
+    card_on_bg0 = _composite((255, 255, 255), 0.045, bg0)
+    card_on_bg1 = _composite((255, 255, 255), 0.045, bg1)
+
+    ratio_bg0 = _contrast_ratio(faint, card_on_bg0)
+    ratio_bg1 = _contrast_ratio(faint, card_on_bg1)
+    print(f"--faint over .card on --bg0: {ratio_bg0:.2f}:1")
+    print(f"--faint over .card on --bg1: {ratio_bg1:.2f}:1")
+    assert ratio_bg0 >= 4.5
+    assert ratio_bg1 >= 4.5
+
+
+def test_thumb_buttons_have_aria_label(server):
+    """Per-card thumb buttons (👍/👎/✎/✕) are named by aria-label, not their
+    emoji textContent (audit r5 #298 item 3)."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/dashboard.js")
+    js = data.decode("utf-8")
+    match = re.search(r"function thumb\(label, title, onClick\) \{.*?\n\}", js, re.S)
+    assert match, "thumb() not found in dashboard.js"
+    body = match.group(0)
+    assert 'setAttribute("aria-label", title)' in body
+
+
+def test_dashboard_uses_office_vocabulary_not_company_you(server):
+    """Dashboard homes are labelled OFFICE / MY OFFICE / PROJECT, and identifiers
+    say `layer`, not `level` (#300 item 6)."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/dashboard.js")
+    js = data.decode("utf-8")
+    assert "COMPANY" not in js
+    assert '"YOU"' not in js
+    assert 'office: "OFFICE"' in js
+    assert 'my: "MY OFFICE"' in js
+    assert "project: \"PROJECT\"" in js
+    assert "function renderLayer(" in js
+    assert "function renderLevel(" not in js
+    assert "function openCreate(layer)" in js
+
+
+# === Rich box-drawing under NO_COLOR / TERM=dumb (audit r5, #298 item 4) ====
+
+
+def _box_drawing_glyph_count(text: str) -> int:
+    return sum(1 for ch in text if "─" <= ch <= "╿")
+
+
+def test_no_color_help_has_no_box_drawing_glyphs():
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    env.pop("COHORT_SOURCE", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "cohort.cli", "--help"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert result.returncode == 0
+    assert _box_drawing_glyph_count(result.stdout) == 0
+
+
+def test_default_help_is_unchanged_by_the_no_color_fix():
+    env = dict(os.environ)
+    env.pop("NO_COLOR", None)
+    env.pop("TERM", None)
+    env.pop("COHORT_SOURCE", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "cohort.cli", "--help"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert result.returncode == 0
+    # Rich renders Typer's help by default (unless Rich is missing): the
+    # box-drawing glyphs used to be there and still are — only the
+    # NO_COLOR/TERM=dumb path changed.
+    assert _box_drawing_glyph_count(result.stdout) > 0

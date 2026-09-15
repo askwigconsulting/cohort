@@ -150,6 +150,9 @@ function gitChip(it) {
 function thumb(label, title, onClick) {
   const b = document.createElement("button");
   b.className = "thumb"; b.textContent = label; b.title = title;
+  // Accessible name would otherwise come from the emoji textContent (👍/👎/✎/✕);
+  // aria-label makes the descriptive `title` the name a screen reader announces.
+  b.setAttribute("aria-label", title);
   b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
   return b;
 }
@@ -227,8 +230,8 @@ function ghostCard(label, onClick) {
   g.addEventListener("click", onClick);
   return g;
 }
-/* One level (company / you / project): all kinds, grouped by kind, each tagged. */
-function renderLevel(layer, holderId, opts) {
+/* One layer (office / my office / project): all kinds, grouped by kind, each tagged. */
+function renderLayer(layer, holderId, opts) {
   opts = opts || {};
   const holder = $(holderId); holder.textContent = "";
   const items = (STATE.inventory || []).filter((it) => it.layer === layer);
@@ -260,16 +263,16 @@ function renderLevel(layer, holderId, opts) {
   }
 }
 function renderLevels() {
-  renderLevel("office", "level-office", {
+  renderLayer("office", "level-office", {
     countId: "cnt-office",
     empty: "No company artifacts yet — run Recompile (or cohort setup) to install the office.",
   });
-  renderLevel("my", "level-my", {
+  renderLayer("my", "level-my", {
     countId: "cnt-my",
     empty: "Nothing that's just yours yet — create an agent, skill, command, or hook.",
     addCard: { label: "＋ Create", onClick: () => openCreate("my") },
   });
-  renderLevel("project", "level-project", {
+  renderLayer("project", "level-project", {
     countId: "cnt-project",
     empty: "Nothing here yet — create an agent, skill, command, or hook for this repo.",
     addCard: { label: "＋ Create", onClick: () => openCreate("project") },
@@ -280,7 +283,7 @@ async function openDetail(it) {
   $("dt-title").textContent = (it.display_name || it.name);
   const meta = $("dt-meta"); meta.textContent = "";
   meta.appendChild(kindTag(it.kind));
-  const LAYER_LABEL = { office: "COMPANY", my: "YOU", project: "PROJECT" };
+  const LAYER_LABEL = { office: "OFFICE", my: "MY OFFICE", project: "PROJECT" };
   for (const bit of [{ text: LAYER_LABEL[it.layer] || it.layer }].concat(metaBits(it))) {
     meta.appendChild(metaChip(bit));
   }
@@ -714,8 +717,8 @@ function syncCreateKind() {
   for (const g of document.querySelectorAll("#create-form [data-kind]"))
     g.hidden = g.getAttribute("data-kind") !== kind;
 }
-function openCreate(level) {
-  CREATE_LEVEL = level === "project" ? "project" : "my";
+function openCreate(layer) {
+  CREATE_LEVEL = layer === "project" ? "project" : "my";
   if (CREATE_LEVEL === "project") {
     const p = (STATE && STATE.project && STATE.project.repo) ? STATE.project.repo.split("/").slice(-1)[0] : "this project";
     $("cr-title").textContent = "Create in " + p;
