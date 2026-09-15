@@ -54,6 +54,10 @@ jobs:
           # bubblewrap-confinement test on `bwrap` being present, so without
           # this it silently skips and confinement regressions stay green.
           sudo apt-get update -qq && sudo apt-get install -y shellcheck bubblewrap
+          # ubuntu-24.04 restricts unprivileged user namespaces (AppArmor), which leaves
+          # bwrap installed but unable to sandbox, so every confinement test skipped
+          # silently; with COHORT_REQUIRE_BWRAP=1 that is a failure, so unlock it here.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           shellcheck installer/bootstrap.sh
       - name: Schema lint (zero-tolerance)
         run: cohort validate ./canonical
