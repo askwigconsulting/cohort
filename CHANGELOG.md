@@ -11,6 +11,67 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+- **A symlinked artifact no longer walks through the my-office quarantine (#285).** Discovery
+  (compile and quarantine alike) reads only `<canonical>/<kind-dir>/*.md`, refuses an entry
+  whose own `lstat` is a symlink, never descends a linked directory, and a pull that touches a
+  symlink falls back to a whole-tree record. `my-office review --reset` / `office review
+  --reset` rebuild a corrupt pending store fail-closed from disk (#294); the office baseline
+  now folds at approve time, and `--reset --all` withholds everything regardless of a legacy
+  baseline. The remedy text no longer says "delete the file".
+- **`ratchet` confines the evaluator (#286, #237).** The evaluator executes engine-written
+  code, so it now runs under the scrubbed environment with an ephemeral HOME and, where
+  bubblewrap is present, inside a no-network jail; `_git` has a timeout, non-interactive git
+  hardening and `commit.gpgsign=false`; the evaluator is killed as a process group; the codex
+  path applies the wire cap and worktree secret scan; the egress opt-out is read from the repo.
+- **`/consult-gpt` is gated in code (#266).** OpenAI Codex is a registered engine
+  (`gpt`/`chatgpt`/`openai` aliases; `xai` for grok) and `cohort engine consult gpt` runs the
+  egress marker, size cap and secret scan on the assembled prompt before `codex exec
+  --sandbox read-only`, jailed under bubblewrap to an empty scratch root and an ephemeral HOME
+  holding only codex's auth; without bwrap it says so. The command file no longer runs `codex
+  exec` itself. `engine review` checks the `review` role, so a consult-only engine cannot be
+  routed to the xAI review transport.
+- **Doer preflight refuses tracked symlinks (#288)** before reading anything; the doer
+  worktree no longer ships `.cohort/sessions`, `feedback`, `proposals` or `state` (#275).
+- **Secret scanner** catches escaped JSON, YAML block scalars, bracketed and prefixed literals,
+  `:=`, lowercase `bearer`, AWS `ASIA…` and `xai-…` keys (#289).
+- **The dashboard token is no longer served to any loopback client (#293):** it travels only
+  in the URL fragment the CLI prints and opens.
+- **Executor refuses a destination whose parent escapes the declared root via a symlink
+  (#276)**; `[update]` honours quoted TOML keys.
+
+### Fixed
+- **Global `--dry-run` is honoured by every command or refused with exit 2 (#267)**; `status`
+  exits 1 when it printed a `!` diagnostic and `--json` carries `ok`; `my-office sync` names a
+  real remedy and exits non-zero on a failed recompile; `/api/state` lists skipped projects (#270).
+- **Staging is swapped in under the manifest lock (#291)**; roster and adopt append under the
+  lock (#292); the rollback ledger is locked and atomic; quarantine reconcile scans under the
+  lock (#290).
+- Duplicate YAML keys are an E001; an unknown `tools` name is E021 (the vocabulary is declared
+  in `canonical/schema/agent.json`); `_SHARED_KEYS` derives from the schema; the frontmatter
+  delimiter is only recognised at column 0; `docs/quick-reference.*` shows each command's own
+  description (#297, #299).
+- Unquoted YAML timestamps no longer drop records or 500 the dashboard; quoted `auto_capture`
+  is read correctly; `gc` keeps the newest transcripts by number and has a scan budget;
+  `report` says an issue may already exist on a timeout (#299, #268, #269).
+- Docs: `AGENTS.md` documents the comma form of `--ide` (repeats keep only the last);
+  `staleness-check` always exits 0; the orchestration-cap lint scans README and docs; RFC
+  0001's prerequisite is marked resolved; the autonomy memory states the machine-local truth;
+  README qualifies "no phone-home" and lists `report`/`update-check` egress (#296, #271, #279, #280).
+- Dashboard: every dialog control has a label, `--faint` meets AA inside cards, action buttons
+  carry `aria-label`, the three homes are OFFICE / MY OFFICE / PROJECT; `--help` uses plain
+  formatting under `NO_COLOR` or `TERM=dumb` (#298, #300).
+
+### Changed
+- Compiled project doers are labelled "(project doer — write-capable)" instead of "advisory
+  office agent"; my-office help derives the gated kinds from `GATED_KINDS`; `--layer` and
+  `--to` are accepted as aliases on the add-* and `edit` commands (#300).
+- Dashboard aggregate cache TTL is 30 s (above the poll), session/feedback feeds parse only the
+  newest records, parity parses canonical once per poll, and the YAML loader uses libyaml when
+  available (#295).
+- CI: bubblewrap can sandbox on ubuntu-24.04 (user namespaces unlocked), the confinement tests
+  fail rather than skip there, and the real-venv bootstrap round-trip runs on Linux (#277).
+
 ### Fixed
 - **Secret scanner: quoted keys and label-glued assignments were exempt (#265).** The
   generic-assignment rule required the separator to follow the identifier directly, so

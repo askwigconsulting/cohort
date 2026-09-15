@@ -2411,7 +2411,7 @@ def engine_ratchet(
     gated doer proposes one change in the worktree, ``--evaluator`` measures it, and the
     change is committed if the metric improved or reverted if not — up to ``--budget``
     iterations. Nothing touches this repo's working tree; review the staircase and the
-    worktree, then merge via PR. The evaluator is your own trusted command.
+    worktree, then merge via PR. The evaluator runs engine-written code, so it is confined (bubblewrap where available) — see /ratchet.
     """
     from .engines import ratchet
     from .engines import gates as engine_gates
