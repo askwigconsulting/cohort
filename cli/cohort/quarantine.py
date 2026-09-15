@@ -56,6 +56,17 @@ from .manifest import now_iso
 GATED_KINDS: tuple[str, ...] = ("hook", "memory", "skill", "agent")
 
 
+def gated_kinds_phrase(*, plural: bool = False) -> str:
+    """A "/"-joined phrase naming every :data:`GATED_KINDS` entry (#300 item 2):
+    the single source for help/error text describing what the quarantine
+    withholds, so a kind added to ``GATED_KINDS`` is reflected everywhere that
+    text is shown without a separate edit going stale.
+    """
+    if not plural:
+        return "/".join(GATED_KINDS)
+    return "/".join(k[:-1] + "ies" if k.endswith("y") else k + "s" for k in GATED_KINDS)
+
+
 class QuarantineStateError(Exception):
     """The quarantine state file exists but could not be parsed. Callers must fail
     closed (withhold every gated artifact), never read it as an empty pending set."""

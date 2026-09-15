@@ -235,7 +235,7 @@ def compile_ide(
     tier never passes an overlay.
 
     ``withhold`` is the quarantine (#107): a set of ``(kind, name, content-hash)``
-    identities — pulled-but-unreviewed my-layer hooks/memories — to hold back so no
+    identities — pulled-but-unreviewed my-layer hooks/memories/skills/agents — to hold back so no
     recompile silently activates them. When ``None`` and an ``overlay`` is given, it
     is derived from the overlay's sibling ``state/`` dir, so *every* compile path
     withholds without each caller wiring it; pass an explicit set (or one derived
@@ -292,7 +292,7 @@ def compile_ide(
         my_irs, my_filtered = _load_irs(overlay, scope, layer="my")
         result.scope_filtered.extend(f"{entry} [my]" for entry in my_filtered)
         # Quarantine gate (#107): withhold pulled-but-unreviewed my-layer
-        # hooks/memories at the single compile chokepoint, so no recompile from any
+        # hooks/memories/skills/agents at the single compile chokepoint, so no recompile from any
         # command silently activates them. Derived from the overlay's sibling
         # state/ dir unless the caller passes an explicit set. A corrupt state file
         # (keys is None) fails CLOSED — withhold every gated my-layer artifact —
