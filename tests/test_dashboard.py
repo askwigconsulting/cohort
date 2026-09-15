@@ -298,8 +298,16 @@ def test_served_script_carries_no_token_and_reads_the_fragment(server):
     script = data.decode("utf-8")
     assert srv.token not in script
     assert "location.hash" in script
-    assert "history.replaceState" in script  # the fragment is cleared once read
     assert 'meta[name="cohort-token"]' not in script
+    # The fragment is scrubbed only after it is parked for reload: the
+    # replaceState call sits inside the same try as setItem, after it, so a
+    # blocked sessionStorage leaves the fragment in the address bar instead of
+    # stranding a reload with no token anywhere.
+    park = script.index("sessionStorage.setItem(")
+    scrub = script.index("history.replaceState(")
+    assert park < scrub < script.index("catch", park)
+    opened = script.rindex("try", 0, park)
+    assert script[opened:park].split() == ["try", "{"]  # nothing between the try and the park
 
 
 def test_url_carries_the_token_in_the_fragment(server):

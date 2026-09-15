@@ -4,17 +4,22 @@
 // GET / from another loopback principal (another uid, a doer jail that keeps
 // the network) yields a page with no credential in it (#293). The browser keeps
 // a fragment client-side — it is not sent on the wire, and Referrer-Policy is
-// no-referrer besides. Once read, the fragment is scrubbed from the address bar
-// and history and parked in sessionStorage so a reload of *this tab* keeps
-// working; sessionStorage is same-origin and per-tab, so it exposes the token
-// to exactly the script that already holds it and dies with the tab. After a
-// dashboard *restart* the token changes and only the newly printed URL has it.
+// no-referrer besides. Once read, the fragment is parked in sessionStorage so a
+// reload of *this tab* keeps working, and only then scrubbed from the address
+// bar and history; sessionStorage is same-origin and per-tab, so it exposes the
+// token to exactly the script that already holds it and dies with the tab. If
+// parking fails (a hardened/privacy configuration that blocks storage) the
+// fragment is left in the address bar instead — same-origin and per-tab either
+// way — because scrubbing it would leave a reload with no token and no way back.
+// After a dashboard *restart* the token changes and only the newly printed URL has it.
 const SESSION_SLOT = "cohort-dashboard-session";
 const TOKEN = (() => {
   const fromHash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
   if (fromHash) {
-    try { sessionStorage.setItem(SESSION_SLOT, fromHash); } catch (e) { /* private mode: reload will need the URL */ }
-    history.replaceState(null, "", location.pathname + location.search);
+    try {
+      sessionStorage.setItem(SESSION_SLOT, fromHash);
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) { /* storage blocked: keep the fragment so a reload still has it */ }
     return fromHash;
   }
   try { return sessionStorage.getItem(SESSION_SLOT) || ""; } catch (e) { return ""; }
