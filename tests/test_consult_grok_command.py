@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -124,10 +125,14 @@ def test_engine_consult_requires_a_prompt_source_when_stdin_is_a_tty(capsys: pyt
     # non-tty stdin) so a genuine TTY can be simulated on sys.stdin.
     fake_stdin = MagicMock()
     fake_stdin.isatty.return_value = True
+    # The command reads the global --dry-run from its context; a direct call must supply
+    # the one the app callback would have built.
+    ctx = typer.Context(click.Command("engine consult"))
+    ctx.obj = {"dry_run": False}
     with patch("cohort.cli.sys.stdin", fake_stdin):
         with pytest.raises(typer.Exit) as exc_info:
             cli_module.engine_consult(
-                "grok", prompt_file=None, tier=None, model=None,
+                ctx, "grok", prompt_file=None, tier=None, model=None,
                 allow_egress=False, max_tokens=4096,
             )
     assert exc_info.value.exit_code == 2

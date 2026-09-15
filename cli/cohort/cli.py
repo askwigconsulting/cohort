@@ -146,6 +146,23 @@ def _escape_untrusted(text: str) -> str:
     return _UNTRUSTED_CONTROL.sub(lambda m: repr(m.group())[1:-1], text)
 
 
+def _global_dry_run(ctx: typer.Context) -> bool:
+    """The app-level ``--dry-run`` stored by :func:`main`; False when absent."""
+    return bool((ctx.obj or {}).get("dry_run", False))
+
+
+def _refuse_dry_run(command: str, why: str) -> None:
+    """Exit 2 for a command that cannot preview itself under the global ``--dry-run``.
+
+    A command that has no meaningful preview must say so rather than silently proceed —
+    the flag's whole promise is "nothing changes" (#267).
+    """
+    typer.echo(
+        f"error: {command} does not support --dry-run ({why}); nothing was done", err=True
+    )
+    raise typer.Exit(code=2)
+
+
 @app.callback()
 def main(
     ctx: typer.Context,
@@ -188,6 +205,7 @@ def _report_gates():
 
 @app.command()
 def report(
+    ctx: typer.Context,
     title: Optional[str] = typer.Option(None, "--title", help="One-line summary."),
     body_file: Optional[Path] = typer.Option(
         None, "--body-file",
@@ -245,6 +263,24 @@ def report(
         )
         raise typer.Exit(code=1)
 
+    if _global_dry_run(ctx):
+        # The draft is built and gated above; under --dry-run stop here, before `gh` is
+        # so much as probed — filing is the outward, irreversible step being previewed.
+        if json_output:
+            typer.echo(_json.dumps(
+                {"action": "report", "dry_run": True, "repo": draft.repo,
+                 "title": draft.title, "preview": draft.preview}, indent=2,
+            ))
+        else:
+            typer.echo(draft.preview)
+            typer.echo("")
+            typer.echo(
+                f"(dry-run) not filed — would open a public issue on {draft.repo} via gh "
+                "after confirmation; nothing was sent.",
+                err=True,
+            )
+        raise typer.Exit(code=0)
+
     gh = report_mod.gh_available()
     if gh is None:
         typer.echo(
@@ -277,6 +313,7 @@ def report(
 
 @app.command()
 def gc(
+    ctx: typer.Context,
     days: float = typer.Option(
         7.0, "--days",
         help="Ignore artifacts younger than this. Recent ones are usually still wanted.",
@@ -308,6 +345,9 @@ def gc(
     from . import gc as gc_mod
     from .project import find_repo_root
 
+    if apply_ and _global_dry_run(ctx):
+        typer.echo("(dry-run) --apply disarmed: reporting only, nothing is deleted", err=True)
+        apply_ = False
     repo_root = find_repo_root(Path.cwd())
     report = gc_mod.scan(
         repo_root=repo_root,
@@ -448,6 +488,7 @@ def lint(
 
 @app.command()
 def reference(
+    ctx: typer.Context,
     source: Optional[str] = typer.Option(None, "--source", help="Cohort source root (default: auto-resolve)."),
 ) -> None:
     """Regenerate the quick-reference (docs/quick-reference.html + .pdf) from canonical.
@@ -457,6 +498,10 @@ def reference(
     """
     from . import reference as _ref
 
+    if _global_dry_run(ctx):
+        _refuse_dry_run(
+            "reference", "it regenerates docs/quick-reference.html and .pdf in place"
+        )
     source_path = resolve_source(source)
     html_path, pdf_path = _ref.write_reference(source_path, source_path / "docs")
     typer.echo(f"wrote {html_path}")
@@ -825,10 +870,13 @@ def setup(
 
 @app.command()
 def relink(
+    ctx: typer.Context,
     source: Optional[str] = typer.Option(None, "--source", help="Path to the Cohort source repo."),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
     """Re-point a moved/renamed install at the source and recompile installed IDEs."""
+    if _global_dry_run(ctx):
+        _refuse_dry_run("relink", "it is a repair that re-points the install and recompiles")
     try:
         source_path = resolve_source(source)
     except SourceUnresolved as exc:
@@ -1263,8 +1311,115 @@ def _run_grok_cli_review_or_fallback(
     raise typer.Exit(code=0)
 
 
+_LATER_PAYLOADS_UNENUMERABLE = (
+    "every later payload is chosen by the model (which files it reads, which tool calls it "
+    "makes) and cannot be enumerated here; each read is gated and transcribed at run time"
+)
+
+
+def _engine_dry_run_gates(
+    payload: str, project_context_text: str, *, max_bytes: Optional[int]
+) -> list[str]:
+    """Run the pre-egress gates on ``payload`` exactly as the live path would, for a
+    ``--dry-run`` preview, and return one outcome line per gate.
+
+    With ``max_bytes`` this is :func:`gates.preflight` (opt-out → payload bound → secret
+    scan), the order the one-shot and agentic API paths use. Without it, it is the doer
+    order (opt-out → secret scan; the byte cap is the wire cap applied to the worktree at
+    dispatch). A refusal exits 1 with the live command's message, so the preview predicts
+    the real outcome instead of a rosier one.
+    """
+    engine_gates = _report_gates()
+    try:
+        if max_bytes is None:
+            engine_gates.require_egress_allowed(project_context_text)
+            engine_gates.assert_no_secrets(payload)
+        else:
+            engine_gates.preflight(
+                prompt=payload, project_context_text=project_context_text, max_bytes=max_bytes
+            )
+    except engine_gates.EgressBlockedError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.SecretFoundError as exc:
+        typer.echo(f"error: {exc}. Nothing was sent.", err=True)
+        raise typer.Exit(code=1)
+    except engine_gates.GateError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+    lines = ["egress opt-out → not opted out"]
+    if max_bytes is not None:
+        lines.append(f"payload bound → {len(payload.encode('utf-8'))} bytes ≤ {max_bytes}")
+    lines.append("secret scan → clean")
+    return lines
+
+
+def _print_engine_dry_run(
+    command: str,
+    *,
+    gates: list[str],
+    facts: list[tuple[str, str]],
+    later_payloads: Optional[str],
+) -> None:
+    """Print an engine command's ``--dry-run`` preview — gate outcomes, limits and the
+    PROSPECTIVE egress — and exit 0. Nothing is sent, launched or written."""
+    typer.echo(
+        f"(dry-run) engine {command} — gates run; nothing sent, no subprocess launched, "
+        "no socket opened, nothing written"
+    )
+    for line in gates:
+        typer.echo(f"  gate: {line}")
+    for label, value in facts:
+        typer.echo(f"  {label}: {value}")
+    if later_payloads:
+        typer.echo(f"  later payloads: {later_payloads}")
+    raise typer.Exit(code=0)
+
+
+def _payload_origin(path: Optional[Path], flag: str, text: str) -> str:
+    """Describe where a prompt/task came from and how big it is, for the preview."""
+    origin = f"{flag} {path}" if path is not None else "stdin"
+    return f"{origin} ({len(text.encode('utf-8'))} bytes)"
+
+
+def _doer_availability_note(engine: str) -> str:
+    """Whether the vendor CLI a doer needs is on PATH — the same probes the live dispatch
+    makes (``shutil.which`` only), so the preview predicts a DoerUnavailableError."""
+    import shutil
+
+    from .engines import cli_doer
+
+    if engine.strip().lower() in cli_doer._GROK_ENGINE_ALIASES:
+        available = cli_doer._grok_cli_available()
+        what = "grok CLI + bwrap"
+    else:
+        available = shutil.which("codex") is not None
+        what = "codex CLI"
+    if available:
+        return f"{what} found on PATH"
+    return f"{what} NOT found on PATH — a live run would exit 2 before any egress"
+
+
+def _grok_channel_note(engine: str) -> str:
+    """Which channel a grok call would take — decided by the same probes the live path
+    uses (``shutil.which`` only; no subprocess)."""
+    from .engines import cli_doer
+
+    if not _is_grok_engine(engine):
+        return "xAI API-direct"
+    if cli_doer.cli_known_broken("grok"):
+        return "xAI API-direct (the local grok CLI failed recently and is skipped)"
+    if cli_doer._grok_cli_available():
+        return (
+            "local grok CLI under bubblewrap — it also reads the tracked files of a fresh "
+            f"worktree, bounded by the {cli_doer._DEFAULT_MAX_WIRE_BYTES}-byte wire cap"
+        )
+    return "xAI API-direct (grok CLI/bwrap not found)"
+
+
 @engine_app.command("consult")
 def engine_consult(
+    ctx: typer.Context,
     engine: str = typer.Argument(..., help="Registered engine name (e.g. 'grok')."),
     prompt_file: Optional[Path] = typer.Option(
         None,
@@ -1363,6 +1518,20 @@ def engine_consult(
     project_context_text = (
         context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
     )
+
+    if _global_dry_run(ctx):
+        _print_engine_dry_run(
+            "consult",
+            gates=_engine_dry_run_gates(prompt, project_context_text, max_bytes=200_000),
+            facts=[
+                ("engine", f"{engine} · model {chosen_model}"),
+                ("channel", _grok_channel_note(engine)),
+                ("would send", f"the prompt from {_payload_origin(prompt_file, '--prompt-file', prompt)}"),
+                ("limits", f"--max-tokens {max_tokens}, --timeout "
+                           f"{'default (scales with --max-tokens)' if timeout is None else f'{timeout:g}s'}"),
+            ],
+            later_payloads=None,
+        )
 
     try:
         engine_gates.preflight(
@@ -1482,6 +1651,7 @@ def _next_transcript_path(repo_root: Path, override: Optional[Path]) -> Path:
 
 @engine_app.command("review")
 def engine_review(
+    ctx: typer.Context,
     engine: str = typer.Argument(..., help="Registered engine name (e.g. 'grok')."),
     task_file: Optional[Path] = typer.Option(
         None,
@@ -1577,6 +1747,24 @@ def engine_review(
     project_context_text = (
         context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
     )
+
+    if _global_dry_run(ctx):
+        transcript_note = (
+            str(transcript) if transcript is not None
+            else f"next index under {repo_root / '.cohort' / 'engine-transcripts'}"
+        )
+        _print_engine_dry_run(
+            "review",
+            gates=_engine_dry_run_gates(task, project_context_text, max_bytes=200_000),
+            facts=[
+                ("engine", f"{engine} · model {chosen_model}"),
+                ("channel", _grok_channel_note(engine)),
+                ("would send first", f"the task from {_payload_origin(task_file, '--task-file', task)}"),
+                ("limits", f"--max-iterations {max_iterations}, --max-tokens {max_tokens}"),
+                ("transcript", f"{transcript_note} (would be written; not created now)"),
+            ],
+            later_payloads=_LATER_PAYLOADS_UNENUMERABLE,
+        )
 
     try:
         engine_gates.preflight(
@@ -1678,6 +1866,7 @@ def _display_safe(text: str) -> str:
 
 @engine_app.command("propose")
 def engine_propose(
+    ctx: typer.Context,
     engine: str = typer.Argument(..., help="Registered engine name trusted for patches (e.g. 'grok')."),
     task_file: Optional[Path] = typer.Option(
         None,
@@ -1723,7 +1912,7 @@ def engine_propose(
     from .engines.patch import PatchError
 
     try:
-        get_engine(engine)
+        spec = get_engine(engine)
     except UnknownEngineError:
         typer.echo(
             f"error: unknown engine {engine!r}; registered engines: "
@@ -1766,6 +1955,43 @@ def engine_propose(
     project_context_text = (
         context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
     )
+
+    if _global_dry_run(ctx):
+        if "patch_proposal" not in spec.roles:
+            typer.echo(
+                f"error: engine {engine!r} is not registered for the 'patch_proposal' role",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        # Gate the SAME assembled instruction the live path sends (task + conventions +
+        # footprint + the JSON contract), not just the raw task.
+        if agentic:
+            outbound = patch_proposal._assemble_agentic_task(
+                task, cleaned_footprint, project_context_text
+            )
+        else:
+            outbound = patch_proposal._assemble_prompt(
+                task, allowed_footprint=cleaned_footprint,
+                project_context_text=project_context_text,
+            )
+        _print_engine_dry_run(
+            "propose" + (" --agentic" if agentic else ""),
+            gates=_engine_dry_run_gates(outbound, project_context_text, max_bytes=200_000),
+            facts=[
+                ("engine", engine),
+                ("channel", _grok_channel_note(engine)),
+                ("footprint", ", ".join(cleaned_footprint)),
+                ("would send", "the assembled patch prompt — task from "
+                               f"{_payload_origin(task_file, '--task-file', task)} + conventions "
+                               f"+ footprint + the JSON contract, {len(outbound.encode('utf-8'))} "
+                               "bytes total"),
+                ("limits", f"--max-tokens {max_tokens}"
+                           + (f", --max-iterations {max_iterations}" if agentic else "")),
+                ("worktree", "no worktree is created by a dry-run (live: created only after "
+                             "the gated reply is parsed; never this working tree)"),
+            ],
+            later_payloads=_LATER_PAYLOADS_UNENUMERABLE if agentic else None,
+        )
 
     # Prefer the local grok CLI: it edits a bubblewrap-sandboxed worktree directly (real
     # file access), and Cohort emits that worktree's diff as the proposal — reviewed like
@@ -1941,6 +2167,7 @@ def engine_propose(
 
 @engine_app.command("work")
 def engine_work(
+    ctx: typer.Context,
     engine: str = typer.Argument(..., help="Engine with a sandboxed CLI doer ('gpt' via its own sandbox, 'grok' via a bubblewrap jail)."),
     task_file: Optional[Path] = typer.Option(
         None, "--task-file", help="Path to the task. Omit to read from stdin.",
@@ -1992,6 +2219,34 @@ def engine_work(
     )
     cleaned_footprint = [e.strip() for e in footprint if e.strip()] or None
 
+    if _global_dry_run(ctx):
+        doer_name = engine.strip().lower()
+        if doer_name in cli_doer._CODEX_ENGINE_ALIASES:
+            doer = "codex CLI (confined by its own sandbox)"
+        elif doer_name in cli_doer._GROK_ENGINE_ALIASES:
+            doer = "grok CLI (confined by a bubblewrap jail)"
+        else:
+            typer.echo(f"error: no CLI doer for engine {engine!r}", err=True)
+            raise typer.Exit(code=2)
+        _print_engine_dry_run(
+            "work",
+            gates=_engine_dry_run_gates(task, project_context_text, max_bytes=None),
+            facts=[
+                ("doer", doer + (f" · model {model}" if model else "")),
+                ("availability", _doer_availability_note(engine)),
+                ("would expose", f"the task from {_payload_origin(task_file, '--task-file', task)} "
+                                 "+ every tracked file of a fresh worktree at HEAD (the CLI reads "
+                                 "and sends them), measured against the "
+                                 f"{cli_doer._DEFAULT_MAX_WIRE_BYTES}-byte wire cap and "
+                                 "secret-scanned at dispatch"),
+                ("footprint (advisory)", ", ".join(cleaned_footprint) if cleaned_footprint else "(none)"),
+                ("limits", f"doer timeout {cli_doer._DOER_TIMEOUT_SECONDS:g}s"),
+                ("worktree", "no worktree is created by a dry-run (live: a detached worktree, "
+                             "never this working tree)"),
+            ],
+            later_payloads=_LATER_PAYLOADS_UNENUMERABLE,
+        )
+
     from .engines import gates as engine_gates
     try:
         result = cli_doer.run_doer(
@@ -2039,6 +2294,7 @@ def engine_work(
 
 @engine_app.command("ratchet")
 def engine_ratchet(
+    ctx: typer.Context,
     engine: str = typer.Argument(..., help="Proposing doer: 'gpt' (Codex) or 'grok' (agentic patch)."),
     evaluator: str = typer.Option(..., "--evaluator", help="Shell command, run in the worktree, that prints the objective number (e.g. 'pytest -q 2>&1 | tail -1')."),
     task_file: Optional[Path] = typer.Option(None, "--task-file", help="Path to the optimization task. Omit to read from stdin."),
@@ -2080,6 +2336,36 @@ def engine_ratchet(
         context_path.read_text(encoding="utf-8") if context_path.is_file() else ""
     )
     cleaned_footprint = [e.strip() for e in footprint if e.strip()] or None
+
+    if _global_dry_run(ctx):
+        doer_name = engine.strip().lower()
+        if not task.strip():
+            typer.echo("error: task is empty", err=True)
+            raise typer.Exit(code=1)
+        if doer_name not in ratchet._CODEX_ENGINES and doer_name != "grok":
+            typer.echo(f"error: unknown ratchet engine {engine!r} (use 'gpt' or 'grok')", err=True)
+            raise typer.Exit(code=1)
+        _print_engine_dry_run(
+            "ratchet",
+            gates=_engine_dry_run_gates(task, project_context_text, max_bytes=None),
+            facts=[
+                ("doer", engine + (f" · model {model}" if model else "")),
+                ("availability", _doer_availability_note(engine)),
+                ("evaluator", f"{evaluator!r} (not run; live it runs in the worktree each iteration)"),
+                ("budget", f"{budget} iterations · goal: {goal}"
+                           + (f" · metric regex {metric_regex!r}" if metric_regex else "")),
+                ("would expose first", f"the task from {_payload_origin(task_file, '--task-file', task)}"
+                                       " + the tracked files of a fresh worktree at HEAD, measured "
+                                       f"against the {cli_doer._DEFAULT_MAX_WIRE_BYTES}-byte wire cap "
+                                       "at dispatch"),
+                ("footprint", ", ".join(cleaned_footprint) if cleaned_footprint else "(none)"),
+                ("limits", f"doer timeout {cli_doer._DOER_TIMEOUT_SECONDS:g}s per iteration"),
+                ("worktree", "no worktree is created by a dry-run (live: one detached worktree "
+                             "for the whole climb, never this working tree)"),
+            ],
+            later_payloads="each iteration re-dispatches the doer against the evolving worktree; "
+                           + _LATER_PAYLOADS_UNENUMERABLE,
+        )
 
     try:
         result = ratchet.run_ratchet(
@@ -2123,6 +2409,7 @@ def engine_ratchet(
 
 @my_office_app.command("sync")
 def my_office_sync(
+    ctx: typer.Context,
     remote: Optional[str] = typer.Option(
         None, "--remote", help="Set the Git remote URL to sync my office to/from (once)."
     ),
@@ -2139,8 +2426,9 @@ def my_office_sync(
     """
     from .myoffice import MySyncError, do_my_sync
 
+    effective_dry_run = dry_run or _global_dry_run(ctx)
     try:
-        report = do_my_sync(Path.home(), remote=remote, dry_run=dry_run)
+        report = do_my_sync(Path.home(), remote=remote, dry_run=effective_dry_run)
     except MySyncError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -2162,7 +2450,7 @@ def my_office_sync(
             typer.echo(
                 "  ⚠ the sync succeeded but placing the pulled artifacts into your IDEs "
                 f"failed ({r['recompile_failed']}). Your IDE files are STALE — run "
-                "`cohort update --recompile` (or `cohort relink`) to place them.",
+                "`cohort recompile` (or `cohort relink` if the install moved) to place them.",
                 err=True,
             )
         if r.get("quarantine_state_unreadable"):
@@ -2181,7 +2469,9 @@ def my_office_sync(
             )
 
     _emit(report, json_output, human)
-    raise typer.Exit(code=0)
+    # The remote is current but the IDE files are stale: that is a failure a script must
+    # see, not a green exit with a warning it never reads (#270).
+    raise typer.Exit(code=1 if report.get("recompile_failed") else 0)
 
 
 @my_office_app.command("review")
@@ -2241,6 +2531,7 @@ my_office_review.__doc__ = my_office_review.__doc__.format(
 
 @my_office_app.command("approve")
 def my_office_approve(
+    ctx: typer.Context,
     name: Optional[str] = typer.Argument(
         None,
         help="The artifact name to approve. If one name has two pending records with "
@@ -2264,9 +2555,12 @@ def my_office_approve(
         typer.echo("error: give an artifact name, or pass --all", err=True)
         raise typer.Exit(code=1)
 
+    dry_run = _global_dry_run(ctx)
     paths = CohortPaths.for_global(Path.home())
     try:
-        cleared = quarantine.approve(paths.state, [name] if name else [], approve_all=approve_all)
+        cleared = quarantine.approve(
+            paths.state, [name] if name else [], approve_all=approve_all, dry_run=dry_run
+        )
     except quarantine.AmbiguousApprovalError as exc:
         # A bare name maps to >1 pending hash; approving would guess which bytes were
         # reviewed (and clear an unreviewed record sharing the name). Print the message
@@ -2280,6 +2574,8 @@ def my_office_approve(
             err=True,
         )
         raise typer.Exit(code=1)
+    if dry_run:
+        _emit_approve_dry_run("my-office approve", cleared, json_output)
     recompiled: object = False
     recompile_failed: Optional[str] = None
     if cleared:
@@ -2289,7 +2585,7 @@ def my_office_approve(
             # Approval already happened; report the placement failure rather than
             # reporting an approval that quietly did not reach the IDEs.
             recompile_failed = str(exc)
-    report = {"action": "my-office-approve", "approved": cleared,
+    report = {"action": "my-office-approve", "dry_run": False, "approved": cleared,
               "recompiled": recompiled, "recompile_failed": recompile_failed}
 
     def human(r: dict) -> None:
@@ -2300,6 +2596,27 @@ def my_office_approve(
             "my-office approve: cleared " + ", ".join(r["approved"])
             + (" · recompiled" if r["recompiled"]
                else " — run `cohort recompile` to place them.")
+        )
+
+    _emit(report, json_output, human)
+    raise typer.Exit(code=0)
+
+
+def _emit_approve_dry_run(command: str, would_clear: list[str], json_output: bool) -> None:
+    """Report what an approve would release under ``--dry-run`` and exit 0.
+
+    ``would_clear`` came from the same selector the live approve uses (so an ambiguous
+    name already refused above); nothing was saved and no recompile runs.
+    """
+    report = {"action": command.replace(" ", "-"), "dry_run": True, "would_approve": would_clear}
+
+    def human(r: dict) -> None:
+        if not r["would_approve"]:
+            typer.echo(f"(dry-run) {command}: nothing matched (already approved, or wrong name?).")
+            return
+        typer.echo(
+            f"(dry-run) {command}: would clear " + ", ".join(r["would_approve"])
+            + " and recompile so they activate — nothing changed."
         )
 
     _emit(report, json_output, human)
@@ -2362,6 +2679,7 @@ def office_review(json_output: bool = typer.Option(False, "--json")) -> None:
 
 @office_app.command("approve")
 def office_approve(
+    ctx: typer.Context,
     name: Optional[str] = typer.Argument(
         None,
         help="Office artifact name to approve. If one name has two pending records "
@@ -2384,10 +2702,11 @@ def office_approve(
         typer.echo("error: give an artifact name, or pass --all", err=True)
         raise typer.Exit(code=1)
 
+    dry_run = _global_dry_run(ctx)
     paths = CohortPaths.for_global(Path.home())
     try:
         cleared = quarantine.approve_office(
-            paths.state, [name] if name else [], approve_all=approve_all
+            paths.state, [name] if name else [], approve_all=approve_all, dry_run=dry_run
         )
     except quarantine.AmbiguousApprovalError as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -2399,6 +2718,8 @@ def office_approve(
             err=True,
         )
         raise typer.Exit(code=1)
+    if dry_run:
+        _emit_approve_dry_run("office approve", cleared, json_output)
     recompiled: object = False
     recompile_failed: Optional[str] = None
     if cleared:
@@ -2408,7 +2729,7 @@ def office_approve(
             # Approval already happened; report the placement failure rather than
             # reporting an approval that quietly did not reach the IDEs.
             recompile_failed = str(exc)
-    report = {"action": "office-approve", "approved": cleared,
+    report = {"action": "office-approve", "dry_run": False, "approved": cleared,
               "recompiled": recompiled, "recompile_failed": recompile_failed}
 
     def human(r: dict) -> None:
@@ -2817,7 +3138,10 @@ def try_agent(
         raise typer.Exit(code=2)
     repo = find_repo_root(Path.cwd()) if place else None
     try:
-        report = do_try(source_path, Path.home(), agent, place=place, repo=repo)
+        report = do_try(
+            source_path, Path.home(), agent, place=place, repo=repo,
+            dry_run=_global_dry_run(ctx),
+        )
     except TryError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -2835,6 +3159,12 @@ def try_agent(
             f"sandboxed as a project specialist → {report['placed']}. Invoke it in this "
             f"repo's Claude session; keep it with `cohort add-agent`, or drop it with "
             f"`cohort remove-specialist {report['name']}`.",
+            err=True,
+        )
+    elif report.get("would_place"):
+        typer.echo(
+            f"(dry-run) would sandbox as a project specialist → {report['would_place']} "
+            "and recompile the project; nothing installed.",
             err=True,
         )
     else:
@@ -2959,6 +3289,7 @@ def _run_authoring(kind: str, call, json_output: bool) -> None:
 
 @app.command("add-skill")
 def add_skill(
+    ctx: typer.Context,
     name: str = typer.Argument(..., help="Skill slug (kebab-case)."),
     description: str = typer.Option(..., "--description"),
     display_name: Optional[str] = typer.Option(None, "--display-name"),
@@ -2974,14 +3305,16 @@ def add_skill(
     to = _resolve_layer_alias(to, layer)
     trig = [t.strip() for t in triggers.split(",") if t.strip()] if triggers else None
     body = _read_body_file(body_file)
+    effective_dry_run = dry_run or _global_dry_run(ctx)
     _run_authoring("skill", lambda: do_add_skill(
         resolve_source(source), Path.home(), name, description,
-        display_name=display_name, triggers=trig, body=body, to=to, dry_run=dry_run,
+        display_name=display_name, triggers=trig, body=body, to=to, dry_run=effective_dry_run,
     ), json_output)
 
 
 @app.command("add-command")
 def add_command(
+    ctx: typer.Context,
     name: str = typer.Argument(..., help="Command slug (kebab-case)."),
     description: str = typer.Option(..., "--description"),
     invocation: Optional[str] = typer.Option(None, "--invocation", help="Slash name (default: the slug)."),
@@ -2995,14 +3328,16 @@ def add_command(
     """Author a slash command (always dry_run-safe) into my office or the shared office."""
     to = _resolve_layer_alias(to, layer)
     body = _read_body_file(body_file)
+    effective_dry_run = dry_run or _global_dry_run(ctx)
     _run_authoring("command", lambda: do_add_command(
         resolve_source(source), Path.home(), name, description,
-        invocation=invocation, body=body, to=to, dry_run=dry_run,
+        invocation=invocation, body=body, to=to, dry_run=effective_dry_run,
     ), json_output)
 
 
 @app.command("add-hook")
 def add_hook(
+    ctx: typer.Context,
     name: str = typer.Argument(..., help="Hook slug (kebab-case)."),
     description: str = typer.Option(..., "--description"),
     event: str = typer.Option(..., "--event", help="session_start | session_end | pre_write | "
@@ -3019,14 +3354,16 @@ def add_hook(
     """Author a hook into my office or the shared office, then recompile."""
     to = _resolve_layer_alias(to, layer)
     body = _read_body_file(body_file)
+    effective_dry_run = dry_run or _global_dry_run(ctx)
     _run_authoring("hook", lambda: do_add_hook(
         resolve_source(source), Path.home(), name, description, event, action,
-        matcher=matcher, body=body, to=to, dry_run=dry_run,
+        matcher=matcher, body=body, to=to, dry_run=effective_dry_run,
     ), json_output)
 
 
 @app.command()
 def edit(
+    ctx: typer.Context,
     kind: str = typer.Argument(..., help="agent | skill | command | hook | memory"),
     name: str = typer.Argument(..., help="The artifact to edit."),
     body_file: Optional[str] = typer.Option(None, "--body-file", help="New body (markdown)."),
@@ -3044,10 +3381,11 @@ def edit(
     """
     layer = _resolve_layer_alias(layer, to)
     body = _read_body_file(body_file)
+    effective_dry_run = dry_run or _global_dry_run(ctx)
     try:
         report = do_edit(
             resolve_source(source), Path.home(), kind, name,
-            body=body, description=description, layer=layer, dry_run=dry_run,
+            body=body, description=description, layer=layer, dry_run=effective_dry_run,
         )
     except EditError as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -3086,10 +3424,42 @@ def dashboard(
     raise typer.Exit(code=0)
 
 
+def _status_diagnostics(report: dict) -> list[str]:
+    """Every ``!`` diagnostic ``status`` prints for ``report``, as short tags.
+
+    This is the exit-code predicate: an empty list is a healthy install. Derived from the
+    report, not from what was printed, so ``--json`` (which prints nothing human) carries
+    the same verdict as ``ok`` (#270).
+    """
+    g = report["global"]
+    found: list[str] = []
+    src = g.get("source", {})
+    if src.get("linked") and not src.get("ok"):
+        found.append("source-link-broken")
+    found.extend(f"override-{o['state']}:{o['name']}" for o in g.get("overrides", []))
+    found.extend(f"office-local-only:{f}" for f in g.get("office_local_only", []))
+    found.extend(f"unmanaged:{f['path']}" for f in g.get("unmanaged", []))
+    project = report.get("project", {})
+    found.extend(f"shadowed:{s}" for s in project.get("shadowed", []))
+    found.extend(f"legacy-agent:{s}" for s in project.get("legacy_agents", []))
+    wiring = project.get("wiring", {})
+    if "restore" in wiring:
+        found.append(f"wiring-{wiring['state']}")
+    return found
+
+
 @app.command()
 def status(json_output: bool = typer.Option(False, "--json")) -> None:
-    """Read-only aggregate of the install (global + project)."""
+    """Read-only aggregate of the install (global + project).
+
+    Exits 1 when any ``!`` diagnostic fired (broken source link, stale/dangling override,
+    unmanaged or local-only file, shadowing or legacy specialist, missing wiring), so a
+    script or an installing agent cannot read a broken install as healthy; ``--json``
+    carries the same verdict as ``ok``.
+    """
     report = do_status(Path.home(), Path.cwd())
+    diagnostics = _status_diagnostics(report)
+    report["ok"] = not diagnostics
 
     def human(r: dict) -> None:
         g = r["global"]
@@ -3167,11 +3537,13 @@ def status(json_output: bool = typer.Option(False, "--json")) -> None:
             st = p["staleness"]
             typer.echo(f"  staleness: {'STALE' if st['stale'] else 'fresh'} (>{st['threshold_hours']:g}h)")
             w = p["wiring"]
-            extra = f" — run `{w['restore']}`" if "restore" in w else ""
-            typer.echo(f"  wiring: {w['state']}{extra}")
+            if "restore" in w:
+                typer.echo(f"  ! wiring: {w['state']} — run `{w['restore']}`", err=True)
+            else:
+                typer.echo(f"  wiring: {w['state']}")
 
     _emit(report, json_output, human)
-    raise typer.Exit(code=0)
+    raise typer.Exit(code=1 if diagnostics else 0)
 
 
 def _run_report(period, since, until, dry_run, json_output, ctx) -> None:
@@ -3575,8 +3947,11 @@ def staleness_check_cmd() -> None:
 
 
 @app.command("session-capture", hidden=True)
-def session_capture_cmd() -> None:
-    """Internal: the session_end capture hook target (opt-in per repo). Always exits 0."""
+def session_capture_cmd(ctx: typer.Context) -> None:
+    """Internal: the session_end capture hook target (opt-in per repo). Always exits 0
+    (the hook never passes ``--dry-run``; under it, refuses with 2 rather than write)."""
+    if _global_dry_run(ctx):
+        _refuse_dry_run("session-capture", "a hook target that writes a session record")
     try:
         written = session_capture(Path.cwd())
         if written:
@@ -3610,11 +3985,14 @@ def compact_recall_cmd() -> None:
 
 
 @app.command("session-recall", hidden=True)
-def session_recall_cmd() -> None:
+def session_recall_cmd(ctx: typer.Context) -> None:
     """Internal: the session_start hook target (non-compact sources). If a fresh
     auto session record hasn't been surfaced yet, prints a one-time recall nudge
     into the new session's context to promote its context into durable memory.
-    Print-only aside from a machine-local marker. Always exits 0."""
+    Print-only aside from a machine-local marker. Always exits 0 (the hook never
+    passes ``--dry-run``; under it, refuses with 2 rather than write the marker)."""
+    if _global_dry_run(ctx):
+        _refuse_dry_run("session-recall", "a hook target that writes a recall marker")
     try:
         source = ""
         raw = "" if sys.stdin.isatty() else sys.stdin.read()
@@ -3635,10 +4013,14 @@ def session_recall_cmd() -> None:
 
 
 @app.command("working-note", hidden=True)
-def working_note_cmd(text: str = typer.Argument(..., help="the note to stage")) -> None:
+def working_note_cmd(
+    ctx: typer.Context, text: str = typer.Argument(..., help="the note to stage")
+) -> None:
     """Stage a disposable working-memory note mid-session (model-invoked at a task
     milestone). Consolidated into durable memory at the next compaction/start. Always
-    exits 0."""
+    exits 0 (under the global ``--dry-run`` it refuses with 2 rather than write)."""
+    if _global_dry_run(ctx):
+        _refuse_dry_run("working-note", "it stages a working-memory note")
     try:
         written = working_note(Path.cwd(), text)
         if written:
@@ -3649,9 +4031,12 @@ def working_note_cmd(text: str = typer.Argument(..., help="the note to stage")) 
 
 
 @app.command("working-capture", hidden=True)
-def working_capture_cmd() -> None:
+def working_capture_cmd(ctx: typer.Context) -> None:
     """Internal: the Stop hook backstop. Stages a mechanical working-memory record when
-    the turn changed the tree (deduped, opt-out via auto_capture). Always exits 0."""
+    the turn changed the tree (deduped, opt-out via auto_capture). Always exits 0 (the
+    hook never passes ``--dry-run``; under it, refuses with 2 rather than write)."""
+    if _global_dry_run(ctx):
+        _refuse_dry_run("working-capture", "a hook target that stages a working-memory record")
     try:
         working_capture(Path.cwd())
     except Exception:  # noqa: BLE001 - the backstop must never break the turn
@@ -3661,6 +4046,7 @@ def working_capture_cmd() -> None:
 
 @app.command("autonomy")
 def autonomy_cmd(
+    ctx: typer.Context,
     level: Optional[str] = typer.Argument(
         None, help="Set the level (paired | guided | supervised | autopilot). Omit to show."
     ),
@@ -3676,6 +4062,20 @@ def autonomy_cmd(
     if level is None:
         current = autonomy.read_autonomy_level(home)
         typer.echo(f"autonomy: {current} — {autonomy.describe(current)}")
+        raise typer.Exit(code=0)
+    if _global_dry_run(ctx):
+        normalized = level.strip().lower()
+        if normalized not in autonomy.LEVELS:
+            typer.echo(
+                f"error: unknown autonomy level {level!r}; choose one of "
+                f"{', '.join(autonomy.LEVELS)}",
+                err=True,
+            )
+            raise typer.Exit(code=2)
+        typer.echo(
+            f"(dry-run) would set autonomy to {normalized} — {autonomy.describe(normalized)}; "
+            "nothing written"
+        )
         raise typer.Exit(code=0)
     try:
         normalized = autonomy.set_autonomy_level(home, level)
@@ -3706,8 +4106,11 @@ def autonomy_recall_cmd() -> None:
 
 
 @app.command("update-check", hidden=True)
-def update_check_cmd() -> None:
-    """Internal: the session_start update-advisory hook target. Always exits 0."""
+def update_check_cmd(ctx: typer.Context) -> None:
+    """Internal: the session_start update-advisory hook target. Always exits 0 (the hook
+    never passes ``--dry-run``; under it, refuses with 2 rather than fetch and stamp)."""
+    if _global_dry_run(ctx):
+        _refuse_dry_run("update-check", "it fetches upstream and stamps the daily marker")
     try:
         message = do_update_check(Path.home())
         if message:

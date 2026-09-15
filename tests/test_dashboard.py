@@ -275,6 +275,53 @@ def test_collect_state_scorecards_aggregate_feedback_across_projects(home, tmp_p
     assert card["net"] == 1
 
 
+def test_cross_project_views_name_the_projects_they_skipped(home, tmp_path, source, monkeypatch):
+    """#270: a project whose store is unreadable is dropped (never fatal, #226) — but a
+    dropped project must be visible, or office-wide totals silently undercount."""
+    from cohort import dashboard
+    from cohort.dashboard import cross_project_activity, cross_project_scorecards
+
+    inited_repo(tmp_path, source, home, name="repo-a")
+    repo_b = inited_repo(tmp_path, source, home, name="repo-b")
+    run_cli("feedback", "--rating", "up", "--agent", "counsel", home=home, cwd=repo_b)
+
+    def unreadable(paths):
+        if paths.cohort_home == repo_b / ".cohort":
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad feedback file")
+        return []
+
+    monkeypatch.setattr(dashboard, "load_feedback_entries", unreadable)
+    monkeypatch.setattr(dashboard, "load_session_entries", unreadable)
+    projects = list_projects(home, include_private=False)
+
+    skipped: list[str] = []
+    assert cross_project_scorecards(home, projects, skipped=skipped) == []
+    assert skipped == ["repo-b"]
+    skipped = []
+    assert cross_project_activity(home, projects, skipped=skipped) == []
+    assert skipped == ["repo-b"]
+
+
+def test_collect_state_carries_the_skipped_projects(home, tmp_path, source, monkeypatch):
+    from cohort import dashboard
+
+    inited_repo(tmp_path, source, home, name="repo-a")
+    repo_b = inited_repo(tmp_path, source, home, name="repo-b")
+
+    def unreadable(paths):
+        if paths.cohort_home == repo_b / ".cohort":
+            raise OSError("permission denied")
+        return []
+
+    monkeypatch.setattr(dashboard, "load_feedback_entries", unreadable)
+    plain = make_git_repo(tmp_path / "plain")
+    state = collect_state(home, plain)
+    assert state["skipped"] == ["repo-b"]
+
+    monkeypatch.setattr(dashboard, "load_feedback_entries", lambda paths: [])
+    assert collect_state(home, plain)["skipped"] == []
+
+
 # === server: guard rails =====================================================
 
 

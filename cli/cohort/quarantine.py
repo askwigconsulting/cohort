@@ -239,11 +239,60 @@ def add_pending(
     return added
 
 
+def _select_for_approval(
+    pending: list[QuarantinedArtifact],
+    names: Iterable[str] | None,
+    approve_all: bool,
+    *,
+    store: str,
+) -> tuple[list[str], set[tuple[str, str, str]]]:
+    """Resolve approval selectors against ``pending``.
+
+    Returns ``(names that would clear, keys to remove)``. Shared by :func:`approve` and
+    :func:`approve_office` and by their ``dry_run`` previews, so the preview and the act
+    can never disagree about what a selector matches. ``store`` is the label used in the
+    ambiguity message (``""`` for the personal layer, ``"office "`` for the office layer).
+
+    Raises ``AmbiguousApprovalError`` when a bare name (or a hash prefix) matches more
+    than one distinct pending hash — clearing nothing for any selector.
+    """
+    if approve_all:
+        return sorted({a.name for a in pending}), {a.key for a in pending}
+    to_clear: set[tuple[str, str, str]] = set()
+    cleared_names: set[str] = set()
+    for selector in names or ():
+        name, sep, hash_prefix = selector.partition("@")
+        matches = [a for a in pending if a.name == name]
+        if sep:
+            matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
+        if not matches:
+            continue  # unknown name/hash → no-op, matches prior behavior
+        distinct_hashes = sorted({a.content_hash for a in matches})
+        if len(distinct_hashes) > 1:
+            shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
+            raise AmbiguousApprovalError(
+                f"{name!r} matches {len(distinct_hashes)} pending {store}records with "
+                f"different content — refusing to guess which was reviewed. "
+                f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
+            )
+        for a in matches:
+            to_clear.add(a.key)
+            cleared_names.add(a.name)
+    return sorted(cleared_names), to_clear
+
+
 def approve(
-    state_dir: Path, names: Iterable[str] | None = None, *, approve_all: bool = False
+    state_dir: Path,
+    names: Iterable[str] | None = None,
+    *,
+    approve_all: bool = False,
+    dry_run: bool = False,
 ) -> list[str]:
     """Clear quarantine for the given ``names``, or every pending artifact when
     ``approve_all``. Returns the names actually cleared.
+
+    With ``dry_run`` the same selection runs against the current state and the names
+    that *would* clear are returned; nothing is saved and no lock is taken.
 
     Each entry in ``names`` is either a bare artifact name, or ``"name@hash-prefix"``
     (a prefix of the record's ``content_hash``) to name one specific record. A bare
@@ -263,39 +312,16 @@ def approve(
     """
     if not state_dir.exists():
         return []  # nothing installed → nothing to clear
+    if dry_run:
+        return _select_for_approval(load_pending(state_dir), names, approve_all, store="")[0]
     # Serialize the load→clear→save cycle so a concurrent ``add_pending`` (a fresh
     # pull recording new gated artifacts) can't be clobbered by this approve's save.
     with file_lock(_state_file(state_dir)):
         pending = load_pending(state_dir)
-        if approve_all:
-            cleared = sorted({a.name for a in pending})
-            _save_pending(state_dir, [])
-            return cleared
-
-        to_clear: set[tuple[str, str, str]] = set()
-        cleared_names: set[str] = set()
-        for selector in names or ():
-            name, sep, hash_prefix = selector.partition("@")
-            matches = [a for a in pending if a.name == name]
-            if sep:
-                matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
-            if not matches:
-                continue  # unknown name/hash → no-op, matches prior behavior
-            distinct_hashes = sorted({a.content_hash for a in matches})
-            if len(distinct_hashes) > 1:
-                shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
-                raise AmbiguousApprovalError(
-                    f"{name!r} matches {len(distinct_hashes)} pending records with "
-                    f"different content — refusing to guess which was reviewed. "
-                    f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
-                )
-            for a in matches:
-                to_clear.add(a.key)
-                cleared_names.add(a.name)
-
-        if to_clear:
+        cleared, to_clear = _select_for_approval(pending, names, approve_all, store="")
+        if approve_all or to_clear:
             _save_pending(state_dir, [a for a in pending if a.key not in to_clear])
-        return sorted(cleared_names)
+        return cleared
 
 
 def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
@@ -499,47 +525,32 @@ def record_office_delta(state_dir: Path, office_root: Path) -> list[QuarantinedA
 
 
 def approve_office(
-    state_dir: Path, names: Iterable[str] | None = None, *, approve_all: bool = False
+    state_dir: Path,
+    names: Iterable[str] | None = None,
+    *,
+    approve_all: bool = False,
+    dry_run: bool = False,
 ) -> list[str]:
     """Clear the office quarantine for reviewed artifacts (office analogue of
     ``approve``). Same content-addressed, ambiguity-refusing semantics: a bare name
     matching two distinct pending hashes raises ``AmbiguousApprovalError`` rather than
     guess. Approving removes the record from the office pending store; the identity
     stays in the baseline, so it is not re-quarantined and compile places it next
-    recompile. Propagates ``QuarantineStateError`` on a corrupt store."""
+    recompile. With ``dry_run`` returns what would clear, saving nothing and taking no
+    lock. Propagates ``QuarantineStateError`` on a corrupt store."""
     if not state_dir.exists():
         return []  # nothing installed → nothing to clear
+    if dry_run:
+        return _select_for_approval(
+            load_office_pending(state_dir), names, approve_all, store="office "
+        )[0]
     # Serialize the load→clear→save cycle against a concurrent record_office_delta.
     with file_lock(_office_state_file(state_dir)):
         pending = load_office_pending(state_dir)
-        if approve_all:
-            cleared = sorted({a.name for a in pending})
-            _save_office_pending(state_dir, [])
-            return cleared
-
-        to_clear: set[tuple[str, str, str]] = set()
-        cleared_names: set[str] = set()
-        for selector in names or ():
-            name, sep, hash_prefix = selector.partition("@")
-            matches = [a for a in pending if a.name == name]
-            if sep:
-                matches = [a for a in matches if a.content_hash.startswith(hash_prefix)]
-            if not matches:
-                continue
-            distinct_hashes = sorted({a.content_hash for a in matches})
-            if len(distinct_hashes) > 1:
-                shown = ", ".join(h[:12] + "…" for h in distinct_hashes)
-                raise AmbiguousApprovalError(
-                    f"{name!r} matches {len(distinct_hashes)} pending office records with "
-                    f"different content — refusing to guess which was reviewed. "
-                    f"Re-run with '{name}@<hash-prefix>' to pick one (pending hashes: {shown})."
-                )
-            for a in matches:
-                to_clear.add(a.key)
-                cleared_names.add(a.name)
-        if to_clear:
+        cleared, to_clear = _select_for_approval(pending, names, approve_all, store="office ")
+        if approve_all or to_clear:
             _save_office_pending(state_dir, [a for a in pending if a.key not in to_clear])
-        return sorted(cleared_names)
+        return cleared
 
 
 def office_reconcile(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
