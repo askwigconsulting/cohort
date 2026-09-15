@@ -160,7 +160,7 @@ so the prompt-per-consult was deliberately removed.
 
 | Command | Goes to | What it sends |
 |---|---|---|
-| `/consult-gpt`, `cohort engine consult gpt` | OpenAI (Codex CLI) | the assembled prompt file, gated in code first (egress marker, secret scan, 200 KB cap); codex runs `--sandbox read-only` in an empty scratch directory, not in your repo — its sandbox blocks writes and network, not reads |
+| `/consult-gpt`, `cohort engine consult gpt` | OpenAI (Codex CLI) | the assembled prompt file, gated in code first (egress marker, secret scan, 200 KB cap). Jailed to the prompt where bubblewrap is available (empty scratch root, ephemeral HOME holding only `~/.codex`, nothing of your repo or home mounted); otherwise codex can read what you can — the prompt is gated, the reads are not, and the command says so before it starts |
 | `/consult-grok`, `cohort engine consult grok` | xAI | the prompt you packaged (API-direct, no repo access); with grok-cli + bwrap installed, also the tracked files of a throwaway worktree it chooses to read |
 | `cohort engine review` | xAI | files it chooses to read, one gated read at a time |
 | `cohort engine propose --agentic` | xAI | the same gated reads, plus the patch it proposes |

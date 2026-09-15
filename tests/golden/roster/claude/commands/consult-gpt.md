@@ -56,11 +56,14 @@ secrets, credentials, or `.env` contents in a consult prompt under any policy; t
 command scans the prompt for credential-shaped content and refuses on a hit
 ("Nothing was sent"), and caps the prompt at 200 KB.
 
-What leaves the machine is the prompt file — nothing else is packaged. Codex runs with
-`--sandbox read-only` in an empty scratch directory, not in this repo, so its working
-root holds nothing of yours. Its sandbox blocks writes and network for the commands it
-runs but does not confine reads, so a repo that must not egress relies on the marker,
-which refuses before codex starts — not on the sandbox.
+What leaves the machine is the prompt file — nothing else is packaged, and where
+bubblewrap (`bwrap`) is installed codex is **jailed to the prompt**: it runs in an empty
+scratch directory inside a kernel jail with an ephemeral HOME that holds only `~/.codex`
+(so the saved login works) and nothing of this repo or your home mounted. Without
+bubblewrap the consult still runs, but codex's own `--sandbox read-only` confines writes
+and network, not reads — codex can read what you can, and the command says so on
+stderr before it starts: **the prompt is gated, the reads are not.** A repo that must
+not egress relies on the marker, which refuses before codex starts.
 
 ## 3. Ask — package for disagreement
 

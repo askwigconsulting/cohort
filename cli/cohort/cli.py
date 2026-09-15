@@ -1278,9 +1278,14 @@ def _print_consult_dry_run(
     from .engines import codex_cli
 
     if spec.transport == codex_cli.TRANSPORT:
+        jail = (
+            "inside a bubblewrap jail (nothing of this repo or your home mounted)"
+            if codex_cli.jailed()
+            else "UNJAILED — bwrap not found, so codex can read any file you can"
+        )
         channel = (
             "codex CLI — `codex exec --sandbox read-only` in an empty scratch working "
-            "root, the prompt on stdin"
+            f"root, the prompt on stdin, {jail}"
         )
         budget = codex_cli.CONSULT_TIMEOUT_SECONDS if timeout is None else timeout
         limits = f"--timeout {budget:g}s"
@@ -1313,9 +1318,19 @@ def _run_codex_consult(prompt: str, *, model: Optional[str], timeout: Optional[f
     from .engines import codex_cli
 
     budget = codex_cli.CONSULT_TIMEOUT_SECONDS if timeout is None else timeout
-    if codex_cli.available():
+    if codex_cli.available() and codex_cli.jailed():
         typer.echo(
-            f"note: consulting codex (read-only sandbox, empty scratch root; up to {budget:g}s)",
+            f"note: consulting codex inside a bubblewrap jail — read-only sandbox, empty "
+            f"scratch root, ephemeral HOME holding only ~/.codex; nothing of this repo or "
+            f"your home is mounted (up to {budget:g}s)",
+            err=True,
+        )
+    elif codex_cli.available():
+        typer.echo(
+            "note: bubblewrap (bwrap) not found — codex runs UNJAILED: its read-only "
+            "sandbox blocks writes and network for the commands it runs, but it can read "
+            "any file you can and send it. The prompt is gated; the reads are not. "
+            f"Install bwrap to jail it (up to {budget:g}s)",
             err=True,
         )
     try:

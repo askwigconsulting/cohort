@@ -91,8 +91,12 @@ def test_consult_gpt_egress_default_allow_with_code_enforced_opt_out_and_secrets
 def test_consult_gpt_says_exactly_what_egresses():
     body = _consult_body()
     assert "What leaves the machine is the prompt file" in body
-    assert "empty scratch directory" in body
-    assert "does not confine reads" in body  # the honest residual, not a "no repo access" claim
+    assert "jailed to the prompt" in body
+    assert "nothing of this repo or your home mounted" in body
+    # The honest residual for a host without bubblewrap — never an unconditional
+    # "no repo access" claim.
+    assert "codex can read what you can" in body
+    assert "the prompt is gated, the reads are not" in body
 
 
 def test_consult_gpt_never_downgrades_the_model_for_cost():
@@ -156,7 +160,11 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (tmp_path / ".cohort").mkdir()
     (tmp_path / ".cohort" / "project_context.md").write_text("# ctx\n", encoding="utf-8")
     monkeypatch.setattr("cohort.cli.find_repo_root", lambda _cwd: tmp_path)
-    monkeypatch.setattr(codex_cli.shutil, "which", lambda name: "/fake/bin/codex")
+    monkeypatch.setattr(
+        codex_cli.shutil, "which", lambda name: "/fake/bin/codex" if name == "codex" else None
+    )
+    # Unjailed by default so the codex argv is inspectable; jail tests opt in.
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: None)
     return tmp_path
 
 
@@ -319,4 +327,32 @@ def test_engine_review_gpt_is_refused_as_an_unregistered_role(repo: Path, launch
     result = runner.invoke(app, ["engine", "review", "gpt", "--task-file", str(task)])
     assert result.exit_code == 2
     assert "'review' role" in result.output
+    assert launch.calls == []
+
+
+def test_engine_consult_gpt_announces_the_jail_or_the_lack_of_one(
+    repo: Path, launch: _Launch, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    jailed = runner.invoke(app, ["engine", "consult", "gpt", "--prompt-file", str(_prompt(repo))])
+    assert jailed.exit_code == 0, jailed.output
+    assert "bubblewrap jail" in jailed.output
+    assert launch.calls[-1]["cmd"][0] == "/usr/bin/bwrap"
+
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: None)
+    bare = runner.invoke(app, ["engine", "consult", "gpt", "--prompt-file", str(_prompt(repo))])
+    assert bare.exit_code == 0, bare.output
+    assert "UNJAILED" in bare.output and "can read any file you can" in bare.output
+    assert launch.calls[-1]["cmd"][0] == "codex"
+
+
+def test_engine_consult_gpt_dry_run_states_whether_codex_would_be_jailed(
+    repo: Path, launch: _Launch, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: None)
+    result = runner.invoke(
+        app, ["--dry-run", "engine", "consult", "gpt", "--prompt-file", str(_prompt(repo))]
+    )
+    assert result.exit_code == 0, result.output
+    assert "UNJAILED" in result.output
     assert launch.calls == []
