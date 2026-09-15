@@ -29,7 +29,12 @@ worktree, never on trusting the engine:
   files off a vendor should use the egress opt-out or the gated ``patch_proposal`` path.
 * The worktree is a **detached checkout off HEAD** — committed files only, so no
   untracked secret (a git-ignored ``.env``) is ever exposed — and it is discarded if the
-  run is rejected.
+  run is rejected. Committed does not mean *shippable*, though: Cohort's own local
+  records (``.cohort/sessions``, ``feedback``, ``proposals``, ``state``) are tracked by
+  design and carry the git author's real name and email plus free-text notes, so they are
+  removed from the checkout before any gate runs (:func:`_exclude_local_records`).
+  Every tracked entry that survives must be a **regular file**: a committed symlink or
+  device refuses the dispatch, because its size and contents resolve outside the worktree.
 * The task **egresses to the vendor**, so the repo's egress opt-out and a secret scan on
   the task text gate the dispatch *before* the CLI is invoked. The CLI also reads and
   sends the worktree's committed files, so a hard **total wire-byte cap** bounds the whole
@@ -59,6 +64,7 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -110,6 +116,26 @@ _CODEX_ENV_PASSTHROUGH = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME")
 # deliberately NOT here; a user behind an authenticating proxy widens the allow-list.
 _TLS_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE")
 
+# Repo-relative directory prefixes stripped out of a doer worktree before any gate runs
+# (#275). These hold Cohort's OWN local records, tracked by design but never part of the
+# work: session entries carry the git author's real name and email (``project.py``'s
+# ``author`` field), feedback entries are free text that routinely quotes code and
+# frustration, proposals are earlier engine payloads, and ``state`` is local bookkeeping.
+# A plain detached checkout would hand all of it to the vendor alongside the source. The
+# user consented to that content living in their own git remote, not to shipping it to a
+# model vendor, and nothing a doer is asked to do needs it.
+_EXCLUDED_WORKTREE_PREFIXES: tuple[str, ...] = (
+    ".cohort/sessions/",
+    ".cohort/feedback/",
+    ".cohort/proposals/",
+    ".cohort/state/",
+)
+
+# How many paths to hand one ``git update-index`` invocation. A repo with thousands of
+# session entries would otherwise build an argv past the OS limit; git applies each batch
+# independently, so splitting changes nothing but the argv length.
+_GIT_PATH_BATCH = 100
+
 
 def _scrubbed_env(*, home: Path, passthrough: tuple[str, ...]) -> dict[str, str]:
     """Build a minimal environment for a vendor CLI, dropping every host secret.
@@ -140,11 +166,163 @@ def _scrubbed_env(*, home: Path, passthrough: tuple[str, ...]) -> dict[str, str]
     return env
 
 
+def _git_tracked_paths(worktree: Path) -> list[str]:
+    """Every path in the worktree's index, unfiltered. NUL-delimited so a path with an
+    embedded newline is not split. Callers want :func:`_tracked_worktree_files`; this raw
+    form exists for :func:`_exclude_local_records`, which runs *before* the exclusion it
+    is about to perform is true."""
+    return [rel for rel in _git(worktree, "ls-files", "-z").split("\0") if rel]
+
+
+def _is_local_record(rel: str) -> bool:
+    """True if ``rel`` is one of Cohort's own local records, excluded from doer
+    worktrees (:data:`_EXCLUDED_WORKTREE_PREFIXES`)."""
+    return rel.startswith(_EXCLUDED_WORKTREE_PREFIXES)
+
+
 def _tracked_worktree_files(worktree: Path) -> list[str]:
     """List the worktree's tracked (committed) files — the exact set a vendor CLI can
     read and egress. Shared by the secret scan and the wire-byte cap so both gate the
-    same set of files. NUL-delimited so a path with an embedded newline is not split."""
-    return [rel for rel in _git(worktree, "ls-files", "-z").split("\0") if rel]
+    same set of files.
+
+    Two things narrow "tracked" to "readable, and ours to expose":
+
+    * Cohort's own local records are dropped (:func:`_is_local_record`). They are not in
+      the worktree either — :func:`_exclude_local_records` deleted them at creation — so
+      listing them would only make the gates below fail on a file that is not there.
+    * A tracked entry that is **not a regular file** refuses the dispatch outright
+      (#288). ``git ls-files`` happily lists a committed symlink, so "tracked" is a
+      *lexical* bound, not a structural one: a link to ``/dev/zero`` makes the byte count
+      read forever, and a link to a host file makes Cohort stat and scan something
+      outside the worktree at the repo author's direction. ``lstat`` classifies the entry
+      itself, and the refusal happens here — during listing, before any caller has opened
+      anything.
+
+    An entry that cannot be ``lstat``-ed at all is *kept* in the list rather than
+    refused here, so the caller's own fail-closed read (an unmeasurable file for the wire
+    cap, an unreadable one for the secret scan) raises with its specific message.
+
+    Raises:
+        UnsafeWorktreeEntryError: a tracked entry is a symlink, device, FIFO or socket.
+    """
+    files: list[str] = []
+    for rel in _git_tracked_paths(worktree):
+        if _is_local_record(rel):
+            continue
+        try:
+            mode = (worktree / rel).lstat().st_mode
+        except OSError:
+            files.append(rel)
+            continue
+        if not stat.S_ISREG(mode):
+            raise UnsafeWorktreeEntryError(
+                f"tracked worktree entry {rel!r} is not a regular file "
+                f"({_entry_kind(mode)}); refusing to dispatch. A committed link or "
+                "device resolves outside the worktree, so neither its size nor its "
+                "contents can be bounded before they reach the vendor."
+            )
+        files.append(rel)
+    return files
+
+
+def _entry_kind(mode: int) -> str:
+    """Name the kind of a non-regular directory entry, for a refusal message."""
+    if stat.S_ISLNK(mode):
+        return "symbolic link"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    if stat.S_ISFIFO(mode):
+        return "FIFO"
+    if stat.S_ISSOCK(mode):
+        return "socket"
+    if stat.S_ISBLK(mode) or stat.S_ISCHR(mode):
+        return "device"
+    return "not a regular file"
+
+
+def _exclude_local_records(worktree: Path) -> None:
+    """Delete Cohort's own local records from a freshly created doer worktree.
+
+    Chosen over ``git sparse-checkout`` deliberately: deleting the checked-out files and
+    marking them ``--skip-worktree`` needs no git-version-dependent sparse machinery, and
+    it leaves ``git status`` clean and ``git add -A`` free of phantom deletions — so the
+    diff the coordinator reviews shows the engine's work and nothing else. Without the
+    skip-worktree bit, every excluded file would read as deleted by the engine.
+
+    **Residual, stated plainly.** This removes the files from the *checkout*, which is
+    what the vendor CLI walks. It does not remove them from the object store the worktree
+    is attached to. grok cannot reach that store — the bubblewrap jail binds only the
+    worktree, and its ``.git`` file points outside — but codex reads the whole host
+    filesystem by design (see this module's docstring), so a codex run that deliberately
+    went looking could still restore them. The threat this closes is the default one: a
+    routine dispatch shipping the author's name, email and friction notes to a vendor
+    without anyone choosing to.
+
+    Args:
+        worktree: A detached worktree created by :func:`patch_proposal._create_worktree`.
+    """
+    excluded = [rel for rel in _git_tracked_paths(worktree) if _is_local_record(rel)]
+    if not excluded:
+        return
+    for rel in excluded:
+        try:
+            (worktree / rel).unlink()
+        except FileNotFoundError:
+            pass
+    for index in range(0, len(excluded), _GIT_PATH_BATCH):
+        _git(
+            worktree,
+            "update-index",
+            "--skip-worktree",
+            "--",
+            *excluded[index : index + _GIT_PATH_BATCH],
+        )
+    _prune_empty_record_dirs(worktree)
+
+
+def _prune_empty_record_dirs(worktree: Path) -> None:
+    """Remove the directories the excluded records left behind, deepest first.
+
+    Cosmetic but worth it: an empty ``.cohort/sessions/`` invites the engine to treat it
+    as a place to write. ``rmdir`` refuses a non-empty directory, so an untracked file
+    someone left in one is never destroyed."""
+    for prefix in _EXCLUDED_WORKTREE_PREFIXES:
+        root = worktree / prefix
+        if not root.is_dir():
+            continue
+        for parent, dirs, _files in os.walk(root, topdown=False):
+            for name in dirs:
+                try:
+                    os.rmdir(os.path.join(parent, name))
+                except OSError:
+                    pass
+        try:
+            root.rmdir()
+        except OSError:
+            pass
+
+
+def _create_doer_worktree(repo_root: Path) -> Path:
+    """Create the detached worktree a vendor CLI will run in.
+
+    The single creation point for every CLI-doer path, so the exclusion of Cohort's own
+    local records (#275) cannot be reached by one doer and missed by another — and so the
+    gates that follow measure and scan exactly what the vendor CLI can read. Cleans up
+    after itself if the exclusion fails, rather than leaking a worktree.
+
+    Args:
+        repo_root: The repository to check out from.
+
+    Returns:
+        The new worktree's path; the caller owns its lifecycle.
+    """
+    worktree = patch_proposal._create_worktree(repo_root)
+    try:
+        _exclude_local_records(worktree)
+    except BaseException:
+        patch_proposal.cleanup_worktree(repo_root, worktree)
+        raise
+    return worktree
 
 
 def _worktree_exposed_byte_count(worktree: Path) -> int:
@@ -156,6 +334,7 @@ def _worktree_exposed_byte_count(worktree: Path) -> int:
     on-disk byte length of the committed file in the detached checkout.
 
     Raises:
+        UnsafeWorktreeEntryError: a tracked entry is not a regular file.
         gates.PayloadTooLargeError: a tracked file could not be measured; the dispatch is
             refused because its exposed byte count cannot be bounded.
     """
@@ -182,6 +361,7 @@ def _assert_worktree_within_wire_budget(
     :func:`gates.assert_total_wire_bytes`.
 
     Raises:
+        UnsafeWorktreeEntryError: a tracked entry is not a regular file.
         gates.PayloadTooLargeError: the total exposed payload exceeds ``max_wire_bytes``,
             or a tracked file could not be measured.
     """
@@ -334,6 +514,7 @@ def _assert_worktree_files_have_no_secrets(
     tracked contents and refuses before dispatch on any credential-shaped hit.
 
     Raises:
+        UnsafeWorktreeEntryError: a tracked entry is not a regular file.
         gates.SecretFoundError: a tracked file carries credential-shaped content. The
             message lists only non-secret finding labels, never a matched value.
     """
@@ -410,6 +591,19 @@ def _assert_worktree_files_have_no_secrets(
 
 class DoerError(Exception):
     """Base class for CLI-doer failures."""
+
+
+class UnsafeWorktreeEntryError(DoerError, gates.GateError):
+    """A tracked worktree entry is not a regular file, so its exposure cannot be bounded.
+
+    Raised by :func:`_tracked_worktree_files` before anything is opened (#288).
+
+    It is deliberately **both** a :class:`DoerError` and a
+    :class:`~cohort.engines.gates.GateError`: it is a doer-path failure, but it is also a
+    fail-closed pre-egress refusal, and the CLI catches those two taxonomies at different
+    entrypoints. Inheriting from one alone would leave the other printing a traceback
+    where every sibling refusal prints a message.
+    """
 
 
 class DoerFailedError(DoerError):
@@ -931,7 +1125,8 @@ def _grok_gated_worktree(
        use);
     3. :func:`gates.require_egress_allowed` (honor the repo's egress opt-out);
     4. :func:`gates.assert_no_secrets` on the task text;
-    5. create the detached, committed-files-only worktree;
+    5. :func:`_create_doer_worktree` — the detached, committed-files-only worktree, with
+       Cohort's own local records excluded from the checkout;
     6. :func:`_assert_worktree_within_wire_budget` — bound the TOTAL egress (task +
        tracked worktree bytes the CLI reads and sends);
     7. :func:`_assert_worktree_files_have_no_secrets` — secret-scan those same files.
@@ -947,6 +1142,7 @@ def _grok_gated_worktree(
             (or a committed worktree file) carries credential-shaped content.
         PayloadTooLargeError: the total exposed payload exceeds ``max_wire_bytes``, or a
             tracked file could not be measured fail-closed.
+        UnsafeWorktreeEntryError: a tracked worktree entry is not a regular file.
     """
     if not task.strip():
         raise DoerError("task is empty")
@@ -958,7 +1154,7 @@ def _grok_gated_worktree(
     gates.require_egress_allowed(egress_text)
     gates.assert_no_secrets(task)
 
-    worktree = patch_proposal._create_worktree(repo_root)
+    worktree = _create_doer_worktree(repo_root)
     try:
         # The vendor CLI reads the worktree's committed files and sends them to xAI, so
         # gate those files (not just the task string) before dispatch: bound the TOTAL
@@ -999,6 +1195,7 @@ def run_grok_doer(
         PayloadTooLargeError: the total exposed payload (task + tracked worktree files)
             exceeds ``max_wire_bytes``, or a tracked file could not be measured
             fail-closed (both gated before grok runs).
+        UnsafeWorktreeEntryError: a tracked worktree entry is not a regular file.
     """
     worktree = _grok_gated_worktree(
         task,
@@ -1061,6 +1258,7 @@ def run_grok_review(
         PayloadTooLargeError: the total exposed payload (task + tracked worktree files)
             exceeds ``max_wire_bytes``, or a tracked file could not be measured
             fail-closed (both gated before grok runs).
+        UnsafeWorktreeEntryError: a tracked worktree entry is not a regular file.
     """
     worktree = _grok_gated_worktree(
         task,
@@ -1119,6 +1317,7 @@ def run_codex_doer(
         PayloadTooLargeError: the total exposed payload (task + tracked worktree files)
             exceeds ``max_wire_bytes``, or a tracked file could not be measured
             fail-closed (both gated before the CLI is invoked).
+        UnsafeWorktreeEntryError: a tracked worktree entry is not a regular file.
     """
     if not task.strip():
         raise DoerError("task is empty")
@@ -1132,7 +1331,7 @@ def run_codex_doer(
     gates.require_egress_allowed(egress_text)
     gates.assert_no_secrets(task)
 
-    worktree = patch_proposal._create_worktree(repo_root)
+    worktree = _create_doer_worktree(repo_root)
     try:
         # The CLI reads the worktree's committed files and sends them to the vendor, so
         # gate those files (not just the task string) before dispatch: bound the TOTAL
