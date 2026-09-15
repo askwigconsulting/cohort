@@ -168,7 +168,7 @@ def merge_layers(office_irs: list, my_irs: list) -> tuple[list, list]:
     overridden = []
     for ir in my_irs:
         key = (ir.kind, ir.name)
-        marked = ir.fields.get("overrides") is True
+        marked = ir.overrides
         if key in position:
             if marked:
                 merged[position[key]] = ir  # deliberate override, my wins

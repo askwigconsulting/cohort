@@ -30,6 +30,7 @@ from .errors import (
     E010_MISSING_FIELD,
     E011_FIELD_LENGTH,
     E020_BAD_ENUM,
+    E021_UNKNOWN_TOOL,
     E030_NAME_MISMATCH,
     E040_TARGETS_INVALID,
     E050_TYPE,
@@ -81,6 +82,19 @@ def shared_schema() -> dict[str, Any]:
 
 def kind_schema(kind: str) -> dict[str, Any]:
     return _load_schema(kind)
+
+
+def known_tools() -> tuple[str, ...]:
+    """The canonical tool vocabulary — declared once, as ``tools.items.enum`` in
+    ``agent.json``, so an out-of-tree schema dir (``COHORT_SCHEMA_DIR``) carries it."""
+    return tuple(kind_schema("agent")["properties"]["tools"]["items"]["enum"])
+
+
+def normalize_tool(name: str) -> str:
+    """Fold a tool name to its vocabulary key: lower-case, separators dropped, so
+    ``Read``, ``web-fetch`` and ``Web_Search`` all resolve. Renderers key their
+    native-name tables off the same fold, so the schema and the renderers agree."""
+    return name.lower().replace("-", "").replace("_", "")
 
 
 # --- Helpers ----------------------------------------------------------------
@@ -290,7 +304,9 @@ def _validate_agent(fm: dict[str, Any], errors: list[ArtifactError]) -> None:
     _validate_required(fm, kind_schema("agent"), errors)
     _check_type(fm, "department", "string", errors)
     _check_enum(fm, "topology", ("specialist", "generalist"), errors)
-    _check_array_of_strings(fm, "tools", errors)
+    # tools: element type (E050) before vocabulary (E021), as targets does.
+    if _check_array_of_strings(fm, "tools", errors):
+        _validate_tools(fm["tools"], errors)
     # model: an abstract cost/latency tier, never a concrete model ID (fail-closed —
     # anything outside the three values is rejected, consistent with topology/scope).
     _check_enum(fm, "model", ("fast", "default", "top"), errors)
@@ -313,6 +329,22 @@ def _validate_agent(fm: dict[str, Any], errors: list[ArtifactError]) -> None:
                 E060_SAFETY_INVARIANT, "tools",
                 "a doer (advisory: false) must declare tools",
             ))
+
+
+def _validate_tools(tools: list[str], errors: list[ArtifactError]) -> None:
+    """Every ``tools`` entry must fold to a name in the vocabulary. A renderer maps
+    only known names, so an unknown one would otherwise vanish silently — and an
+    agent narrowed to one unmapped tool would render with the read-only default."""
+    known = known_tools()
+    unknown = [t for t in tools if normalize_tool(t) not in known]
+    if unknown:
+        errors.append(
+            ArtifactError(
+                E021_UNKNOWN_TOOL,
+                "tools",
+                f"tools has unknown name(s): {unknown}; known tools: {', '.join(known)}",
+            )
+        )
 
 
 def _validate_command(fm: dict[str, Any], errors: list[ArtifactError]) -> None:

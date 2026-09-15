@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..ir import IRArtifact, is_doer
+from ..schema import normalize_tool
 from .base import MergeTarget
 from .claude import (
     StagedFile,
@@ -115,8 +116,9 @@ HOOK_EVENT_MAP = {
 
 
 def _norm_tool(name: str) -> Optional[str]:
-    key = name.lower().replace("-", "").replace("_", "")
-    return _TOOL_ALIAS_MAP.get(key)
+    """Copilot alias for a canonical tool, or ``None`` outside the vocabulary — which
+    validation (E021) already rejects, so a compiled artifact never reaches it."""
+    return _TOOL_ALIAS_MAP.get(normalize_tool(name))
 
 
 def copilot_tools(ir: IRArtifact) -> list[str]:

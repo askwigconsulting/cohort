@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from ..frontmatter import dump_frontmatter
 from ..ir import IRArtifact, is_doer
+from ..schema import normalize_tool
 from .base import MergeTarget
 
 # --- tool mapping (verified) -----------------------------------------------
@@ -102,8 +103,9 @@ class MarkerError(Exception):
 
 
 def _norm_tool(name: str) -> Optional[str]:
-    key = name.lower().replace("-", "").replace("_", "")
-    return _TOOL_MAP.get(key)
+    """Native name for a canonical tool, or ``None`` outside the vocabulary — which
+    validation (E021) already rejects, so a compiled artifact never reaches it."""
+    return _TOOL_MAP.get(normalize_tool(name))
 
 
 def claude_tools(ir: IRArtifact) -> list[str]:

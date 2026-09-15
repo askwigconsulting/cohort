@@ -9,7 +9,12 @@ A canonical artifact is a single ``.md`` file::
 
 Only the frontmatter is validated. The body is returned verbatim and may itself
 contain ``---`` lines (the closing delimiter is the *first* ``---`` after the
-opening one).
+opening one). A delimiter is ``---`` at column 0 (trailing whitespace tolerated):
+an indented ``---`` is frontmatter content — the continuation of a quoted
+multi-line value the serializer emitted — never the close.
+
+Frontmatter is parsed by :class:`StrictSafeLoader`: safe-load semantics, but a
+repeated mapping key is a parse error rather than a silent last-wins shadow.
 """
 
 from __future__ import annotations
@@ -22,17 +27,55 @@ import yaml
 
 from .errors import ArtifactError, E001_FRONTMATTER_PARSE
 
+# libyaml's C scanner when the wheel ships it (the pure-Python scanner is far slower
+# on the same text); construction — and so every resolved value — is the same
+# SafeConstructor either way, so the two bases parse a document identically.
+_SafeLoaderBase = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
 
 class FrontmatterError(Exception):
     """Raised when frontmatter cannot be split or parsed into a mapping."""
 
 
+class DuplicateKeyError(yaml.YAMLError):
+    """A mapping repeats a key. PyYAML's default is last-wins — a silent shadow a
+    reviewer can miss — so the loader rejects it instead."""
+
+    def __init__(self, key: Any) -> None:
+        super().__init__(f"frontmatter has duplicate key {key!r}")
+        self.key = key
+
+
+class StrictSafeLoader(_SafeLoaderBase):
+    """``SafeLoader`` that rejects a repeated key anywhere in the document.
+
+    Only explicit repeats are rejected: a key restated over a YAML merge (``<<``)
+    is the merge's documented override and still loads.
+    """
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        seen: set[Any] = set()
+        for key_node, _ in node.value:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                repeated = key in seen
+            except TypeError:
+                continue  # unhashable key: the base constructor raises its own error
+            if repeated:
+                raise DuplicateKeyError(key)
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 def split_frontmatter(raw: str) -> tuple[str, str]:
     """Split ``raw`` file text into ``(frontmatter_text, body_text)``.
 
-    Tolerates a leading UTF-8 BOM and CRLF / CR line endings. The body is the
-    text after the second ``---`` delimiter and is ``""`` when the file is
-    frontmatter-only.
+    Tolerates a leading UTF-8 BOM and CRLF / CR line endings. A delimiter is
+    ``---`` at column 0 (trailing whitespace tolerated); an indented ``---`` is
+    content. The body is the text after the second delimiter and is ``""``
+    when the file is frontmatter-only.
 
     Raises:
         FrontmatterError: if the opening or closing ``---`` delimiter is absent.
@@ -41,12 +84,12 @@ def split_frontmatter(raw: str) -> tuple[str, str]:
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     lines = normalized.split("\n")
 
-    if not lines or lines[0].strip() != "---":
+    if not lines or lines[0].rstrip() != "---":
         raise FrontmatterError("missing opening '---' frontmatter delimiter")
 
     close_idx: Optional[int] = None
     for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
+        if lines[i].rstrip() == "---":
             close_idx = i
             break
     if close_idx is None:
@@ -61,10 +104,13 @@ def parse_frontmatter(frontmatter_text: str) -> dict[str, Any]:
     """Parse frontmatter YAML and require it to be a mapping.
 
     Raises:
-        FrontmatterError: on invalid YAML or non-mapping (list, scalar, empty).
+        FrontmatterError: on invalid YAML, a duplicate key, or a non-mapping
+            (list, scalar, empty).
     """
     try:
-        data = yaml.safe_load(frontmatter_text)
+        data = yaml.load(frontmatter_text, Loader=StrictSafeLoader)
+    except DuplicateKeyError as exc:
+        raise FrontmatterError(str(exc)) from exc
     except yaml.YAMLError as exc:  # noqa: BLE001 - re-wrapped intentionally
         raise FrontmatterError(f"frontmatter is not valid YAML: {exc}") from exc
     if not isinstance(data, dict):
