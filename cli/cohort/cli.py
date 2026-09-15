@@ -2183,7 +2183,15 @@ def my_office_sync(
 
 
 @my_office_app.command("review")
-def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
+def my_office_review(
+    json_output: bool = typer.Option(False, "--json"),
+    reset: bool = typer.Option(
+        False, "--reset",
+        help="Rebuild the pending list from disk, fail closed: every gated artifact in "
+        "~/.cohort/my/canonical is withheld until approved. The repair for an unreadable "
+        "quarantine store.",
+    ),
+) -> None:
     """List pulled-but-unreviewed artifacts held back by the quarantine (#107).
 
     ``my-office sync`` withholds hooks and memories a pull introduced — a hook runs
@@ -2195,26 +2203,41 @@ def my_office_review(json_output: bool = typer.Option(False, "--json")) -> None:
     from .install_model import CohortPaths
 
     paths = CohortPaths.for_global(Path.home())
-    try:
-        pending = quarantine.reconcile(paths.state, paths.my)  # prune stale, then list
-    except quarantine.QuarantineStateError as exc:
-        typer.echo(
-            f"error: {exc}\nThe quarantine state is unreadable, so every pulled "
-            "hook/memory stays withheld. Delete the file to reset, then re-sync.",
-            err=True,
-        )
-        raise typer.Exit(code=1)
-    report = {"action": "my-office-review", "pending": [a.to_dict() for a in pending]}
+    if reset:
+        pending = quarantine.reset_pending(paths.state, paths.my)
+    else:
+        try:
+            pending = quarantine.reconcile(paths.state, paths.my)  # prune stale, then list
+        except quarantine.QuarantineStateError as exc:
+            typer.echo(
+                f"error: {exc}\nThe quarantine state is unreadable, so every pulled "
+                "hook/memory stays withheld. Run `cohort my-office review --reset` to "
+                "rebuild it from disk (every gated artifact in ~/.cohort/my/canonical "
+                "becomes pending), then approve what you have reviewed.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+    report = {
+        "action": "my-office-review", "reset": reset,
+        "pending": [a.to_dict() for a in pending],
+    }
 
     def human(r: dict) -> None:
         items = r["pending"]
-        if not items:
+        if r["reset"]:
+            typer.echo(
+                f"my-office review: rebuilt the quarantine from disk — {len(items)} gated "
+                "artifact(s) now pending (withheld from every recompile until approved)."
+            )
+        elif not items:
             typer.echo("my-office review: nothing pending — no pulled artifacts awaiting approval.")
+        else:
+            typer.echo(
+                f"my-office review: {len(items)} pulled artifact(s) awaiting approval "
+                "(withheld from every recompile until approved):"
+            )
+        if not items:
             return
-        typer.echo(
-            f"my-office review: {len(items)} pulled artifact(s) awaiting approval "
-            "(withheld from every recompile until approved):"
-        )
         for a in items:
             typer.echo(f"  • {a['kind']} {a['name']}  ({a['content_hash'][:12]}…)")
         typer.echo(
@@ -2294,7 +2317,15 @@ def my_office_approve(
 
 
 @office_app.command("review")
-def office_review(json_output: bool = typer.Option(False, "--json")) -> None:
+def office_review(
+    json_output: bool = typer.Option(False, "--json"),
+    reset: bool = typer.Option(
+        False, "--reset",
+        help="Rebuild the pending list from the office source, fail closed: every gated "
+        "office artifact the trusted baseline does not vouch for is withheld until "
+        "approved. The repair for an unreadable office quarantine store.",
+    ),
+) -> None:
     """List office-layer artifacts an update pull held back for review (F3).
 
     ``cohort update`` fast-forwards the shared office source. On a shared office remote
@@ -2305,20 +2336,36 @@ def office_review(json_output: bool = typer.Option(False, "--json")) -> None:
     """
     from . import quarantine
     from .install_model import CohortPaths
+    from .source import resolve_source_lenient
 
     paths = CohortPaths.for_global(Path.home())
-    try:
-        keys = quarantine.office_pending_keys(paths.state)
-    except quarantine.QuarantineStateError as exc:
-        typer.echo(
-            f"error: {exc}\nThe office quarantine state is unreadable, so every "
-            "update-pulled office artifact stays withheld. Delete the file to reset, "
-            "then re-run `cohort update`.",
-            err=True,
-        )
-        raise typer.Exit(code=1)
+    if reset:
+        # The same resolution the recompile uses, so the rebuilt store gates exactly
+        # the tree that will be placed — never a different clone.
+        source = resolve_source_lenient(Path.home())
+        if source is None:
+            typer.echo(
+                "error: cannot rebuild the office quarantine — the office source could "
+                "not be resolved (set COHORT_SOURCE or pass through `cohort install`).",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        keys = {a.key for a in quarantine.reset_office_pending(paths.state, source)}
+    else:
+        try:
+            keys = quarantine.office_pending_keys(paths.state)
+        except quarantine.QuarantineStateError as exc:
+            typer.echo(
+                f"error: {exc}\nThe office quarantine state is unreadable, so every "
+                "update-pulled office artifact stays withheld. Run `cohort office review "
+                "--reset` to rebuild it from the office source, then approve what you "
+                "have reviewed.",
+                err=True,
+            )
+            raise typer.Exit(code=1)
     report = {
         "action": "office-review",
+        "reset": reset,
         "pending": [
             {"kind": k, "name": n, "content_hash": h} for (k, n, h) in sorted(keys)
         ],
@@ -2326,16 +2373,24 @@ def office_review(json_output: bool = typer.Option(False, "--json")) -> None:
 
     def human(r: dict) -> None:
         items = r["pending"]
-        if not items:
+        if r["reset"]:
+            typer.echo(
+                f"office review: rebuilt the office quarantine from the source — "
+                f"{len(items)} gated artifact(s) now pending (withheld from every "
+                "recompile until approved)."
+            )
+        elif not items:
             typer.echo(
                 "office review: nothing pending — no update-pulled office artifacts "
                 "awaiting approval."
             )
+        else:
+            typer.echo(
+                f"office review: {len(items)} office artifact(s) awaiting approval "
+                "(withheld from every recompile until approved):"
+            )
+        if not items:
             return
-        typer.echo(
-            f"office review: {len(items)} office artifact(s) awaiting approval "
-            "(withheld from every recompile until approved):"
-        )
         for a in items:
             typer.echo(f"  • {a['kind']} {a['name']}  ({a['content_hash'][:12]}…)")
         typer.echo(

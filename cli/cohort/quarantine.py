@@ -11,11 +11,13 @@ artifact a pull introduced or changed, so the withhold is **durable and IDE-
 agnostic**: *every* ``compile_ide`` (not just the sync recompile) withholds those
 exact artifacts until the user clears them with ``cohort my-office approve``.
 
-Classification matches the compiler exactly. The compiler discovers artifacts with
-a whole-tree ``rglob('*.md')`` and dispatches on the frontmatter ``kind`` — the
-on-disk *directory* is not authoritative (nothing enforces ``kind: hook`` living in
-``hooks/``). So this module also classifies by frontmatter ``kind``: a hook hidden
-in ``canonical/agents/`` still renders as a hook, and must still be quarantined.
+Classification matches the compiler exactly. Enumeration is the compiler's own
+``schema.discover_artifacts`` (``<canonical>/<kind-dir>/*.md``, refusing an entry
+that is itself a symlink), and kind is the frontmatter ``kind`` — the on-disk
+*directory* is not authoritative (nothing enforces ``kind: hook`` living in
+``hooks/``). So a hook hidden in ``canonical/agents/`` still renders as a hook, and
+must still be quarantined; and what discovery refuses is never compiled, so it is
+never hashed or recorded here either.
 
 Design notes:
 * Gated kinds are the auto-activating sinks: hooks, memories, skills, and agents.
@@ -44,6 +46,7 @@ from typing import Iterable, Optional
 from .filelock import file_lock
 from .loader import load_artifact
 from .manifest import now_iso
+from .schema import KIND_DIRS, discover_artifacts
 
 # Auto-activating sinks that must not place without review (maintainer decision,
 # #107, extended by adversarial review): hooks run on IDE events, memories load
@@ -112,7 +115,11 @@ def gated_identity(path: Path) -> Optional[tuple[str, str]]:
     """``(kind, name)`` from an artifact's **frontmatter** when its kind is gated,
     else None — classifying the file the same way the compiler will (by ``kind``,
     not by directory). A file that cannot be loaded returns None: the compiler would
-    raise on it too, so it never renders and needs no quarantine."""
+    raise on it too, so it never renders and needs no quarantine. A symlink returns
+    None without being read: discovery refuses it (#285), so its target's bytes are
+    never compiled and must never be hashed as if they were."""
+    if path.is_symlink():
+        return None
     try:
         fm = load_artifact(path).frontmatter
     except Exception:  # noqa: BLE001 - unparseable → compile rejects it too → not placed
@@ -137,11 +144,23 @@ def gated_artifacts(paths: Iterable[Path]) -> list[tuple[str, str, Path]]:
 
 
 def all_gated_in(canonical_root: Path) -> list[tuple[str, str, Path]]:
-    """Every gated artifact anywhere under a canonical tree — whole-tree, so a hook
-    misfiled outside ``hooks/`` is still found (the fail-closed enumeration)."""
-    if not canonical_root.exists():
-        return []
-    return gated_artifacts(sorted(canonical_root.rglob("*.md")))
+    """Every gated artifact the compiler would see under a canonical tree (the
+    fail-closed enumeration). Uses the compiler's own discovery, so a hook misfiled
+    under ``agents/`` is still found, and a symlinked entry or a stray file outside
+    the kind directories is refused on both sides alike."""
+    return gated_artifacts(discover_artifacts(canonical_root))
+
+
+def has_symlinked_layout(canonical_root: Path) -> bool:
+    """Whether the canonical root or any of its kind directories is a symlink.
+
+    Discovery follows such ancestor links (a link-mode install depends on that), so
+    what they reach IS compiled — but the bytes sit outside the ``canonical/``
+    pathspec the my-office pull delta is computed over. A recorder seeing this must
+    fall back to the whole tree rather than trust the delta (#285)."""
+    return canonical_root.is_symlink() or any(
+        (canonical_root / sub).is_symlink() for sub in KIND_DIRS.values()
+    )
 
 
 _QUARANTINE_FILE = "quarantine.json"  # my-office (personal overlay) pull quarantine
@@ -290,8 +309,9 @@ def approve(
 def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
     """Drop pending records whose exact bytes are no longer present on disk (the
     artifact was deleted or changed by a later pull/edit), returning the survivors.
-    Classifies on-disk artifacts by frontmatter kind (whole-tree), matching how they
-    were recorded, so the two sides can never disagree on what "gated" means.
+    Classifies on-disk artifacts by frontmatter kind over the compiler's discovery,
+    matching how they were recorded, so the two sides can never disagree on what
+    "gated" means.
 
     Keyed on the FULL ``(kind, name, hash)`` identity — matching ``add_pending`` and
     the ``compile_ide`` withhold — so two gated files that share a kind+name but
@@ -300,17 +320,45 @@ def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
     an unreviewed artifact on the next recompile."""
     if not state_dir.exists():
         return []  # nothing installed → nothing to reconcile
-    live: set[tuple[str, str, str]] = {
-        (kind, name, content_hash(path))
-        for kind, name, path in all_gated_in(my_root / "canonical")
-    }
-    # Serialize the load→prune→save cycle against a concurrent add/approve.
+    # Serialize the scan→load→prune→save cycle against a concurrent add/approve. The
+    # disk scan must sit INSIDE the lock (#290): a record added between an unlocked
+    # scan and the prune is on disk but not in ``live``, so it would be pruned — and
+    # un-withheld — while still present.
     with file_lock(_state_file(state_dir)):
+        live = _live_identities(my_root / "canonical")
         pending = load_pending(state_dir)
         survivors = [a for a in pending if a.key in live]
         if len(survivors) != len(pending):
             _save_pending(state_dir, survivors)
     return survivors
+
+
+def _live_identities(canonical_root: Path) -> set[tuple[str, str, str]]:
+    """The ``(kind, name, content_hash)`` identity of every gated artifact on disk."""
+    return {
+        (kind, name, content_hash(path)) for kind, name, path in all_gated_in(canonical_root)
+    }
+
+
+def reset_pending(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
+    """Rebuild the my-office pending store from disk, fail closed: every gated
+    artifact currently in ``my_root/canonical`` becomes pending until approved.
+
+    The repair for an unreadable store (#294). The old remedy — delete the file and
+    re-sync — re-recorded nothing, because a sync's delta is only ``before..after``
+    of the *next* pull, so everything that had been withheld silently activated.
+    Replaces the store whatever its state (readable, corrupt or absent). Locally
+    authored gated artifacts are swept up too: the store can no longer say which
+    were pulled, and reviewing one's own files is the price of a fail-closed reset.
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with file_lock(_state_file(state_dir)):
+        items = [
+            QuarantinedArtifact(kind, name, content_hash(path), now_iso())
+            for kind, name, path in all_gated_in(my_root / "canonical")
+        ]
+        _save_pending(state_dir, items)
+    return items
 
 
 # --- office/source-layer quarantine (F3) ------------------------------------
@@ -327,7 +375,9 @@ def reconcile(state_dir: Path, my_root: Path) -> list[QuarantinedArtifact]:
 #     point at the office source tree, so sharing one store would let ``reconcile``
 #     silently drop — and thus re-activate — them. Separate stores can't collide.
 #   * A ``office_baseline.json`` recording the office gated identities already trusted
-#     (the shipped set at first install, grown as records are approved). It exists so
+#     (the shipped set at first install, grown as records are APPROVED — never at
+#     record time, so ``current − baseline`` is always exactly the unreviewed set and
+#     ``reset_office_pending`` can rebuild a lost store from it, #294). It exists so
 #     ``record_office_delta`` can tell a FIRST install (baseline absent ⇒ trust the
 #     shipped office, quarantine nothing) from an UPDATE pull (baseline present ⇒
 #     quarantine only identities not yet trusted — the delta).
@@ -450,9 +500,11 @@ def record_office_delta(state_dir: Path, office_root: Path) -> list[QuarantinedA
     PRE-pull tree first, so by the time this runs a baseline always exists and the
     just-pulled set is measured against the install-time shipped set. Every current
     gated identity not already in the baseline is the pull delta; each is added to
-    the office pending store (withheld by compile until approved) and folded into
-    the baseline so it is not re-flagged (it stays withheld via the pending store,
-    not by re-detection). Returns the newly-quarantined records.
+    the office pending store (withheld by compile until approved). The baseline is
+    NOT touched: a recorded identity joins it only when ``approve_office`` clears it,
+    so the baseline always means "trusted" and a still-pending identity is simply
+    deduplicated against the store on the next pull. Returns the newly-quarantined
+    records.
 
     Fallback (no baseline — a direct caller/test that did not pre-seed): establish
     the baseline as the current gated set and quarantine nothing. This trusts the
@@ -461,10 +513,11 @@ def record_office_delta(state_dir: Path, office_root: Path) -> list[QuarantinedA
     that in the real update path. No-op returning [] if ``state_dir`` is absent."""
     if not state_dir.exists():
         return []
-    current = _current_office_identities(office_root)
-    # Serialize the baseline+pending read-modify-write against a concurrent office
-    # approve/reconcile/seed (all anchor on the same office lock file).
+    # Serialize the scan + baseline/pending read-modify-write against a concurrent
+    # office approve/reconcile/seed (all anchor on the same office lock file). The
+    # scan sits inside the lock so it can never race a prune (#290).
     with file_lock(_office_state_file(state_dir)):
+        current = _current_office_identities(office_root)
         baseline = load_office_baseline(state_dir)
         if baseline is None:  # unseeded fallback: trust the current set, quarantine nothing
             _save_office_baseline(state_dir, current.keys())
@@ -480,11 +533,38 @@ def record_office_delta(state_dir: Path, office_root: Path) -> list[QuarantinedA
                 added.append(QuarantinedArtifact(kind, name, chash, now_iso()))
         if added:
             _save_office_pending(state_dir, existing + added)
-            # Fold the delta into the baseline: it is now "seen" and must not be
-            # re-detected on the next pull. It remains WITHHELD by the pending store
-            # until approved — approval removes it from pending, not from the baseline.
-            _save_office_baseline(state_dir, set(baseline) | set(current))
     return added
+
+
+def reset_office_pending(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
+    """Rebuild the office pending store fail closed: every gated identity in the
+    office tree the trusted baseline does not vouch for becomes pending.
+
+    The office analogue of ``reset_pending`` (#294). A corrupt baseline is replaced
+    by an empty one — nothing is vouched for, so the whole current set is pending
+    until approved. An absent baseline means no update pull has ever run, so the
+    tree is the one the user installed from: it is seeded as trusted (the same
+    first-install trust ``record_office_delta`` applies) and nothing is pending.
+    Identities an older Cohort folded into the baseline at record time are
+    indistinguishable from trusted ones and are not recovered."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with file_lock(_office_state_file(state_dir)):
+        current = _current_office_identities(office_root)
+        try:
+            baseline = load_office_baseline(state_dir)
+        except QuarantineStateError:
+            baseline = set()
+            _save_office_baseline(state_dir, baseline)
+        if baseline is None:
+            baseline = set(current)
+            _save_office_baseline(state_dir, baseline)
+        items = [
+            QuarantinedArtifact(kind, name, chash, now_iso())
+            for kind, name, chash in sorted(current)
+            if (kind, name, chash) not in baseline
+        ]
+        _save_office_pending(state_dir, items)
+    return items
 
 
 def approve_office(
@@ -493,9 +573,10 @@ def approve_office(
     """Clear the office quarantine for reviewed artifacts (office analogue of
     ``approve``). Same content-addressed, ambiguity-refusing semantics: a bare name
     matching two distinct pending hashes raises ``AmbiguousApprovalError`` rather than
-    guess. Approving removes the record from the office pending store; the identity
-    stays in the baseline, so it is not re-quarantined and compile places it next
-    recompile. Propagates ``QuarantineStateError`` on a corrupt store."""
+    guess. Approving removes the record from the office pending store and folds its
+    identity into the trusted baseline, so it is not re-quarantined by the next pull
+    and compile places it next recompile. Propagates ``QuarantineStateError`` on a
+    corrupt store or baseline (``office review --reset`` repairs both)."""
     if not state_dir.exists():
         return []  # nothing installed → nothing to clear
     # Serialize the load→clear→save cycle against a concurrent record_office_delta.
@@ -504,6 +585,7 @@ def approve_office(
         if approve_all:
             cleared = sorted({a.name for a in pending})
             _save_office_pending(state_dir, [])
+            _trust_office(state_dir, {a.key for a in pending})
             return cleared
 
         to_clear: set[tuple[str, str, str]] = set()
@@ -528,7 +610,17 @@ def approve_office(
                 cleared_names.add(a.name)
         if to_clear:
             _save_office_pending(state_dir, [a for a in pending if a.key not in to_clear])
+            _trust_office(state_dir, to_clear)
         return sorted(cleared_names)
+
+
+def _trust_office(state_dir: Path, identities: set[tuple[str, str, str]]) -> None:
+    """Fold approved identities into the trusted baseline (caller holds the office
+    lock). With no baseline yet, nothing is folded: the next ``record_office_delta``
+    seeds it from the current tree, which already includes what was approved."""
+    baseline = load_office_baseline(state_dir)
+    if baseline is not None and identities:
+        _save_office_baseline(state_dir, baseline | identities)
 
 
 def office_reconcile(state_dir: Path, office_root: Path) -> list[QuarantinedArtifact]:
@@ -538,9 +630,10 @@ def office_reconcile(state_dir: Path, office_root: Path) -> list[QuarantinedArti
     reason the two stores are separate)."""
     if not state_dir.exists():
         return []  # nothing installed → nothing to reconcile
-    live = set(_current_office_identities(office_root))
-    # Serialize the load→prune→save cycle against a concurrent record/approve.
+    # Serialize the scan→load→prune→save cycle against a concurrent record/approve;
+    # the scan is inside the lock for the same reason as ``reconcile`` (#290).
     with file_lock(_office_state_file(state_dir)):
+        live = set(_current_office_identities(office_root))
         pending = load_office_pending(state_dir)
         survivors = [a for a in pending if a.key in live]
         if len(survivors) != len(pending):

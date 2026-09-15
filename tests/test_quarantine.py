@@ -594,3 +594,193 @@ def test_project_tier_compile_has_no_office_withhold(tmp_path):
     result = compile_ide(src, "claude", scope="global")  # no overlay
     assert result.withheld == []
     assert _OFFICE_HOOK_MARKER in _placed_text(result)
+
+
+# --- audit r5: symlinked entries (#285), scan-under-lock (#290), reset (#294) ---
+
+import os
+import threading
+import time
+
+from conftest import requires_symlinks
+
+_HOOK_EXTRA = "event: session_start\naction: cohort x\n"
+
+
+@requires_symlinks
+def test_all_gated_in_refuses_a_symlinked_entry_and_never_hashes_it(tmp_path):
+    # The bytes behind canonical/hooks/evil.md live outside canonical/, where the
+    # pull delta never looks — so they must never be discovered, gated, or hashed.
+    my = tmp_path / "my"
+    kept = _art_file(my / "canonical" / "hooks" / "kept.md", kind="hook", name="kept",
+                     extra=_HOOK_EXTRA)
+    outside = _art_file(tmp_path / "payload" / "evil.md", kind="hook", name="evil",
+                        extra=_HOOK_EXTRA)
+    link = my / "canonical" / "hooks" / "evil.md"
+    os.symlink(outside, link)
+    assert [p for _, _, p in q.all_gated_in(my / "canonical")] == [kept]
+    assert q.gated_artifacts([link]) == []
+    assert q.gated_identity(link) is None
+
+
+def test_all_gated_in_agrees_with_compiler_discovery_on_strays(tmp_path):
+    # A gated file outside every kind dir is never compiled, so it is never gated
+    # either — both sides classify from the same discovery (#297 stray .md).
+    my = tmp_path / "my"
+    filed = _art_file(my / "canonical" / "hooks" / "filed.md", kind="hook", name="filed",
+                      extra=_HOOK_EXTRA)
+    _art_file(my / "canonical" / "stray.md", kind="hook", name="stray", extra=_HOOK_EXTRA)
+    assert [p for _, _, p in q.all_gated_in(my / "canonical")] == [filed]
+
+
+@requires_symlinks
+def test_has_symlinked_layout_flags_root_and_kind_dir_links_only(tmp_path):
+    real = tmp_path / "real"
+    (real / "hooks").mkdir(parents=True)
+    assert q.has_symlinked_layout(real) is False
+    os.symlink(tmp_path / "elsewhere", real / "memories")
+    assert q.has_symlinked_layout(real) is True
+    link = tmp_path / "link"
+    os.symlink(real, link)
+    assert q.has_symlinked_layout(link) is True
+    assert q.has_symlinked_layout(tmp_path / "absent") is False
+
+
+def _slow_scan(monkeypatch, started: threading.Event, delay: float):
+    """Widen the scan→lock window the r5 race probe exploits: the disk scan runs,
+    then sleeps before the caller proceeds. If the scan is inside the lock, a
+    concurrent writer blocks until the prune has finished and its record survives."""
+    real = q.all_gated_in
+
+    def slow(root):
+        out = list(real(root))
+        started.set()
+        time.sleep(delay)
+        return out
+
+    monkeypatch.setattr(q, "all_gated_in", slow)
+    return real
+
+
+def test_reconcile_scans_disk_under_the_lock_so_a_concurrent_add_survives(tmp_path, monkeypatch):
+    state = _state(tmp_path)
+    my = tmp_path / "my"
+    old = _art_file(my / "canonical" / "hooks" / "old.md", kind="hook", name="old",
+                    extra=_HOOK_EXTRA)
+    q.add_pending(state, [q.QuarantinedArtifact("hook", "old", q.content_hash(old), "t0")])
+    started = threading.Event()
+    real = _slow_scan(monkeypatch, started, 0.5)
+    worker = threading.Thread(target=q.reconcile, args=(state, my))
+    worker.start()
+    started.wait(5)
+    # P2 (`my-office sync`): the pull writes the hook, then add_pending records it.
+    monkeypatch.setattr(q, "all_gated_in", real)
+    evil = _art_file(my / "canonical" / "hooks" / "evil-hook.md", kind="hook",
+                     name="evil-hook", extra=_HOOK_EXTRA)
+    q.add_pending(state, [q.QuarantinedArtifact("hook", "evil-hook", q.content_hash(evil), "t1")])
+    worker.join(10)
+    assert {a.name for a in q.load_pending(state)} == {"old", "evil-hook"}
+
+
+def test_office_reconcile_scans_disk_under_the_lock_so_a_concurrent_record_survives(
+    tmp_path, monkeypatch
+):
+    state = _state(tmp_path)
+    office = tmp_path / "office"
+    old = _art_file(office / "canonical" / "hooks" / "old.md", kind="hook", name="old",
+                    extra=_HOOK_EXTRA)
+    q._save_office_baseline(state, [])
+    q._save_office_pending(state, [q.QuarantinedArtifact("hook", "old", q.content_hash(old), "t0")])
+    started = threading.Event()
+    real = _slow_scan(monkeypatch, started, 0.5)
+    worker = threading.Thread(target=q.office_reconcile, args=(state, office))
+    worker.start()
+    started.wait(5)
+    monkeypatch.setattr(q, "all_gated_in", real)
+    _art_file(office / "canonical" / "hooks" / "evil-hook.md", kind="hook", name="evil-hook",
+              extra=_HOOK_EXTRA)
+    q.record_office_delta(state, office)
+    worker.join(10)
+    assert {a.name for a in q.load_office_pending(state)} == {"old", "evil-hook"}
+
+
+def test_office_delta_is_trusted_only_when_approved(tmp_path):
+    # Recording a delta must not fold it into the trusted baseline: that is what
+    # made "delete the corrupt store" activate everything (#294). Approval folds.
+    state = _state(tmp_path)
+    office = tmp_path / "office"
+    q._save_office_baseline(state, [])
+    hook = _art_file(office / "canonical" / "hooks" / "new.md", kind="hook", name="new",
+                     extra=_HOOK_EXTRA)
+    ident = ("hook", "new", q.content_hash(hook))
+    assert [a.key for a in q.record_office_delta(state, office)] == [ident]
+    assert ident not in q.load_office_baseline(state)
+    assert q.record_office_delta(state, office) == []  # still pending, not re-added
+    assert q.office_pending_keys(state) == {ident}
+    assert q.approve_office(state, ["new"]) == ["new"]
+    assert ident in q.load_office_baseline(state)
+    assert q.record_office_delta(state, office) == []  # trusted now
+
+
+def test_approve_office_all_folds_every_cleared_identity_into_the_baseline(tmp_path):
+    state = _state(tmp_path)
+    q._save_office_baseline(state, [])
+    q._save_office_pending(state, [_art(name="a", h="h1"), _art(name="b", h="h2")])
+    assert q.approve_office(state, approve_all=True) == ["a", "b"]
+    assert q.load_office_baseline(state) == {("hook", "a", "h1"), ("hook", "b", "h2")}
+
+
+def test_reset_pending_rebuilds_from_disk_over_a_corrupt_store(tmp_path):
+    state = _state(tmp_path)
+    my = tmp_path / "my"
+    hook = _art_file(my / "canonical" / "hooks" / "pulled.md", kind="hook", name="pulled",
+                     extra=_HOOK_EXTRA)
+    _art_file(my / "canonical" / "commands" / "cmd.md", kind="command", name="cmd")
+    (state / "quarantine.json").write_text("{ truncated", encoding="utf-8")
+    rebuilt = q.reset_pending(state, my)
+    assert [a.key for a in rebuilt] == [("hook", "pulled", q.content_hash(hook))]
+    assert q.pending_keys(state) == {("hook", "pulled", q.content_hash(hook))}  # readable again
+
+
+def test_reset_pending_creates_the_state_dir_so_the_rebuild_persists(tmp_path):
+    state = tmp_path / "state"
+    my = tmp_path / "my"
+    hook = _art_file(my / "canonical" / "hooks" / "h.md", kind="hook", name="h", extra=_HOOK_EXTRA)
+    q.reset_pending(state, my)
+    assert q.pending_keys(state) == {("hook", "h", q.content_hash(hook))}
+
+
+def test_reset_office_pending_is_current_minus_the_trusted_baseline(tmp_path):
+    state = _state(tmp_path)
+    office = tmp_path / "office"
+    shipped = _art_file(office / "canonical" / "hooks" / "shipped.md", kind="hook",
+                        name="shipped", extra=_HOOK_EXTRA)
+    pulled = _art_file(office / "canonical" / "memories" / "pulled.md", kind="memory",
+                       name="pulled")
+    q._save_office_baseline(state, [("hook", "shipped", q.content_hash(shipped))])
+    (state / "office_quarantine.json").write_text("{ truncated", encoding="utf-8")
+    rebuilt = q.reset_office_pending(state, office)
+    assert [a.key for a in rebuilt] == [("memory", "pulled", q.content_hash(pulled))]
+    assert q.office_pending_keys(state) == {("memory", "pulled", q.content_hash(pulled))}
+
+
+def test_reset_office_pending_with_a_corrupt_baseline_trusts_nothing(tmp_path):
+    state = _state(tmp_path)
+    office = tmp_path / "office"
+    hook = _art_file(office / "canonical" / "hooks" / "h.md", kind="hook", name="h",
+                     extra=_HOOK_EXTRA)
+    (state / "office_baseline.json").write_text("{ truncated", encoding="utf-8")
+    rebuilt = q.reset_office_pending(state, office)
+    assert [a.key for a in rebuilt] == [("hook", "h", q.content_hash(hook))]
+    assert q.load_office_baseline(state) == set()  # repaired: nothing vouched for
+
+
+def test_reset_office_pending_without_a_baseline_seeds_the_shipped_tree(tmp_path):
+    # No baseline ⇒ no update pull has ever happened ⇒ the tree is the one the user
+    # installed from (the existing first-install trust), so nothing is pending.
+    state = _state(tmp_path)
+    office = tmp_path / "office"
+    hook = _art_file(office / "canonical" / "hooks" / "h.md", kind="hook", name="h",
+                     extra=_HOOK_EXTRA)
+    assert q.reset_office_pending(state, office) == []
+    assert q.load_office_baseline(state) == {("hook", "h", q.content_hash(hook))}
