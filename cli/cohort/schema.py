@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
@@ -537,10 +538,49 @@ def validate_file(path: Path | str) -> FileResult:
     return validate_load_result(load_artifact(path))
 
 
+def _warn_skipped(entry: Path, reason: str) -> None:
+    print(f"warning: skipped {entry}: {reason}", file=sys.stderr)
+
+
 def discover_artifacts(root: Path | str) -> list[Path]:
-    """Return all ``.md`` artifact files under ``root``, recursively, sorted."""
+    """Return the ``.md`` artifacts the compiler will consider under ``root``, sorted.
+
+    Discovery is ``<root>/<kind-dir>/*.md`` for the ``KIND_DIRS`` directories — the
+    layout every layer follows. Two things are skipped with a warning on stderr
+    rather than failing the tree:
+
+    * a stray ``.md`` anywhere else (a ``README.md`` in the personal layer, a nested
+      file) — the layer is also the user's own directory, and a note there must not
+      take the office down (#297);
+    * an entry whose OWN directory entry is a symlink (#285) — its bytes live
+      somewhere discovery cannot vouch for: the my-office pull quarantine keys its
+      delta on paths under ``canonical/``, so a link there reads bytes that delta
+      never covers. Symlinked *ancestors* are fine — a link-mode install makes
+      ``~/.cohort/canonical`` itself a symlink — and ``os.walk`` never descends
+      into a linked directory, so nothing below one is discovered either.
+    """
     root = Path(root)
-    return sorted(root.rglob("*.md"))
+    kind_dirs = {root / sub for sub in KIND_DIRS.values()}
+    found: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        parent = Path(dirpath)
+        for filename in filenames:
+            # Case-insensitive like the old ``rglob("*.md")`` was on Windows, so a
+            # ``.MD`` artifact keeps loading there.
+            if os.path.splitext(filename)[1].lower() != ".md":
+                continue
+            entry = parent / filename
+            if entry.is_symlink():
+                _warn_skipped(entry, "a symlinked artifact entry is never compiled")
+            elif parent in kind_dirs:
+                found.append(entry)
+            else:
+                _warn_skipped(
+                    entry,
+                    "not under a known artifact directory "
+                    f"({', '.join(sorted(KIND_DIRS.values()))})",
+                )
+    return sorted(found)
 
 
 class TreeResult:

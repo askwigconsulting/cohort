@@ -469,3 +469,131 @@ def test_diverged_history_is_refused_for_the_user_to_reconcile(home, tmp_path):
 
     with pytest.raises(MySyncError, match="diverged"):
         do_my_sync(home_b)
+
+
+# === audit r5: symlinked pulls (#285) and the corrupt-store reset (#294) ======
+
+from conftest import requires_symlinks
+from cohort.compile import compile_ide
+
+_SMUGGLED = (
+    "---\nname: {name}\nkind: hook\nscope: global\ndescription: smuggled {v}\n"
+    "targets: [claude]\nevent: session_start\naction: echo pwned-{name}-{v}\n---\nbody {v}\n"
+)
+_PWNED_TOKENS = tuple(f"pwned-{n}-{v}" for n in ("evil", "dirlink") for v in ("v1", "v2"))
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(cwd), "-c", "user.email=a@b", "-c", "user.name=a", *args],
+        check=True, capture_output=True,
+    )
+
+
+def _attacker_clone(tmp_path: Path, remote: Path) -> Path:
+    """A co-writer's clone of the shared personal remote."""
+    clone = tmp_path / "attacker"
+    _git(tmp_path, "clone", "-q", str(remote), str(clone))
+    _git(clone, "checkout", "-q", "-b", "main")
+    return clone
+
+
+def _push(clone: Path, message: str) -> None:
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-q", "-m", message)
+    _git(clone, "push", "-q", "origin", "main")
+
+
+def _compile_victim(home: Path):
+    return compile_ide(REPO_ROOT, "claude", scope="global", overlay=_my(home))
+
+
+def _placed_actions(home: Path) -> set[str]:
+    text = "\n".join(s.content.decode() for s in _compile_victim(home).staged)
+    return {tok for tok in _PWNED_TOKENS if tok in text}
+
+
+@requires_symlinks
+def test_symlinked_entry_never_places_the_smuggled_hook_across_two_pushes(home, tmp_path):
+    # The r5 two-push probe: push 1 links canonical/hooks/evil.md to bytes OUTSIDE
+    # canonical/; push 2 edits only those bytes — outside the pull-delta pathspec.
+    # The link is refused by discovery, so the hook is never compiled at all.
+    remote = _bare_remote(tmp_path)
+    clone = _attacker_clone(tmp_path, remote)
+    (clone / "payload").mkdir()
+    (clone / "payload" / "evil.md").write_text(_SMUGGLED.format(name="evil", v="v1"))
+    (clone / "canonical" / "hooks").mkdir(parents=True)
+    os.symlink("../../payload/evil.md", clone / "canonical" / "hooks" / "evil.md")
+    (clone / "payload2").mkdir()
+    (clone / "payload2" / "dirlink.md").write_text(_SMUGGLED.format(name="dirlink", v="v1"))
+    os.symlink("../../payload2", clone / "canonical" / "hooks" / "linked")
+    _push(clone, "push1")
+    do_my_sync(home, remote=str(remote))
+    assert _placed_actions(home) == set()
+
+    _git(clone, "pull", "-q", "--rebase", "origin", "main")
+    (clone / "payload" / "evil.md").write_text(_SMUGGLED.format(name="evil", v="v2"))
+    _push(clone, "push2")
+    do_my_sync(home)
+    assert _placed_actions(home) == set()
+
+
+@requires_symlinks
+@pytest.mark.parametrize(
+    "link, target, payload_file, quarantined",
+    [
+        ("canonical/hooks", "../payload", "payload/evil.md", []),  # kind dir is a link
+        ("canonical", "payload", "payload/hooks/evil.md", ["hook evil"]),  # root is a link
+    ],
+)
+def test_symlinked_ancestor_in_the_pull_fails_closed_on_every_sync(
+    home, tmp_path, link, target, payload_file, quarantined
+):
+    # Ancestor links are legal for discovery (link-mode installs rely on them), so
+    # what they reach is compiled — but their bytes sit outside the pull-delta
+    # pathspec. The recorder must fall back to the whole tree on EVERY sync while
+    # the layout holds a link, so a second push re-records the changed bytes.
+    remote = _bare_remote(tmp_path)
+    clone = _attacker_clone(tmp_path, remote)
+    (clone / payload_file).parent.mkdir(parents=True)
+    (clone / payload_file).write_text(_SMUGGLED.format(name="evil", v="v1"))
+    (clone / link).parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(target, clone / link)
+    _push(clone, "push1")
+    assert do_my_sync(home, remote=str(remote))["quarantined"] == quarantined
+    assert _placed_actions(home) == set()
+
+    _git(clone, "pull", "-q", "--rebase", "origin", "main")
+    (clone / payload_file).write_text(_SMUGGLED.format(name="evil", v="v2"))
+    _push(clone, "push2")
+    assert do_my_sync(home)["quarantined"] == quarantined
+    assert _placed_actions(home) == set()
+
+
+def test_review_reset_rebuilds_a_corrupt_store_and_keeps_the_hook_withheld(home, tmp_path):
+    # The r5 reset-remedy probe, adapted: the old advice ("delete the file, re-sync")
+    # activated everything withheld. `--reset` rebuilds pending from disk instead.
+    remote = _bare_remote(tmp_path)
+    clone = _attacker_clone(tmp_path, remote)
+    (clone / "canonical" / "hooks").mkdir(parents=True)
+    (clone / "canonical" / "hooks" / "evil.md").write_text(_SMUGGLED.format(name="evil", v="v1"))
+    _push(clone, "push1")
+    assert do_my_sync(home, remote=str(remote))["quarantined"] == ["hook evil"]
+    store = CohortPaths.for_global(home).state / "quarantine.json"
+    store.write_text("{ not json", encoding="utf-8")
+
+    review = _run_cli("my-office", "review", home=home)
+    assert review.returncode == 1
+    assert "--reset" in review.stderr
+    assert "elete the file" not in review.stderr
+
+    reset = _run_cli("my-office", "review", "--reset", "--json", home=home)
+    assert reset.returncode == 0, reset.stderr
+    payload = _json.loads(reset.stdout)
+    assert payload["reset"] is True
+    assert [a["name"] for a in payload["pending"]] == ["evil"]
+
+    do_my_sync(home)  # the re-sync the old remedy relied on: nothing new to record
+    result = _compile_victim(home)
+    assert result.withheld == ["hook evil"]
+    assert _placed_actions(home) == set()
