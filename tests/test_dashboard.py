@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -275,16 +276,154 @@ def test_collect_state_scorecards_aggregate_feedback_across_projects(home, tmp_p
     assert card["net"] == 1
 
 
+def test_cross_project_views_name_the_projects_they_skipped(home, tmp_path, source, monkeypatch):
+    """#270: a project whose store is unreadable is dropped (never fatal, #226) — but a
+    dropped project must be visible, or office-wide totals silently undercount."""
+    from cohort import dashboard
+    from cohort.dashboard import cross_project_activity, cross_project_scorecards
+
+    inited_repo(tmp_path, source, home, name="repo-a")
+    repo_b = inited_repo(tmp_path, source, home, name="repo-b")
+    run_cli("feedback", "--rating", "up", "--agent", "counsel", home=home, cwd=repo_b)
+
+    def unreadable(paths, **_kwargs):  # the loaders also take limit= (#295)
+        if paths.cohort_home == repo_b / ".cohort":
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad feedback file")
+        return []
+
+    monkeypatch.setattr(dashboard, "load_feedback_entries", unreadable)
+    monkeypatch.setattr(dashboard, "load_session_entries", unreadable)
+    projects = list_projects(home, include_private=False)
+
+    skipped: list[str] = []
+    assert cross_project_scorecards(home, projects, skipped=skipped) == []
+    assert skipped == ["repo-b"]
+    skipped = []
+    assert cross_project_activity(home, projects, skipped=skipped) == []
+    assert skipped == ["repo-b"]
+
+
+def test_collect_state_carries_the_skipped_projects(home, tmp_path, source, monkeypatch):
+    from cohort import dashboard
+
+    inited_repo(tmp_path, source, home, name="repo-a")
+    repo_b = inited_repo(tmp_path, source, home, name="repo-b")
+
+    def unreadable(paths):
+        if paths.cohort_home == repo_b / ".cohort":
+            raise OSError("permission denied")
+        return []
+
+    monkeypatch.setattr(dashboard, "load_feedback_entries", unreadable)
+    plain = make_git_repo(tmp_path / "plain")
+    state = collect_state(home, plain)
+    assert state["skipped"] == ["repo-b"]
+
+    monkeypatch.setattr(dashboard, "load_feedback_entries", lambda paths: [])
+    assert collect_state(home, plain)["skipped"] == []
+
+
 # === server: guard rails =====================================================
 
 
-def test_page_serves_with_token_injected(server):
+def test_page_serves_without_the_token(server):
+    """Any loopback client can GET / (another uid, a `--share-net` doer jail), so
+    the served page must not carry the per-launch token (#293). It travels in
+    the URL fragment instead, which the browser never sends to the server."""
     srv, _ = server
     code, data = request(srv, "GET", "/")
     assert code == 200
     page = data.decode("utf-8")
-    assert "__COHORT_TOKEN__" not in page  # placeholder substituted
-    assert srv.token in page
+    assert srv.token not in page
+    assert "cohort-token" not in page  # no meta-tag carrier left to scrape
+    assert "__COHORT_TOKEN__" not in page
+
+
+def test_served_script_carries_no_token_and_reads_the_fragment(server):
+    srv, _ = server
+    code, data = request(srv, "GET", "/dashboard.js")
+    assert code == 200
+    script = data.decode("utf-8")
+    assert srv.token not in script
+    assert "location.hash" in script
+    assert 'meta[name="cohort-token"]' not in script
+    # The fragment is scrubbed only after it is parked for reload: the
+    # replaceState call sits inside the same try as setItem, after it, so a
+    # blocked sessionStorage leaves the fragment in the address bar instead of
+    # stranding a reload with no token anywhere.
+    park = script.index("sessionStorage.setItem(")
+    scrub = script.index("history.replaceState(")
+    assert park < scrub < script.index("catch", park)
+    opened = script.rindex("try", 0, park)
+    assert script[opened:park].split() == ["try", "{"]  # nothing between the try and the park
+
+
+def test_url_carries_the_token_in_the_fragment(server):
+    srv, _ = server
+    assert srv.url == f"http://127.0.0.1:{srv.server_address[1]}/#{srv.token}"
+
+
+def test_bare_page_fetch_does_not_unlock_the_api(server):
+    """The r5 probe: scrape /, then drive /api with whatever was found."""
+    srv, _ = server
+    code, data = request(srv, "GET", "/")
+    assert code == 200
+    assert srv.token not in data.decode("utf-8")
+    assert request(srv, "GET", "/api/state")[0] == 401
+    code, _ = request(srv, "POST", "/api/action",
+                      body={"action": "add-hook",
+                            "args": {"name": "x", "event": "session_start", "action_cmd": "id"}})
+    assert code == 401
+
+
+def test_do_dashboard_opens_the_browser_on_the_fragment_url(home, tmp_path, source, monkeypatch):
+    import webbrowser
+
+    from cohort.dashboard import do_dashboard
+
+    repo = inited_repo(tmp_path, source, home)
+    opened: list[str] = []
+    done = threading.Event()
+
+    def fake_open(url: str) -> bool:
+        opened.append(url)
+        done.set()
+        return True
+
+    monkeypatch.setattr(webbrowser, "open", fake_open)
+    srv = do_dashboard(home, repo, 0, open_browser=True)
+    try:
+        assert done.wait(timeout=10)
+    finally:
+        srv.server_close()
+    assert opened == [srv.url]
+    assert opened[0].endswith("/#" + srv.token)
+
+
+def test_cli_prints_the_fragment_url(home, tmp_path, source):
+    """The printed URL is the only place the token is handed out."""
+    import re
+
+    repo = inited_repo(tmp_path, source, home)
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["USERPROFILE"] = str(home)
+    env.pop("COHORT_SOURCE", None)
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "cohort", "dashboard", "--no-open", "--port", "0"],
+        cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+    )
+    first_line: list[str] = []
+    reader = threading.Thread(target=lambda: first_line.append(proc.stdout.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout=60)
+    proc.terminate()
+    proc.wait(timeout=30)
+    assert first_line, "the CLI printed nothing before the timeout"
+    assert re.fullmatch(
+        r"cohort dashboard: http://127\.0\.0\.1:\d+/#[A-Za-z0-9_-]{32,} \(Ctrl-C to stop\)\n",
+        first_line[0],
+    ), first_line[0]
 
 
 def test_state_requires_token(server):
@@ -433,6 +572,7 @@ def test_update_cache_does_not_block_get(home, tmp_path, source):
 # === expanded action surface (dashboard v2) ==================================
 
 from cohort.dashboard import ActionError, run_action  # noqa: E402
+import re
 
 
 def test_state_includes_full_inventory(home, tmp_path, source):
@@ -696,3 +836,266 @@ def test_action_create_project_skill_places(server, home):
     assert status == 200, data
     assert (repo / ".cohort" / "canonical" / "skills" / "repo-lint.md").exists()
     assert (repo / ".claude" / "skills" / "repo-lint" / "SKILL.md").exists()
+
+
+# === #295 item 3 / #299 item 5: cache tuning, the invalidate fence, limits ===
+
+
+def test_aggregate_ttl_is_at_least_the_ui_poll_interval():
+    """A TTL below the poll means the memo never hits in single-tab steady state —
+    every poll pays the cold scan (#295). Pinned against the poll the UI actually
+    uses, read out of dashboard.js rather than restated here."""
+    import re
+
+    from cohort import dashboard
+
+    js = (Path(dashboard.__file__).parent / "dashboard.js").read_text(encoding="utf-8")
+    match = re.search(r"setInterval\(\(\) => \{ if \(!PENDING\) refresh\(\); \}, (\d+)\)", js)
+    assert match, "dashboard.js poll interval not found — keep this pin in step with the UI"
+    poll_seconds = int(match.group(1)) / 1000.0
+    assert dashboard._AGGREGATE_TTL_SECONDS >= poll_seconds
+    assert dashboard._AGGREGATE_TTL_SECONDS >= 30.0
+
+
+def test_update_cache_invalidate_fences_an_inflight_refresh(home, tmp_path, source, monkeypatch):
+    """A refresh that started BEFORE ``invalidate()`` carries a pre-action answer; it
+    must not be stamped fresh for the whole TTL afterwards (#299 item 5)."""
+    from cohort import dashboard
+
+    started, release = threading.Event(), threading.Event()
+
+    def slow_update_status(src, hm):
+        started.set()
+        release.wait(timeout=10)
+        return {"available": False, "upstream": "STALE-PRE-UPDATE"}
+
+    monkeypatch.setattr(dashboard, "update_status", slow_update_status)
+    cache = dashboard._UpdateCache()
+    repo = inited_repo(tmp_path, source, home)
+
+    assert cache.get(repo, home) == {"available": False, "upstream": ""}  # kicks the refresh
+    assert started.wait(timeout=10)
+    cache.invalidate()  # the user ran Update while the fetch was in flight
+    release.set()
+    for _ in range(100):  # let the refresh thread finish
+        if not cache._refreshing:
+            break
+        time.sleep(0.02)
+    assert cache._value is None, "a pre-invalidate result must not be re-stamped fresh"
+
+    # ...and the fence must not starve later refreshes.
+    monkeypatch.setattr(dashboard, "update_status",
+                        lambda src, hm: {"available": True, "upstream": "FRESH"})
+    cache.get(repo, home)  # kicks a new refresh
+    for _ in range(100):
+        if cache._value is not None:
+            break
+        time.sleep(0.02)
+    assert cache._value == {"available": True, "upstream": "FRESH"}
+
+
+def test_cross_project_activity_parses_only_the_newest_records_per_project(
+    home, tmp_path, source, monkeypatch
+):
+    """The feed shows ``limit`` entries, so it must open at most ``limit`` files per
+    project — filenames are timestamp-prefixed, so the newest by name are the newest
+    by clock (#295 item 3)."""
+    from cohort import dashboard, improve
+
+    repo = make_git_repo(tmp_path / "many")
+    sessions = repo / ".cohort" / "sessions"
+    sessions.mkdir(parents=True)
+    for i in range(12):
+        (sessions / f"202607{i + 10:02d}T100000Z-{i:04x}-auto.md").write_text(
+            f"---\ntimestamp: '2026-07-{i + 10}T10:00:00+00:00'\nauthor: dev\n"
+            f"branch: b{i}\n---\nbody\n",
+            encoding="utf-8",
+        )
+    parses = {"n": 0}
+    real = improve.load_artifact
+
+    def counting(path):
+        parses["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(improve, "load_artifact", counting)
+    projects = [{"name": "many", "path": str(repo)}]
+    entries = dashboard.cross_project_activity(home, projects, limit=3)
+    assert parses["n"] == 3  # not 12
+    assert [e["branch"] for e in entries] == ["b11", "b10", "b9"]  # newest first
+
+
+def test_cross_project_activity_survives_an_unquoted_yaml_timestamp(home, tmp_path):
+    """An unquoted timestamp parses as a ``datetime``: it used to make the merge sort
+    raise ``TypeError`` (degrading the whole /api/state) and was not JSON-safe (#299)."""
+    from cohort import dashboard
+
+    repo = tmp_path / "hand-edited"
+    sessions = repo / ".cohort" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / "20260701T090000Z-a-auto.md").write_text(
+        "---\ntimestamp: 2026-07-01T09:00:00Z\nauthor: dev\nbranch: hand\n---\nbody\n",
+        encoding="utf-8",
+    )
+    (sessions / "20260701T100000Z-b-auto.md").write_text(
+        "---\ntimestamp: '2026-07-01T10:00:00+00:00'\nauthor: dev\nbranch: tool\n---\nbody\n",
+        encoding="utf-8",
+    )
+    entries = dashboard.cross_project_activity(home, [{"name": "p", "path": str(repo)}])
+    assert [e["branch"] for e in entries] == ["tool", "hand"]  # sorted, newest first
+    assert all(isinstance(e["timestamp"], str) for e in entries)
+    json.dumps(entries)  # a datetime would raise here
+
+
+def test_compute_aggregates_parses_canonical_once_for_every_ide(home, source, monkeypatch):
+    """``check_parity`` used to re-parse all canonical per IDE; the IR load is hoisted
+    so N IDEs cost one pass, and the per-IDE answers are unchanged (#295 item 3)."""
+    from cohort import parity
+    from cohort.compile import RENDERERS
+    from cohort.dashboard import _compute_aggregates
+    from cohort.schema import discover_artifacts
+
+    ides = [i for i in ("claude", "codex", "cursor", "copilot") if i in RENDERERS]
+    assert len(ides) > 1, "the hoist is only observable with more than one IDE"
+    artifact_count = len(list(discover_artifacts(source / "canonical")))
+
+    parses = {"n": 0}
+    real = parity.load_artifact
+
+    def counting(path):
+        parses["n"] += 1
+        return real(path)
+
+    monkeypatch.setattr(parity, "load_artifact", counting)
+    aggregates = _compute_aggregates(home, source, ides)
+    assert parses["n"] == artifact_count  # one pass, not len(ides) passes
+
+    for ide in ides:
+        assert aggregates["parity"][ide] == parity.check_parity(source, ide, RENDERERS).to_dict()
+
+
+def _srgb_to_linear(c: float) -> float:
+    c /= 255.0
+    return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _relative_luminance(rgb: tuple[float, float, float]) -> float:
+    r, g, b = rgb
+    return 0.2126 * _srgb_to_linear(r) + 0.7152 * _srgb_to_linear(g) + 0.0722 * _srgb_to_linear(b)
+
+
+def _contrast_ratio(rgb1: tuple[float, float, float], rgb2: tuple[float, float, float]) -> float:
+    l1, l2 = _relative_luminance(rgb1), _relative_luminance(rgb2)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _hex_to_rgb(h: str) -> tuple[float, float, float]:
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def _composite(fg: tuple[float, float, float], alpha: float,
+               bg: tuple[float, float, float]) -> tuple[float, float, float]:
+    return tuple(fg[i] * alpha + bg[i] * (1 - alpha) for i in range(3))  # type: ignore[return-value]
+
+
+def _box_drawing_glyph_count(text: str) -> int:
+    return sum(1 for ch in text if "─" <= ch <= "╿")
+
+
+def test_dialog_controls_have_label_for(server):
+    """Every Create/Edit dialog control has an accessible name via <label for=>
+    (audit r5 #298 item 1: six controls had no name by any mechanism)."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/")
+    page = data.decode("utf-8")
+    control_ids = [
+        "cr-kind", "cr-name", "cr-desc", "cr-display", "cr-dept", "cr-triggers",
+        "cr-invocation", "cr-event", "cr-action", "cr-matcher", "cr-priority",
+        "cr-body", "ed-desc", "ed-body",
+    ]
+    for control_id in control_ids:
+        assert f'for="{control_id}"' in page, f"no <label for={control_id!r}> in dashboard.html"
+    # Every <label> in the page is bound to a control (none is a bare sibling).
+    assert page.count("<label") == page.count("for=")
+
+
+def test_faint_meets_aa_over_card_on_both_backgrounds():
+    """--faint must be >= 4.5:1 (WCAG AA) over .card on both --bg0 and --bg1 —
+    the surface .dept h4 / .proj-path / .pipeline .caption actually render on
+    (audit r5 #298 item 2: #717c94 was only 4.32:1 / 4.03:1 there)."""
+    html_path = COHORT_SRC / "cli" / "cohort" / "dashboard.html"
+    css = html_path.read_text(encoding="utf-8")
+    faint = _hex_to_rgb(re.search(r"--faint:#([0-9a-fA-F]{6});", css).group(1))
+    bg0 = _hex_to_rgb("070b14")
+    bg1 = _hex_to_rgb("0b1222")
+    card_on_bg0 = _composite((255, 255, 255), 0.045, bg0)
+    card_on_bg1 = _composite((255, 255, 255), 0.045, bg1)
+
+    ratio_bg0 = _contrast_ratio(faint, card_on_bg0)
+    ratio_bg1 = _contrast_ratio(faint, card_on_bg1)
+    print(f"--faint over .card on --bg0: {ratio_bg0:.2f}:1")
+    print(f"--faint over .card on --bg1: {ratio_bg1:.2f}:1")
+    assert ratio_bg0 >= 4.5
+    assert ratio_bg1 >= 4.5
+
+
+def test_thumb_buttons_have_aria_label(server):
+    """Per-card thumb buttons (👍/👎/✎/✕) are named by aria-label, not their
+    emoji textContent (audit r5 #298 item 3)."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/dashboard.js")
+    js = data.decode("utf-8")
+    match = re.search(r"function thumb\(label, title, onClick\) \{.*?\n\}", js, re.S)
+    assert match, "thumb() not found in dashboard.js"
+    body = match.group(0)
+    assert 'setAttribute("aria-label", title)' in body
+
+
+def test_dashboard_uses_office_vocabulary_not_company_you(server):
+    """Dashboard homes are labelled OFFICE / MY OFFICE / PROJECT, and identifiers
+    say `layer`, not `level` (#300 item 6)."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/dashboard.js")
+    js = data.decode("utf-8")
+    assert "COMPANY" not in js
+    assert '"YOU"' not in js
+    assert 'office: "OFFICE"' in js
+    assert 'my: "MY OFFICE"' in js
+    assert "project: \"PROJECT\"" in js
+    assert "function renderLayer(" in js
+    assert "function renderLevel(" not in js
+    assert "function openCreate(layer)" in js
+
+
+# === Rich box-drawing under NO_COLOR / TERM=dumb (audit r5, #298 item 4) ====
+
+
+def test_no_color_help_has_no_box_drawing_glyphs():
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    env.pop("COHORT_SOURCE", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "cohort.cli", "--help"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert result.returncode == 0
+    assert _box_drawing_glyph_count(result.stdout) == 0
+
+
+def test_default_help_is_unchanged_by_the_no_color_fix():
+    env = dict(os.environ)
+    env.pop("NO_COLOR", None)
+    env.pop("TERM", None)
+    env.pop("COHORT_SOURCE", None)
+    result = subprocess.run(
+        [sys.executable, "-m", "cohort.cli", "--help"],
+        capture_output=True, text=True, env=env, timeout=60,
+    )
+    assert result.returncode == 0
+    # Rich renders Typer's help by default (unless Rich is missing): the
+    # box-drawing glyphs used to be there and still are — only the
+    # NO_COLOR/TERM=dumb path changed.
+    assert _box_drawing_glyph_count(result.stdout) > 0

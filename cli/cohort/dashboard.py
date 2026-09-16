@@ -11,10 +11,19 @@ and authoring/edit (add-agent/skill/command/hook, edit). Authoring defaults to
 explicit per-action choice, exactly as on the CLI. Submitting proposals as draft
 PRs deliberately stays in the CLI.
 
-Hardening (the server is loopback-only but shares the machine with browsers):
+Hardening. The server is loopback-only, but loopback is shared with two kinds
+of principal: browsers (any web page the user has open, cross-origin) and other
+same-machine processes that are *not* cross-origin — another uid on a shared
+host, or a sandboxed doer whose jail keeps the network (the grok jail runs
+``--unshare-all --share-net``, so a prompt-injected engine can reach
+``127.0.0.1:<port>``). Against both:
 - binds 127.0.0.1 only, never 0.0.0.0;
-- every ``/api`` call must carry the per-launch random token (embedded in the
-  served page), so a hostile web page cannot drive the API cross-origin;
+- every ``/api`` call must carry the per-launch random token in
+  ``X-Cohort-Token``, so a hostile web page cannot drive the API cross-origin;
+- the token is never in anything the server serves. It travels only in the
+  URL fragment of the address the CLI prints and opens (``/#<token>``): the
+  browser keeps a fragment client-side, so a bare ``GET /`` from any loopback
+  client yields a page with no credential in it and ``/api`` stays 401 (#293);
 - the Host header must be loopback, which defeats DNS-rebinding token theft;
 - no CORS headers are ever emitted.
 """
@@ -49,6 +58,7 @@ from .improve import (
     do_propose_improvement,
     load_feedback_entries,
     load_session_entries,
+    normalized_timestamp,
 )
 from .install import UsageError, do_install
 from .install_model import CohortPaths, resolve_mode
@@ -57,7 +67,7 @@ from .manifest import load_manifest
 from .gitutil import git_states
 from .inventory import inventory
 from .office_setup import SetupError, effective_roster
-from .parity import check_parity
+from .parity import check_parity, load_canonical_irs
 from .project import do_init, do_snapshot, find_repo_root, list_projects, resolve_registered
 from .roster import (
     AddAgentError,
@@ -86,10 +96,13 @@ _UPDATE_TTL_SECONDS = 900  # update_status fetches the network; don't per-poll i
 _RECENT_LIMIT = 10
 _ACTIVITY_LIMIT = 20  # cross-project activity feed cap (dashboard, #145)
 # The office-wide read-only aggregates (parity + cross-project scans) change only
-# on a mutating action, but the UI polls /api/state every ~6s. Memoize them for a
-# few seconds so back-to-back polls reuse one scan instead of re-parsing every
-# canonical file and every project's session/feedback .md each time (#226).
-_AGGREGATE_TTL_SECONDS = 3.0
+# on a mutating action, but the UI polls /api/state every 6s (dashboard.js). Memoize
+# them so back-to-back polls reuse one scan instead of re-parsing every canonical file
+# and every project's session/feedback .md each time (#226). The TTL must stay ABOVE
+# the poll interval or a single-tab steady state never hits the memo and pays the cold
+# scan every time (#295); a mutating action invalidates, so the only staleness this
+# buys is an edit made outside the dashboard in the last half-minute.
+_AGGREGATE_TTL_SECONDS = 30.0
 
 _log = logging.getLogger("cohort.dashboard")
 
@@ -107,13 +120,19 @@ class _UpdateCache:
     a request holds the lock — a poll would stall for the whole fetch. Instead a
     stale/empty ``get`` kicks a single background refresh and returns the last
     value (or the "unknown" placeholder on the very first call); the next poll
-    picks up the result. The lock is only ever held for trivial dict swaps."""
+    picks up the result. The lock is only ever held for trivial dict swaps.
+
+    A generation counter fences the refresh against :meth:`invalidate`: the fetch
+    is slow enough that a user can run Update while one is in flight, and a result
+    computed *before* that update describes the old checkout — landing it would stamp
+    a stale behind-count fresh for the full 15 minutes (#299)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._value: Optional[dict] = None
         self._at = 0.0
         self._refreshing = False
+        self._generation = 0
 
     def get(self, source: Optional[Path], home: Path) -> dict:
         if source is None:
@@ -122,40 +141,49 @@ class _UpdateCache:
             fresh = self._value is not None and time.monotonic() - self._at <= _UPDATE_TTL_SECONDS
             value = self._value if self._value is not None else dict(_UPDATE_UNKNOWN)
             start_refresh = not fresh and not self._refreshing
+            generation = self._generation
             if start_refresh:
                 self._refreshing = True
         if start_refresh:
             threading.Thread(
-                target=self._refresh, args=(source, home), daemon=True
+                target=self._refresh, args=(source, home, generation), daemon=True
             ).start()
         return value
 
-    def _refresh(self, source: Path, home: Path) -> None:
+    def _refresh(self, source: Path, home: Path, generation: int) -> None:
         try:
             result = update_status(source, home)  # never raises (its contract)
         except Exception:  # noqa: BLE001 - a refresh must never crash the daemon thread
             result = dict(_UPDATE_UNKNOWN)
         with self._lock:
+            # Clear the in-flight flag either way: a fenced refresh that left it set
+            # would block every later refresh, which is worse than the stale value.
+            self._refreshing = False
+            if generation != self._generation:
+                return  # invalidated mid-fetch: this answer predates the change
             self._value = result
             self._at = time.monotonic()
-            self._refreshing = False
 
     def invalidate(self) -> None:
         """Drop the cached value (e.g. right after a successful update action),
-        so the next poll re-fetches instead of showing a stale behind-count."""
+        so the next poll re-fetches instead of showing a stale behind-count.
+
+        Also fences any in-flight refresh, whose answer predates the action that
+        prompted the invalidation; the next poll starts a new one."""
         with self._lock:
             self._value = None
             self._at = 0.0
+            self._generation += 1
 
 
 class _AggregateCache:
     """Short-TTL memo over the office-wide read-only aggregates ``collect_state``
     recomputes on every poll (#226).
 
-    ``check_parity`` re-parses all canonical files per IDE and the cross-project
-    scans re-read every session/feedback ``.md`` in every project — pure functions
-    of the office on disk, which only a mutating action changes. The UI polls every
-    ~6s, so without a memo each poll redoes that whole scan. This caches the bundle
+    The parity check parses every canonical file and the cross-project scans read
+    every project's feedback ``.md`` — pure functions of the office on disk, which
+    only a mutating action changes. The UI polls every 6s, so without a memo each
+    poll redoes that whole scan. This caches the bundle
     for ``_AGGREGATE_TTL_SECONDS``; a mutating action calls :meth:`invalidate` so
     the next poll recomputes rather than serving stale state.
 
@@ -193,14 +221,19 @@ def _compute_aggregates(home: Path, source: Optional[Path], ides: list[str]) -> 
     projects = list_projects(home, include_private=False)
     parity: dict[str, Any] = {}
     if source is not None:
+        # Parse canonical once and share it: the per-IDE check only filters the IR
+        # set, so N IDEs otherwise cost N full re-reads of canonical/ (#295).
+        irs = load_canonical_irs(source)
         for ide in ides:
             if ide in RENDERERS:
-                parity[ide] = check_parity(source, ide, RENDERERS).to_dict()
+                parity[ide] = check_parity(source, ide, RENDERERS, irs=irs).to_dict()
+    skipped: list[str] = []
     return {
         "projects": projects,
-        "activity": cross_project_activity(home, projects),
-        "scorecards": cross_project_scorecards(home, projects),
+        "activity": cross_project_activity(home, projects, skipped=skipped),
+        "scorecards": cross_project_scorecards(home, projects, skipped=skipped),
         "parity": parity,
+        "skipped": sorted(set(skipped)),
     }
 
 
@@ -224,7 +257,7 @@ def _feedback_entry(path: Path) -> dict[str, Any]:
         "rating": fm.get("rating"),
         "agent": fm.get("agent"),
         "command": fm.get("command"),
-        "timestamp": fm.get("timestamp"),
+        "timestamp": normalized_timestamp(fm.get("timestamp")),
         "note": (loaded.body or "").strip()[:200],
     }
 
@@ -233,7 +266,7 @@ def _session_entry(path: Path) -> dict[str, Any]:
     fm = load_artifact(path).frontmatter or {}
     return {
         "file": path.name,
-        "timestamp": fm.get("timestamp"),
+        "timestamp": normalized_timestamp(fm.get("timestamp")),
         "author": fm.get("author"),
         "branch": fm.get("branch"),
     }
@@ -266,7 +299,7 @@ def _agent_cards(agents_dir: Path) -> list[dict[str, Any]]:
 
 def cross_project_activity(
     home: Path, projects: Optional[list[dict[str, Any]]] = None,
-    limit: int = _ACTIVITY_LIMIT,
+    limit: int = _ACTIVITY_LIMIT, skipped: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """Recent session records aggregated across every initialized Cohort project —
     the office-wide activity feed (#145). Loops ``list_projects`` over
@@ -277,14 +310,22 @@ def cross_project_activity(
 
     ``projects`` may be supplied to reuse a single ``list_projects`` scan across the
     other aggregates in one poll. A project whose session store is unreadable (e.g.
-    a corrupt/non-UTF-8 ``.md``) is skipped and logged, never fatal (#226)."""
+    a corrupt/non-UTF-8 ``.md``) is skipped and logged, never fatal (#226) — and its
+    name is appended to ``skipped`` when given, so the feed can say it is partial (#270).
+
+    Only the ``limit`` newest records per project are parsed — the merge can never
+    promote an older record past ``limit`` newer ones from the same store, so the
+    result is identical to reading everything (#295). ``load_session_entries``
+    normalizes each timestamp to a UTC ISO-8601 string, so an unquoted (YAML-native)
+    record cannot make the merge sort raise or the response fail to serialize
+    (#299)."""
     if projects is None:
         projects = list_projects(home, include_private=False)
     merged: list[dict[str, Any]] = []
     for proj in projects:
         try:
             paths = CohortPaths.for_project(Path(proj["path"]))
-            for entry in load_session_entries(paths):
+            for entry in load_session_entries(paths, limit=limit):
                 merged.append({
                     "project": proj["name"],
                     "timestamp": entry["timestamp"],
@@ -293,12 +334,15 @@ def cross_project_activity(
                 })
         except Exception as exc:  # noqa: BLE001 - one bad project must not sink the feed
             _log.warning("cross_project_activity: skipping %s: %s", proj.get("name"), exc)
+            if skipped is not None:
+                skipped.append(str(proj.get("name")))
     merged.sort(key=lambda e: e["timestamp"] or "", reverse=True)
     return merged[:limit]
 
 
 def cross_project_scorecards(
     home: Path, projects: Optional[list[dict[str, Any]]] = None,
+    skipped: Optional[list[str]] = None,
 ) -> list[dict[str, Any]]:
     """Per-agent up/down scorecards aggregated across every initialized Cohort
     project — Cohort's lightweight answer to agent benchmarking (#145). Agents are
@@ -308,7 +352,8 @@ def cross_project_scorecards(
     merged entries with ``improve.agent_scorecards``.
 
     ``projects`` may be supplied to reuse a single ``list_projects`` scan. A project
-    whose feedback store is unreadable is skipped and logged, never fatal (#226)."""
+    whose feedback store is unreadable is skipped and logged, never fatal (#226) — its
+    name is appended to ``skipped`` when given, so a partial score is visibly partial (#270)."""
     if projects is None:
         projects = list_projects(home, include_private=False)
     entries: list[dict[str, Any]] = []
@@ -318,6 +363,8 @@ def cross_project_scorecards(
             entries.extend(load_feedback_entries(paths))
         except Exception as exc:  # noqa: BLE001 - one bad project must not sink scoring
             _log.warning("cross_project_scorecards: skipping %s: %s", proj.get("name"), exc)
+            if skipped is not None:
+                skipped.append(str(proj.get("name")))
     return agent_scorecards(entries)
 
 
@@ -382,6 +429,9 @@ def collect_state(
     # every initialized project contributes, never just the one being managed.
     state["activity"] = agg["activity"]
     state["scorecards"] = agg["scorecards"]
+    # Projects the two feeds dropped as unreadable — so a partial total is visibly
+    # partial rather than silently smaller (#270).
+    state["skipped"] = agg["skipped"]
     state["global"]["update"] = (update_cache or _UpdateCache()).get(source, home)
     state["global"]["parity"] = agg["parity"]
 
@@ -646,7 +696,7 @@ def load_page() -> str:
 
 def load_js() -> str:
     """The page script, served as a same-origin static file so the CSP can drop
-    ``script-src 'unsafe-inline'``. It carries no token (read from a meta tag)."""
+    ``script-src 'unsafe-inline'``. It carries no token (read from the URL fragment)."""
     return (resources.files("cohort") / "dashboard.js").read_text(encoding="utf-8")
 
 
@@ -666,10 +716,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Referrer-Policy", "no-referrer")
         if content_type.startswith("text/html"):
             # No 'unsafe-inline' for scripts: the page JS is an external same-origin
-            # file (dashboard.js) and the per-launch token rides a <meta> tag, so an
-            # injected <script> in rendered briefing/job output cannot execute and
-            # read the in-DOM token. img-src is 'none' (no connector/job-derived
-            # image can beacon out). style-src stays inline for the single <style>.
+            # file (dashboard.js) and the per-launch token arrives in the URL
+            # fragment, never in the served page, so an injected <script> in
+            # rendered briefing/job output cannot execute and read it. img-src is
+            # 'none' (no connector/job-derived image can beacon out). style-src
+            # stays inline for the single <style>.
             self.send_header(
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; "
@@ -694,11 +745,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
         if self.path == "/":
+            # The page is static and carries no token: the fragment of the URL
+            # the CLI printed never reaches the server, so there is nothing to
+            # check here beyond Host, and nothing for a bare GET to scrape (#293).
             if not _host_is_loopback(self.headers.get("Host", "")):
                 self._send_json(403, {"error": "forbidden host"})
                 return
-            page = load_page().replace("__COHORT_TOKEN__", self.server.token)
-            self._send(200, page.encode("utf-8"), "text/html; charset=utf-8")
+            self._send(200, load_page().encode("utf-8"), "text/html; charset=utf-8")
         elif self.path == "/dashboard.js":
             # Same-origin static script (no token inside it). Loopback Host is
             # still required; it needs no token because a <script src> cannot
@@ -799,11 +852,19 @@ class DashboardServer(ThreadingHTTPServer):
 
     @property
     def url(self) -> str:
-        return f"http://127.0.0.1:{self.server_address[1]}/"
+        """The address to print and open. The token rides in the fragment: the
+        browser hands it to the page script but never sends it on the wire, so
+        the CLI's terminal line and the browser launch are the only two places
+        the credential is ever handed out."""
+        return f"http://127.0.0.1:{self.server_address[1]}/#{self.token}"
 
 
 def do_dashboard(home: Path, cwd: Path, port: int, open_browser: bool) -> DashboardServer:
-    """Start the dashboard server (caller owns serve_forever / shutdown)."""
+    """Start the dashboard server (caller owns serve_forever / shutdown).
+
+    ``webbrowser.open`` passes the URL as a single argv element (``xdg-open``,
+    ``open``, ``ShellExecute``) — never through a shell — so the ``#`` fragment
+    survives the launch on every platform."""
     server = DashboardServer(home, cwd, port)
     if open_browser:
         import webbrowser

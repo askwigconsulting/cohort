@@ -44,8 +44,11 @@ because merge is human by construction — the honest maximum is *autopilot up-t
 ## Rules
 
 - **Machine-local, never raised from a pull.** The level lives in the global `state/` dir
-  (never synced). A repo's config or a pulled artifact can request *less* autonomy but never
-  *more*; fail-closed to `paired` on anything malformed.
+  (never synced), and today nothing else feeds it: no repo config or pulled artifact is read
+  as an autonomy input, so there is no "less" to request in the first place. If that ever
+  changes, the rule stays the same one this memory has always stated: such an input may only
+  ever *lower* the effective level, never raise it above what the machine-local file says; and
+  fail-closed to `paired` on anything malformed.
 - **The IDE boundary.** The confirm-for-irreversible backstop ultimately depends on the IDE
   permission system (Cohort compiles settings but doesn't own the runtime). A user who sets
   their *IDE* to bypass permissions (× a project Bash-doer × prompt injection) is outside

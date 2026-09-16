@@ -11,6 +11,10 @@ from pathlib import Path
 import pytest
 
 from cohort.adapters.claude import claude_tools
+from cohort.adapters.claude import render_agent as render_agent_claude
+from cohort.adapters.codex import render_agent as render_agent_codex
+from cohort.adapters.copilot import render_agent as render_agent_copilot
+from cohort.adapters.cursor import render_agent as render_agent_cursor
 from cohort.ir import build_ir, is_doer
 from cohort.schema import E060_SAFETY_INVARIANT, validate_frontmatter
 
@@ -85,6 +89,46 @@ def test_claude_forces_readonly_for_a_non_project_agent_even_if_non_advisory():
     ir = build_ir(_agent_fm(scope="global", advisory=False, tools=["read", "edit", "bash"]), "b")
     tools = claude_tools(ir)
     assert "Edit" not in tools and "Bash" not in tools
+
+
+# --- renderer: the label (#300 item 1) gates on is_doer, on all four IDEs ---
+
+_RENDER_AGENT = {
+    "claude": render_agent_claude,
+    "codex": render_agent_codex,
+    "cursor": render_agent_cursor,
+    "copilot": render_agent_copilot,
+}
+
+
+@pytest.mark.parametrize("ide", ["claude", "codex", "cursor", "copilot"])
+def test_project_doer_label_says_write_capable(ide):
+    ir = build_ir(_agent_fm(scope="project", advisory=False, tools=["read", "edit", "bash"]), "b")
+    staged = _RENDER_AGENT[ide](ir)
+    text = staged.content.decode("utf-8")
+    assert "(project doer — write-capable)" in text
+    assert "(advisory office agent)" not in text
+
+
+@pytest.mark.parametrize("ide", ["claude", "codex", "cursor", "copilot"])
+def test_advisory_agent_label_is_unaffected(ide):
+    ir = build_ir(_agent_fm(scope="global", advisory=True, tools=["read"]), "b")
+    staged = _RENDER_AGENT[ide](ir)
+    text = staged.content.decode("utf-8")
+    assert "(advisory office agent)" in text
+    assert "write-capable" not in text
+
+
+@pytest.mark.parametrize("ide", ["claude", "codex", "cursor", "copilot"])
+def test_mis_scoped_non_advisory_agent_keeps_advisory_label(ide):
+    # Same invariant as the tool-strip test above: a mis-scoped global agent that
+    # somehow carries advisory:false must still render the advisory label — the
+    # label keys off is_doer (scope AND advisory), never advisory alone.
+    ir = build_ir(_agent_fm(scope="global", advisory=False, tools=["read", "edit", "bash"]), "b")
+    staged = _RENDER_AGENT[ide](ir)
+    text = staged.content.decode("utf-8")
+    assert "(advisory office agent)" in text
+    assert "write-capable" not in text
 
 
 # --- promote: a doer cannot reach a synced tier ------------------------------

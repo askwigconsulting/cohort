@@ -3,19 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- The per-launch token is injected here server-side. The page script reads it
-     from this meta tag, which keeps dashboard.js static and same-origin so the
-     CSP can forbid inline script ('script-src self', no 'unsafe-inline'). -->
-<meta name="cohort-token" content="__COHORT_TOKEN__">
 <title>Cohort — Office</title>
 <style>
   :root {
     --bg0:#070b14; --bg1:#0b1222; --card:rgba(255,255,255,.045);
     --card-edge:rgba(255,255,255,.09); --ink:#e7ecf5; --dim:#8b96ab;
     /* --faint was #5b6478, ~3.32:1 on --bg0 (#070b14) — fails WCAG AA 4.5:1.
-       #717c94 is ~4.70:1 on --bg0 (WCAG relative-luminance formula, computed).
+       #717c94 (the #232 fix) reached ~4.70:1 on bare --bg0, but .dept h4 /
+       .proj-path / .pipeline .caption sit inside .card (rgba(255,255,255,.045))
+       over --bg0/--bg1, where #717c94 drops to 4.32:1 and 4.03:1 — both fail AA.
+       #7b86a0 (WCAG relative-luminance formula, computed): 5.40:1 on bare --bg0,
+       5.13:1 on bare --bg1, 4.97:1 over .card on --bg0, 4.63:1 over .card on
+       --bg1 — AA (4.5:1) on every surface it appears on.
        --dim is unchanged. */
-    --faint:#717c94;
+    --faint:#7b86a0;
     --vio:#7c5cff; --cyan:#22d3ee; --ok:#34d399; --warn:#fbbf24; --bad:#f87171;
     --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   }
@@ -466,7 +467,7 @@
   <h3 id="cr-title">Create an artifact</h3>
   <p id="cr-hint">Authors it in <b>my office</b> (<span style="font-family:var(--mono)">~/.cohort/my</span>) and recompiles — updates and proposals never touch it. New agents are read-only advisors by default.</p>
   <form id="create-form">
-    <label>kind</label>
+    <label for="cr-kind">kind</label>
     <select id="cr-kind">
       <option value="agent">agent</option>
       <option value="skill">skill</option>
@@ -474,32 +475,32 @@
       <option value="hook">hook</option>
       <option value="memory" id="cr-opt-memory">memory</option>
     </select>
-    <label>name (kebab-case slug)</label><input id="cr-name" required pattern="[a-z][a-z0-9-]*" placeholder="my-thing">
-    <label>description</label><input id="cr-desc" required placeholder="What it's for.">
+    <label for="cr-name">name (kebab-case slug)</label><input id="cr-name" required pattern="[a-z][a-z0-9-]*" placeholder="my-thing">
+    <label for="cr-desc">description</label><input id="cr-desc" required placeholder="What it's for.">
     <div data-kind="agent">
-      <label>display name</label><input id="cr-display" placeholder="MyThing">
-      <label>department</label><input id="cr-dept" placeholder="General">
+      <label for="cr-display">display name</label><input id="cr-display" placeholder="MyThing">
+      <label for="cr-dept">department</label><input id="cr-dept" placeholder="General">
     </div>
     <div data-kind="skill" hidden>
-      <label>triggers (comma-separated, optional)</label><input id="cr-triggers" placeholder="weekly, review">
+      <label for="cr-triggers">triggers (comma-separated, optional)</label><input id="cr-triggers" placeholder="weekly, review">
     </div>
     <div data-kind="command" hidden>
-      <label>invocation (slash name, default: the slug)</label><input id="cr-invocation" placeholder="my-thing">
+      <label for="cr-invocation">invocation (slash name, default: the slug)</label><input id="cr-invocation" placeholder="my-thing">
     </div>
     <div data-kind="hook" hidden>
-      <label>event</label>
+      <label for="cr-event">event</label>
       <select id="cr-event">
         <option>session_start</option><option>session_end</option><option>pre_write</option>
         <option>post_write</option><option>pre_command</option><option>post_command</option><option>on_stale</option>
       </select>
-      <label>action (command to run)</label><input id="cr-action" placeholder="cohort status">
-      <label>matcher (optional)</label><input id="cr-matcher">
+      <label for="cr-action">action (command to run)</label><input id="cr-action" placeholder="cohort status">
+      <label for="cr-matcher">matcher (optional)</label><input id="cr-matcher">
     </div>
     <div data-kind="memory" hidden>
-      <label>priority</label>
+      <label for="cr-priority">priority</label>
       <select id="cr-priority"><option>normal</option><option>high</option><option>low</option></select>
     </div>
-    <label>body (markdown, optional)</label><textarea id="cr-body" rows="4" placeholder="The instructions / content."></textarea>
+    <label for="cr-body">body (markdown, optional)</label><textarea id="cr-body" rows="4" placeholder="The instructions / content."></textarea>
     <div class="row">
       <button class="btn" type="button" id="cr-cancel">Cancel</button>
       <button class="btn primary" type="submit"><span class="spin"></span>Create</button>
@@ -511,8 +512,8 @@
   <h3 id="ed-title">Edit</h3>
   <p>Edits the artifact in <b>my office</b> in place and recompiles. The frontmatter is preserved; you change the description and body.</p>
   <form id="edit-form">
-    <label>description</label><input id="ed-desc">
-    <label>body (markdown)</label><textarea id="ed-body" rows="8"></textarea>
+    <label for="ed-desc">description</label><input id="ed-desc">
+    <label for="ed-body">body (markdown)</label><textarea id="ed-body" rows="8"></textarea>
     <div class="row">
       <button class="btn" type="button" id="ed-cancel">Cancel</button>
       <button class="btn primary" type="submit"><span class="spin"></span>Save</button>

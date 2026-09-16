@@ -157,8 +157,10 @@ def require_egress_allowed(project_context_text: str) -> None:
 # 2. Secret scan
 # --------------------------------------------------------------------------- #
 
-# AWS access key id: the fixed "AKIA" prefix plus 16 uppercase base-32 chars.
-_AWS_ACCESS_KEY_RE = re.compile(r"AKIA[0-9A-Z]{16}")
+# AWS access key id: a fixed 4-char prefix plus 16 uppercase base-32 chars. `AKIA` is
+# the long-lived IAM key; `ASIA` is the STS *temporary* key (#289) — same shape, same
+# blast radius while it lives, and the form an assumed-role session leaks.
+_AWS_ACCESS_KEY_RE = re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}")
 
 # PEM private-key header, e.g. "-----BEGIN RSA PRIVATE KEY-----" or the bare
 # "-----BEGIN PRIVATE KEY-----"; the optional algorithm sits between BEGIN and
@@ -168,6 +170,23 @@ _PRIVATE_KEY_RE = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
 # HTTP bearer token; require a non-trivial (>=10 char) token so the English word
 # "Bearer" followed by a short word does not trip it.
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=\-]{10,}")
+
+# HTTP scheme names are case-insensitive, so `authorization: bearer <token>` carries a
+# credential just as surely as the capitalised form (#289). This is a SECOND rule rather
+# than `re.IGNORECASE` on the one above, because a bare case-insensitive `bearer` also
+# matches ordinary prose: this repo's own RFC 0003 says "Zoom/Meet URLs are bearer
+# credentials", and `credentials.` is eleven token-shaped characters. Requiring the
+# `Authorization` header context is what makes the lowercase form high-signal again.
+#
+# `(?-i:(?!Bearer\b))` switches the case-insensitivity back off for one lookahead, so a
+# canonically-spelled `Bearer` is left to the rule above: a header carrying it raises ONE
+# finding instead of two overlapping ones whose differing digests would each need their
+# own suppression line.
+_AUTHORIZATION_BEARER_RE = re.compile(
+    r"\bauthorization[ \t]*[:=][ \t]*(?:\\?['\"])?"
+    r"(?-i:(?!Bearer\b))bearer[ \t]+[A-Za-z0-9._~+/=\-]{10,}",
+    re.IGNORECASE,
+)
 
 # High-signal, fixed-prefix vendor credential shapes. Each prefix is distinctive
 # enough on its own (near-zero false-positive rate) that no surrounding context is
@@ -188,6 +207,12 @@ _AI_API_KEY_RE = re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{20,}\b")
 
 # Google API key: the fixed "AIza" prefix plus 35 URL-safe base64 chars.
 _GOOGLE_API_KEY_RE = re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")
+
+# xAI API key: the `xai-` prefix plus a long alphanumeric body. Cohort itself posts to
+# xAI (the grok engines), so this is the one vendor whose key a Cohort user is most
+# likely to have sitting in a log or a scratch note on the machine (#289). The generic
+# assignment rule already catches `XAI_API_KEY=...`; this catches a bare key.
+_XAI_API_KEY_RE = re.compile(r"\bxai-[A-Za-z0-9]{40,}\b")
 
 # JSON Web Token: base64url header and payload segments joined by dots, followed by
 # the dot that opens the signature segment. The signature itself is not required so
@@ -272,9 +297,60 @@ _TYPE_ANNOTATION_VALUE_RE = re.compile(
 # identifier on the left names a secret keyword — e.g. ``_URL_PASSWORD =
 # re.compile(r"...")`` or a comment-shaped string. Checked against the start of the
 # captured value token (COORD-1: precision fix for the assignment heuristic).
+#
+# ``{name`` is here because reading a *literal* value (#289) brings f-strings with it:
+# ``TOKEN_LINE = f"{digest}  {path}"`` assigns a template, not a credential — the value
+# is computed at runtime and no secret appears in the text, exactly the argument the
+# self-reference and dotted-reference rules make for a forwarded name.
 _CODE_SHAPED_VALUE_RE = re.compile(
     r"^(?:re\.compile\(|r['\"]|import\b|from\b|lambda\b|None\b|True\b|False\b"
-    r"|[A-Za-z_][A-Za-z0-9_.]*\()"
+    r"|\{[A-Za-z_]|[A-Za-z_][A-Za-z0-9_.]*\()"
+)
+
+# The value token in `_ASSIGNMENT_RE` must START at the credential (its first character
+# is the first character after an optional single quote), so every shape that puts
+# something between the separator and the literal slipped through (#289): a container
+# opener (`TOKENS = ["..."]`, `PASSWORDS = {"admin": "..."}`, `PASSWORD = ("...")`), a
+# string-literal prefix (`f"..."`, `b"..."`), or a backslash-escaped quote — the shape
+# JSON takes once it has itself been stringified into a log line or a config dump
+# (`{\"password\":\"...\"}`). This companion pattern spells that lead-in out explicitly
+# and then REQUIRES an opening quote, which is what keeps it high-signal: an unquoted
+# value is already `_ASSIGNMENT_RE`'s job, so this rule only ever fires on a literal.
+#
+# Bounds, for the same reason `_ASSIGNMENT_RE` bounds its value (#287): every optional
+# part is length-capped, so a failed match backtracks a constant amount and the scan
+# stays linear on a long separator-dense line. The identifier cap is generous — 65
+# characters — and no real credential name approaches it.
+#
+# Escaped quotes are matched, not unescaped: `\\?['\"]` accepts `"` and `\"` alike. The
+# value stops at whitespace, a quote or a backslash, so the closing delimiter (escaped
+# or not) is never captured and the digest covers the credential alone.
+_QUOTED_ASSIGNMENT_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_\-]{0,64})"          # 1: the assigned identifier
+    r"\\?['\"]?[ \t]*(:=|[:=])[ \t]*"             # 2: separator (walrus, colon, equals)
+    r"(?:[\[{(][ \t]*"                            # optional container opener
+    r"(?:\\?['\"][A-Za-z0-9_\- ]{0,64}\\?['\"][ \t]*:[ \t]*)?)?"   # ...and inner key
+    r"[A-Za-z]{0,2}"                              # optional string prefix: f, b, rb, ...
+    r"\\?['\"]{1,3}"                              # the opening quote (plain or escaped)
+    r"([^\s'\"\\]{6,256})"                        # 3: the quoted value
+)
+
+# YAML block scalars (`password: |` or `password: >`, value on the following indented
+# lines) are the one common credential shape that is not on the key's own line, so no
+# same-line pattern can see it (#289). Only the FIRST indented line is captured: that is
+# enough to detect and to digest, and keeping the match to a single line keeps the
+# pattern free of the nested quantifier a multi-line body would need.
+#
+# That line must be a single whitespace-free run. A credential is one; a prose
+# paragraph folded under a secret-named key ("tokens: |" followed by "are described
+# below") is not, and requiring the whole line to be one token is what keeps this rule
+# from flagging documentation. A multi-word secret therefore escapes it — acceptable for
+# a backstop, and the same trade the >=6-character floor already makes.
+_BLOCK_SCALAR_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*['\"]?([A-Za-z_][A-Za-z0-9_\-]{0,64})['\"]?[ \t]*"
+    r":[ \t]*[|>][-+0-9]{0,3}[ \t]*\r?\n"
+    r"[ \t]+(\S{6,256})[ \t]*\r?$",
+    re.MULTILINE,
 )
 
 
@@ -329,6 +405,68 @@ def _looks_secret_shaped(value: str) -> bool:
     return _CODE_SHAPED_VALUE_RE.match(value) is None
 
 
+def _keyword_assignment_finding(
+    identifier: str, separator: str, value: str
+) -> SecretFinding | None:
+    """Classify one ``identifier <sep> value`` triple, or return None if it is benign.
+
+    Applies the same three exemptions the bare-token assignment scan applies — a name
+    forwarded to itself, a name forwarded through an attribute, and a type annotation
+    after a colon — so the literal-shaped rules below cannot be looser than the rule
+    they extend.
+
+    Args:
+        identifier: The assigned name, as matched.
+        separator: The separator that joined them (``=``, ``:`` or ``:=``).
+        value: The assigned value, already stripped of delimiters.
+
+    Returns:
+        The finding this assignment raises, or None.
+    """
+    keyword = _assignment_keyword(identifier)
+    if keyword is None:
+        return None
+    if _is_self_reference(identifier, value) or _is_dotted_reference(identifier, value):
+        return None
+    if separator == ":" and _TYPE_ANNOTATION_VALUE_RE.fullmatch(value):
+        return None
+    if not _looks_secret_shaped(value):
+        return None
+    return SecretFinding(f"generic-assignment:{keyword}", secret_digest(value))
+
+
+def _literal_assignment_findings(text: str) -> list[SecretFinding]:
+    """Findings for credentials assigned as a *string literal* behind a lead-in.
+
+    Covers the shapes :data:`_ASSIGNMENT_RE` structurally cannot reach because its value
+    token must begin at the credential itself: a bracketed or parenthesised literal, a
+    prefixed one (``f"…"``, ``b"…"``), an escaped-quote JSON dump, a walrus/Go ``:=``,
+    and a YAML block scalar whose value sits on the next line (#289).
+
+    ``finditer`` is enough here (no resume-inside-the-value loop): every part of both
+    patterns is length-bounded, so this stays linear on the long separator-dense lines
+    that made the bare-token scan quadratic.
+
+    Args:
+        text: The payload to scan.
+
+    Returns:
+        Every finding these two shapes raise; possibly empty.
+    """
+    findings: list[SecretFinding] = []
+    for match in _QUOTED_ASSIGNMENT_RE.finditer(text):
+        finding = _keyword_assignment_finding(
+            match.group(1), match.group(2), match.group(3)
+        )
+        if finding is not None:
+            findings.append(finding)
+    for match in _BLOCK_SCALAR_ASSIGNMENT_RE.finditer(text):
+        finding = _keyword_assignment_finding(match.group(1), ":", match.group(2))
+        if finding is not None:
+            findings.append(finding)
+    return findings
+
+
 def scan_for_secrets(text: str) -> list[str]:
     """Scan ``text`` for credential-shaped content and return non-secret labels.
 
@@ -338,13 +476,15 @@ def scan_for_secrets(text: str) -> list[str]:
 
     Detected classes:
 
-    * ``aws-access-key-id`` — ``AKIA`` + 16 uppercase base-32 chars.
+    * ``aws-access-key-id`` — ``AKIA``/``ASIA`` + 16 uppercase base-32 chars.
     * ``private-key-block`` — a ``-----BEGIN ... PRIVATE KEY-----`` header.
-    * ``bearer-token`` — ``Bearer <token>`` with a non-trivial token.
+    * ``bearer-token`` — ``Bearer <token>`` with a non-trivial token, and the
+      case-insensitive ``authorization: bearer <token>`` header form.
     * ``github-token`` — a GitHub PAT (``gh[pousr]_...`` or ``github_pat_...``).
     * ``slack-token`` — a Slack token (``xox[baprs]-...``).
     * ``ai-api-key`` — an OpenAI/Anthropic-shaped key (``sk-...`` / ``sk-ant-...``).
     * ``google-api-key`` — a Google API key (``AIza...``).
+    * ``xai-api-key`` — an xAI API key (``xai-...``).
     * ``jwt`` — a JSON Web Token (``eyJ....eyJ....``).
     * ``connection-string-credential`` — a ``user:password@`` pair in a URI, e.g.
       ``postgres://svc:S3cret@db/prod``.
@@ -353,7 +493,11 @@ def scan_for_secrets(text: str) -> list[str]:
       non-trivial, credential-shaped value (both ``KEY = value`` and ``.env``-style
       ``KEY=value``); a code-shaped RHS (a compiled regex, a raw string, an
       import/keyword, a function call) is exempted to cut false positives on
-      security source that merely names a secret keyword.
+      security source that merely names a secret keyword. The same label also
+      covers the *literal* forms — a bracketed, parenthesised or prefixed string
+      (``TOKENS = ["…"]``, ``PASSWORD = f"…"``), an escaped-quote JSON dump
+      (``{\\"password\\":\\"…\\"}``), a Go/walrus ``:=``, and a YAML block scalar
+      (``password: |`` with the value on the next indented line).
 
     Regex scanning has **false negatives** (a value split across lines, an unusual
     key name, a short secret) and is a backstop, not a guarantee — the primary
@@ -376,11 +520,13 @@ _HIGH_SIGNAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aws-access-key-id", _AWS_ACCESS_KEY_RE),
     ("private-key-block", _PRIVATE_KEY_RE),
     ("bearer-token", _BEARER_RE),
+    ("bearer-token", _AUTHORIZATION_BEARER_RE),
     ("github-token", _GITHUB_TOKEN_RE),
     ("github-token", _GITHUB_FINE_GRAINED_PAT_RE),
     ("slack-token", _SLACK_TOKEN_RE),
     ("ai-api-key", _AI_API_KEY_RE),
     ("google-api-key", _GOOGLE_API_KEY_RE),
+    ("xai-api-key", _XAI_API_KEY_RE),
     ("jwt", _JWT_RE),
     ("connection-string-credential", _CONNECTION_STRING_CREDENTIAL_RE),
 )
@@ -463,6 +609,9 @@ def scan_for_secret_findings(text: str) -> list[SecretFinding]:
         findings.add(
             SecretFinding(f"generic-assignment:{keyword}", secret_digest(value))
         )
+
+    # The literal-shaped assignments the bare-token loop structurally cannot reach.
+    findings.update(_literal_assignment_findings(text))
 
     return sorted(findings)
 

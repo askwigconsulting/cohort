@@ -42,6 +42,29 @@ _GIT_TIMEOUT = 15
 # generous tail rather than trimming to the minimum useful number.
 DEFAULT_KEEP_TRANSCRIPTS = 50
 DEFAULT_MIN_AGE_DAYS = 7
+# A wall-clock ceiling on a single `scan`, not a per-item timeout: classifying a worktree
+# shells out to git (`_GIT_TIMEOUT` each), and a machine with enough stale proposals could
+# otherwise make `scan` — which is supposed to be the cheap, read-only, always-safe half of
+# `gc` — run for an unbounded time. Past the deadline, scanning stops and the report says
+# how many candidate directories it never reached, so a partial scan is never mistaken for
+# a complete one.
+DEFAULT_SCAN_DEADLINE_SECONDS = 30.0
+
+
+def _transcript_sort_key(path: Path) -> tuple[int, int]:
+    """Sort transcripts oldest-to-newest by their numeric stem, not filename text.
+
+    Names are zero-padded (`{n:04d}.jsonl`), but nothing enforces that padding forever:
+    once the count passes 9999, `10000.jsonl` sorts lexicographically between
+    `1000.jsonl` and `1001.jsonl` — the newest transcript lands in the delete slice
+    instead of the tail it is supposed to be exempt from. A name that is not a bare
+    integer stem sorts after every numeric one, so an unrecognized file is never
+    mistaken for older than a legitimate transcript.
+    """
+    try:
+        return (0, int(path.stem))
+    except ValueError:
+        return (1, 0)
 
 
 @dataclass
@@ -69,6 +92,10 @@ class GcReport:
     items: list[Reclaimable] = field(default_factory=list)
     removed: list[Path] = field(default_factory=list)
     pruned_worktrees: bool = False
+    # Candidate directories the scan budget ran out before examining. Nonzero means the
+    # report below is a partial scan, not a complete one — never folded silently into
+    # `items` as "nothing found there" and never dropped from the result.
+    unexamined: int = 0
 
     @property
     def reclaimable_bytes(self) -> int:
@@ -135,7 +162,7 @@ def _scan_repo(report: GcReport, repo_root: Path, *, now: float,
     tdir = repo_root / ".cohort" / "engine-transcripts"
     if tdir.is_dir():
         transcripts = sorted(
-            (p for p in tdir.glob("*.jsonl") if p.is_file()), key=lambda p: p.name
+            (p for p in tdir.glob("*.jsonl") if p.is_file()), key=_transcript_sort_key
         )
         candidates = transcripts[:-keep_transcripts] if keep_transcripts else transcripts
         for old in candidates:
@@ -180,6 +207,7 @@ def scan(
     min_age_days: float = DEFAULT_MIN_AGE_DAYS,
     keep_transcripts: int = DEFAULT_KEEP_TRANSCRIPTS,
     temp_root: Path | None = None,
+    scan_deadline_seconds: float | None = DEFAULT_SCAN_DEADLINE_SECONDS,
 ) -> GcReport:
     """Find what could be reclaimed. Reads only — never removes anything.
 
@@ -192,14 +220,28 @@ def scan(
         keep_transcripts: Always retain this many newest transcripts, whatever their age —
             they are the audit trail of what left the machine.
         temp_root: Override the system temp dir (tests).
+        scan_deadline_seconds: Overall wall-clock budget for this call. Classifying a
+            proposal worktree shells out to git, so a machine with enough stale
+            candidates could otherwise make a supposedly cheap, read-only scan run for an
+            unbounded time. Once the budget is spent, `scan` stops examining further
+            candidates and `GcReport.unexamined` counts what it never reached — it is
+            never folded silently into "nothing to reclaim". None disables the budget.
     """
     report = GcReport()
     now = time.time()
     root = temp_root or Path(tempfile.gettempdir())
+    deadline = (
+        time.monotonic() + scan_deadline_seconds if scan_deadline_seconds is not None else None
+    )
 
-    for parent in sorted(root.glob(f"{_PROPOSAL_PREFIX}*")):
-        if not parent.is_dir():
-            continue
+    def _budget_spent() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    candidates = [p for p in sorted(root.glob(f"{_PROPOSAL_PREFIX}*")) if p.is_dir()]
+    for index, parent in enumerate(candidates):
+        if _budget_spent():
+            report.unexamined += len(candidates) - index
+            return report
         try:
             age_days = (now - parent.stat().st_mtime) / 86400
         except OSError:
@@ -220,11 +262,18 @@ def scan(
     if all_projects_home is not None:
         repos.extend(registered_projects(all_projects_home))
     seen: set[Path] = set()
+    resolved_repos: list[Path] = []
     for repo in repos:
         resolved = repo.resolve()
         if resolved in seen or not resolved.is_dir():
             continue
         seen.add(resolved)
+        resolved_repos.append(resolved)
+
+    for index, resolved in enumerate(resolved_repos):
+        if _budget_spent():
+            report.unexamined += len(resolved_repos) - index
+            return report
         _scan_repo(report, resolved, now=now, min_age_days=min_age_days,
                    keep_transcripts=keep_transcripts)
     return report

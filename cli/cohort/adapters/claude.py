@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from ..frontmatter import dump_frontmatter
 from ..ir import IRArtifact, is_doer
+from ..schema import normalize_tool
 from .base import MergeTarget
 
 # --- tool mapping (verified) -----------------------------------------------
@@ -102,8 +103,9 @@ class MarkerError(Exception):
 
 
 def _norm_tool(name: str) -> Optional[str]:
-    key = name.lower().replace("-", "").replace("_", "")
-    return _TOOL_MAP.get(key)
+    """Native name for a canonical tool, or ``None`` outside the vocabulary — which
+    validation (E021) already rejects, so a compiled artifact never reaches it."""
+    return _TOOL_MAP.get(normalize_tool(name))
 
 
 def claude_tools(ir: IRArtifact) -> list[str]:
@@ -197,7 +199,11 @@ def render_agent(ir: IRArtifact, directory: Optional[str] = None) -> StagedFile:
     label = ir.display_name or ir.name
     department = ir.fields.get("department", "")
     topology = ir.fields.get("topology", "specialist")
-    header = f"> **{label}** — {department} · {topology} (advisory office agent)"
+    # #300 item 1: the label must not claim "advisory" for a scope:project,
+    # advisory:false doer — key off is_doer (never `advisory` alone), same
+    # invariant as the tool-strip four lines away.
+    role = "project doer — write-capable" if is_doer(ir) else "advisory office agent"
+    header = f"> **{label}** — {department} · {topology} ({role})"
     body = _resolve_marker(ir, ir.body.strip(), directory)
     return StagedFile(f"agents/{ir.name}.md", _assemble(fm, f"{header}\n\n{body}").encode("utf-8"))
 

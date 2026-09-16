@@ -10,11 +10,12 @@ import pytest
 from cohort.errors import (
     E010_MISSING_FIELD,
     E020_BAD_ENUM,
+    E021_UNKNOWN_TOOL,
     E050_TYPE,
     E060_SAFETY_INVARIANT,
     E070_SCOPE_CONSTRAINT,
 )
-from cohort.schema import apply_defaults, validate_file
+from cohort.schema import apply_defaults, kind_schema, known_tools, validate_file
 from conftest import INVALID, VALID, code_set, validate_text
 
 
@@ -264,3 +265,37 @@ def test_dry_run_wrong_type_is_e050_not_e060():
     cs = code_set(_command(dry_run='"false"'))
     assert E050_TYPE in cs
     assert E060_SAFETY_INVARIANT not in cs
+
+
+# --- agent tools: the known vocabulary (E021) --------------------------------
+
+
+def test_agent_unknown_tool_is_e021_listing_the_known_names():
+    result = validate_text(_agent(tools="[Task]"))
+    assert [e.code for e in result.errors] == [E021_UNKNOWN_TOOL]
+    err = result.errors[0]
+    assert err.field == "tools"
+    assert "'Task'" in err.message
+    for name in known_tools():
+        assert name in err.message
+
+
+def test_agent_mcp_tool_is_e021():
+    assert code_set(_agent(tools="[read, mcp__github__search]")) == {E021_UNKNOWN_TOOL}
+
+
+@pytest.mark.parametrize("tools", ["[Read, Grep]", "[web-fetch, Web_Search]", "[NotebookEdit]"])
+def test_agent_tool_names_match_case_and_separator_insensitively(tools):
+    assert code_set(_agent(tools=tools)) == set()
+
+
+def test_agent_tools_of_wrong_element_type_is_e050_not_e021():
+    cs = code_set(_agent(tools="[1]"))
+    assert E050_TYPE in cs
+    assert E021_UNKNOWN_TOOL not in cs
+
+
+def test_known_tools_are_declared_in_the_agent_schema():
+    enum = kind_schema("agent")["properties"]["tools"]["items"]["enum"]
+    assert tuple(enum) == known_tools()
+    assert len(set(enum)) == len(enum)

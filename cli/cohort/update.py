@@ -96,13 +96,30 @@ def _config_text(home: Path) -> Optional[str]:
     return cfg.read_text(encoding="utf-8")
 
 
+def _strip_toml_key_quotes(raw_key: str) -> str:
+    """Strip one layer of matching quotes from a raw TOML key token.
+
+    Valid TOML allows a quoted key (``"require_signed" = true`` or
+    ``'require_signed' = true``) as an exact synonym for the bare form. The
+    scanner in :func:`_update_table_value` must recognise both, or a config
+    that merely writes the quoted (but equally valid) spelling silently fails
+    to set a security flag like ``require_signed``."""
+    if len(raw_key) >= 2 and raw_key[0] == raw_key[-1] and raw_key[0] in "\"'":
+        return raw_key[1:-1]
+    return raw_key
+
+
 def _update_table_value(text: str, key: str) -> Optional[str]:
     """The raw right-hand side of ``key`` inside the ``[update]`` table, or None.
 
     A minimal, stdlib-only line scan scoped to that one table — deliberately not
     ``tomllib``, which is absent on Python 3.10 (the project floor) and would make
     a security flag silently unreadable there. Enough for the simple ``key =
-    value`` lines Cohort itself writes."""
+    value`` lines Cohort itself writes, including a quoted key
+    (``"require_signed" = true``), which is valid TOML and must not be read as
+    absent. A line inside ``[update]`` the scanner cannot parse (no ``=``) is
+    warned about on stderr rather than silently skipped, so a typo in a
+    security-relevant table doesn't fail open without a trace."""
     in_update = False
     for line in text.splitlines():
         s = line.strip()
@@ -111,10 +128,18 @@ def _update_table_value(text: str, key: str) -> Optional[str]:
         if s.startswith("[") and s.endswith("]"):
             in_update = s == "[update]"
             continue
-        if in_update and "=" in s:
-            k, _, v = s.partition("=")
-            if k.strip() == key:
-                return v.strip()
+        if not in_update:
+            continue
+        if "=" not in s:
+            warnings.warn(
+                f"cohort.toml: unparseable line in [update]: {s!r}",
+                UserWarning,
+                stacklevel=2,
+            )
+            continue
+        k, _, v = s.partition("=")
+        if _strip_toml_key_quotes(k.strip()) == key:
+            return v.strip()
     return None
 
 
@@ -554,22 +579,35 @@ def _record_update(home: Path, from_sha: str, to_sha: str, action: str, *, at: s
     the advertised one-shot undo is simply gone, and the user finds out only when they
     reach for it.
 
+    The read→append→write runs under ``file_lock`` so two writers (an update and
+    a rollback in separate processes) cannot lose one another's entry, and the
+    write is tmp + ``os.replace`` like ``Manifest.persist``, so a reader never
+    sees a truncated ledger — which ``_last_rollback_point`` would take as "no
+    recorded update" (#292).
+
     Returns:
         True if the ledger now records this move; False if it could not be written.
     """
     import json
+    import uuid
+
+    from .filelock import LockTimeout, file_lock
 
     path = _history_path(home)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        entries = data.get("entries", []) if isinstance(data, dict) else []
-    except Exception:  # noqa: BLE001 - a corrupt ledger must not block the operation
-        entries = []
-    entries.append({"from": from_sha, "to": to_sha, "action": action, "at": at})
+    tmp = path.with_name(f"{path.name}.tmp-{uuid.uuid4().hex}")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"entries": entries[-20:]}, indent=2), encoding="utf-8")
-    except OSError:
+        with file_lock(path):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                entries = data.get("entries", []) if isinstance(data, dict) else []
+            except Exception:  # noqa: BLE001 - a corrupt ledger must not block the operation
+                entries = []
+            entries.append({"from": from_sha, "to": to_sha, "action": action, "at": at})
+            tmp.write_text(json.dumps({"entries": entries[-20:]}, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+    except (OSError, LockTimeout):
+        tmp.unlink(missing_ok=True)
         return False
     return True
 

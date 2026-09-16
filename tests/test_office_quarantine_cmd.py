@@ -86,6 +86,35 @@ def test_office_review_fails_closed_on_corrupt_state(home: Path):
     assert "unreadable" in result.output
 
 
+# --- #300 item 2: the gated-kinds phrase is single-sourced from GATED_KINDS --
+
+
+def test_gated_kinds_phrase_names_every_gated_kind_singular():
+    phrase = quarantine.gated_kinds_phrase()
+    for kind in quarantine.GATED_KINDS:
+        assert kind in phrase.split("/")
+
+
+def test_gated_kinds_phrase_pluralizes_every_gated_kind():
+    phrase = quarantine.gated_kinds_phrase(plural=True)
+    assert phrase.split("/") == ["hooks", "memories", "skills", "agents"]
+
+
+def test_my_office_review_help_names_every_gated_kind():
+    result = runner.invoke(app, ["my-office", "review", "--help"])
+    assert result.exit_code == 0, result.output
+    for kind in quarantine.GATED_KINDS:
+        assert kind in result.output
+
+
+def test_my_office_review_corrupt_state_message_names_every_gated_kind(home: Path):
+    (_state(home) / "quarantine.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["my-office", "review"])
+    assert result.exit_code == 1
+    for kind in quarantine.GATED_KINDS:
+        assert kind in result.output
+
+
 # --- cohort office approve --------------------------------------------------
 
 
@@ -266,3 +295,137 @@ def test_office_reconcile_prunes_records_whose_bytes_are_gone(home: Path, tmp_pa
 
     assert survivors == set()                                 # nothing left to review
     assert quarantine.office_pending_keys(state) == set()     # and the prune persisted
+
+
+# --- approve(dry_run=True): the CLI's --dry-run preview shares the real selector ---------
+
+
+def test_approve_dry_run_returns_what_would_clear_and_saves_nothing(home: Path):
+    """One selector for the preview and the act: a dry-run that re-implemented name/hash
+    matching could predict a clearance the real approve refuses, or vice versa."""
+    state = _state(home)
+    _seed(state, "quarantine.json", [_rec("foo", _HASH_A), _rec("bar", _HASH_B)])
+    before = (state / "quarantine.json").read_bytes()
+
+    assert quarantine.approve(state, ["foo"], dry_run=True) == ["foo"]
+    assert quarantine.approve(state, approve_all=True, dry_run=True) == ["bar", "foo"]
+
+    assert (state / "quarantine.json").read_bytes() == before
+    assert not (state / "quarantine.json.lock").exists()  # a preview takes no lock
+
+
+def test_approve_dry_run_refuses_an_ambiguous_name_like_the_real_thing(home: Path):
+    state = _state(home)
+    _seed(state, "quarantine.json", [_rec("foo", _HASH_A), _rec("foo", _HASH_B)])
+    with pytest.raises(quarantine.AmbiguousApprovalError):
+        quarantine.approve(state, ["foo"], dry_run=True)
+    assert len(quarantine.pending_keys(state)) == 2
+
+
+def test_approve_office_dry_run_returns_what_would_clear_and_saves_nothing(home: Path):
+    state = _state(home)
+    _seed(state, "office_quarantine.json", [_rec("foo", _HASH_A), _rec("foo", _HASH_B)])
+    before = (state / "office_quarantine.json").read_bytes()
+
+    assert quarantine.approve_office(state, ["foo@aaaa"], dry_run=True) == ["foo"]
+    with pytest.raises(quarantine.AmbiguousApprovalError):
+        quarantine.approve_office(state, ["foo"], dry_run=True)
+
+    assert (state / "office_quarantine.json").read_bytes() == before
+    assert len(quarantine.office_pending_keys(state)) == 2
+
+
+# --- cohort office review --reset (audit r5, #294) ---------------------------
+
+
+_PULLED_MEMORY = (
+    "---\nname: pulled\nkind: memory\nscope: global\ndescription: pulled by an update\n"
+    "targets: [claude]\npriority: normal\n---\nbody\n"
+)
+
+
+def _office_source(tmp_path: Path) -> Path:
+    office = tmp_path / "office"
+    (office / "canonical" / "memories").mkdir(parents=True)
+    (office / "canonical" / "memories" / "pulled.md").write_text(_PULLED_MEMORY, encoding="utf-8")
+    return office
+
+
+def test_office_review_corrupt_state_remedy_points_at_reset_not_delete(home: Path):
+    (_state(home) / "office_quarantine.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["office", "review"])
+    assert result.exit_code == 1
+    assert "office review --reset" in result.output
+    assert "elete the file" not in result.output
+
+
+def test_office_review_reset_rebuilds_pending_from_the_office_tree(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    office = _office_source(tmp_path)
+    monkeypatch.setenv("COHORT_SOURCE", str(office))
+    quarantine._save_office_baseline(_state(home), [])  # nothing trusted yet
+    (_state(home) / "office_quarantine.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["office", "review", "--reset", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    expected_hash = quarantine.content_hash(office / "canonical" / "memories" / "pulled.md")
+    assert payload["reset"] is True
+    assert payload["pending"] == [{"kind": "memory", "name": "pulled", "content_hash": expected_hash}]
+    assert quarantine.office_pending_keys(_state(home)) == {("memory", "pulled", expected_hash)}
+
+
+def test_office_review_reset_refuses_without_a_resolvable_source(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("COHORT_SOURCE", str(tmp_path / "not-a-source"))
+    (_state(home) / "office_quarantine.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["office", "review", "--reset"])
+    assert result.exit_code == 1
+    assert "source" in result.output
+    # The corrupt store is left as-is: nothing was rebuilt from a tree we could not find.
+    with pytest.raises(quarantine.QuarantineStateError):
+        quarantine.office_pending_keys(_state(home))
+
+
+def test_office_review_reset_without_a_baseline_withholds_everything_and_says_so(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    office = _office_source(tmp_path)
+    monkeypatch.setenv("COHORT_SOURCE", str(office))
+    (_state(home) / "office_quarantine.json").write_text("{ not json", encoding="utf-8")
+    result = runner.invoke(app, ["office", "review", "--reset"])
+    assert result.exit_code == 0, result.output
+    assert "no trusted baseline found" in result.output
+    assert "1 gated artifact(s) withheld" in result.output
+    assert "memory pulled" in result.output
+    assert len(quarantine.office_pending_keys(_state(home))) == 1
+
+
+def test_office_review_reset_all_ignores_a_legacy_folded_baseline(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    office = _office_source(tmp_path)
+    monkeypatch.setenv("COHORT_SOURCE", str(office))
+    folded = quarantine.content_hash(office / "canonical" / "memories" / "pulled.md")
+    quarantine._save_office_baseline(_state(home), [("memory", "pulled", folded)])
+    (_state(home) / "office_quarantine.json").write_text("{ not json", encoding="utf-8")
+
+    default = runner.invoke(app, ["office", "review", "--reset", "--json"])
+    assert default.exit_code == 0, default.output
+    payload = json.loads(default.output)
+    assert payload["baseline_trusted"] is True and payload["pending"] == []
+    human = runner.invoke(app, ["office", "review", "--reset"])
+    assert "--reset --all" in human.output  # the plain statement of the limitation
+
+    forced = runner.invoke(app, ["office", "review", "--reset", "--all", "--json"])
+    assert forced.exit_code == 0, forced.output
+    payload = json.loads(forced.output)
+    assert payload["withhold_all"] is True
+    assert payload["pending"] == [{"kind": "memory", "name": "pulled", "content_hash": folded}]
+
+
+def test_office_review_all_without_reset_is_refused(home: Path):
+    result = runner.invoke(app, ["office", "review", "--all"])
+    assert result.exit_code == 1
+    assert "--all only applies with --reset" in result.output

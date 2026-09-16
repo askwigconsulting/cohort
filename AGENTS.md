@@ -49,10 +49,13 @@ compliance rather than one generic answer.
 | `/audit`, `/brainstorm` | recurring adversarial sweeps that remember what they already covered |
 | `/barney` | explain something complex so simply nobody can get it wrong |
 
-**3. One source, every IDE, every project.** Everything is compiled from one canonical
-directory into whichever IDEs the user has, so the office is the same in each. `cohort update`
-pulls improvements; `/snapshot` records what a session learned into the repo so the next
-session — or a teammate — starts with it.
+**3. One source — reach varies by IDE.** Everything compiles from one canonical directory,
+but the pieces above are not evenly distributed: Claude Code gets all of it (office, hooks,
+memories, and every command); Cursor gets the office plus a five-command subset; Codex and
+Copilot get the advisory office and the `office-guide` skill only — no slash commands, no
+hooks, no memories. Say which IDE you configured and what it actually receives, not "the
+office is the same in each." `cohort update` pulls improvements; `/snapshot` records what a
+session learned into the repo so the next session — or a teammate — starts with it.
 
 **What it is not.** Not a model or an API — it uses the user's existing IDE and their own API
 keys. Not a hosted service: there is no server, no account, and no telemetry. Everything runs
@@ -96,8 +99,9 @@ git clone https://github.com/askwigconsulting/cohort cohort && cd cohort
 
 This creates a virtualenv, installs the package into it, and compiles + places the roster for
 Claude Code. Replace `claude` with `codex`, `cursor`, or `copilot` if that is what the user
-has; pass the flag more than once for several. Only `claude` is a fully supported target —
-the others are experimental, and you should say so rather than implying parity.
+has; pass a comma-separated list for several (`--ide claude,cursor`) — repeating the flag
+does not accumulate, it silently keeps only the last one. Only `claude` is a fully supported
+target — the others are experimental, and you should say so rather than implying parity.
 
 **Check:** the command exits 0.
 
@@ -150,8 +154,10 @@ keep it to a couple of minutes:
 1. **Meet the office.** In the IDE, ask something that spans functions — *"we're about to
    store customer emails in a new table; what should I worry about?"* ChiefOfStaff routes it
    and the specialists answer. This is the fastest way to understand what they now have.
-2. **Try one real command.** `/plan` on something they actually intend to build. It produces
-   ordered tasks with acceptance criteria, and nothing is written until they say so.
+2. **Try one real command — if `--ide claude` (or `cursor`).** `/plan` on something they
+   actually intend to build. It produces ordered tasks with acceptance criteria, and nothing
+   is written until they say so. Codex and Copilot receive the advisory office and one skill,
+   not the commands — there is no slash command to try there; skip to step 4 instead.
 3. **Show them the off-switch before they need it.** The `cohort:egress=deny` marker
    (see Egress below) and `cohort uninstall`. Knowing how to stop and how to reverse is what
    makes the rest safe to try.
@@ -179,6 +185,10 @@ cohort:egress=deny
 That exact string is what the code checks. **A sentence saying "do not send this code
 anywhere" will not work** — the marker is deliberately structured so no prose can be misread
 as permission or refusal.
+
+`/consult-gpt` is on that code path too: it runs `cohort engine consult gpt --prompt-file <f>`
+— never raw `codex exec` — so the marker check and the secret scan run on the assembled
+prompt before codex starts, and what leaves is that prompt.
 
 If you are operating in a repository whose contents you have any reason to think are
 confidential, set the marker first and tell the user you did.

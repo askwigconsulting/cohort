@@ -9,7 +9,10 @@ compile-then-install.
 
 from __future__ import annotations
 
+import os
 import shutil
+import uuid
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +27,7 @@ from .executor import path_hash
 from .install_model import CohortPaths, Op, OpType
 from .ir import build_ir
 from .loader import load_artifact
+from .manifest import manifest_lock
 from .quarantine import (
     GATED_KINDS,
     QuarantineStateError,
@@ -168,7 +172,7 @@ def merge_layers(office_irs: list, my_irs: list) -> tuple[list, list]:
     overridden = []
     for ir in my_irs:
         key = (ir.kind, ir.name)
-        marked = ir.fields.get("overrides") is True
+        marked = ir.overrides
         if key in position:
             if marked:
                 merged[position[key]] = ir  # deliberate override, my wins
@@ -235,7 +239,7 @@ def compile_ide(
     tier never passes an overlay.
 
     ``withhold`` is the quarantine (#107): a set of ``(kind, name, content-hash)``
-    identities — pulled-but-unreviewed my-layer hooks/memories — to hold back so no
+    identities — pulled-but-unreviewed my-layer hooks/memories/skills/agents — to hold back so no
     recompile silently activates them. When ``None`` and an ``overlay`` is given, it
     is derived from the overlay's sibling ``state/`` dir, so *every* compile path
     withholds without each caller wiring it; pass an explicit set (or one derived
@@ -292,7 +296,7 @@ def compile_ide(
         my_irs, my_filtered = _load_irs(overlay, scope, layer="my")
         result.scope_filtered.extend(f"{entry} [my]" for entry in my_filtered)
         # Quarantine gate (#107): withhold pulled-but-unreviewed my-layer
-        # hooks/memories at the single compile chokepoint, so no recompile from any
+        # hooks/memories/skills/agents at the single compile chokepoint, so no recompile from any
         # command silently activates them. Derived from the overlay's sibling
         # state/ dir unless the caller passes an explicit set. A corrupt state file
         # (keys is None) fails CLOSED — withhold every gated my-layer artifact —
@@ -357,15 +361,57 @@ def write_staging(paths: CohortPaths, result: CompileResult) -> None:
 
     Staging is derived and disposable, so the IDE subtree is rebuilt wholesale —
     a canonical artifact removed since last compile leaves no stale staged file.
+
+    ``do_install`` reads this tree under the manifest lock, so the replacement
+    must happen under that same lock or a concurrent recompile can delete the
+    tree an install is placing from (#291). The tree is therefore built into a
+    unique sibling with no lock held, then swapped in by :func:`_swap_staging`
+    under a fresh acquisition of the lock. The lock is not reentrant: no caller
+    may hold it across this call (every caller compiles and stages *before* its
+    own ``do_install`` takes it). Bootstrap-(a): a first install has no
+    ``state/`` yet, so the lock file has no parent and nothing reads staging
+    under a lock — the acquisition is skipped then, as in ``do_install``.
     """
     staging_root = paths.compiled_ide(result.ide)
     _assert_staging_contained(paths, staging_root)
+    build_root = staging_root.with_name(f"{staging_root.name}.new-{uuid.uuid4().hex}")
+    build_root.mkdir(parents=True)
+    try:
+        for sf in result.staged:
+            dest = build_root / sf.staged_rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(sf.content)
+        guard = manifest_lock(paths.manifest) if paths.manifest.parent.exists() else nullcontext()
+        with guard:
+            _swap_staging(staging_root, build_root)
+    except BaseException:
+        # A half-built or never-promoted sibling must not linger; once promoted
+        # the path no longer exists and this is a no-op.
+        shutil.rmtree(build_root, ignore_errors=True)
+        raise
+
+
+def _swap_staging(staging_root: Path, build_root: Path) -> None:
+    """Promote the fully built ``build_root`` to ``staging_root`` (lock held).
+
+    ``os.replace`` cannot replace a non-empty directory, so the swap is two
+    renames — current → ``<ide>.old-<nonce>``, then build → current — followed by
+    an rmtree of the old tree. The live path is absent only between the two
+    renames (microseconds; readers hold the lock, so none observes it). A crash
+    in that gap leaves no live tree and an orphaned ``.old-*``: the next call
+    builds afresh and sweeps the orphan here, and the old tree is never
+    re-promoted, so a stale tree can never become the live one. Removing the
+    old tree is best-effort: once the new tree is live, a file in the old one
+    that Windows still holds open (an editor, a scanner) must not fail the
+    recompile — the orphan is swept on the next call instead.
+    """
+    for orphan in staging_root.parent.glob(f"{staging_root.name}.old-*"):
+        shutil.rmtree(orphan, ignore_errors=True)
+    old_root = staging_root.with_name(f"{staging_root.name}.old-{uuid.uuid4().hex}")
     if staging_root.exists():
-        shutil.rmtree(staging_root)
-    for sf in result.staged:
-        dest = staging_root / sf.staged_rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(sf.content)
+        os.rename(staging_root, old_root)
+    os.rename(build_root, staging_root)
+    shutil.rmtree(old_root, ignore_errors=True)
 
 
 def staging_tree_hash(paths: CohortPaths, ide: str) -> str:

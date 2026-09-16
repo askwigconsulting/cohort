@@ -11,12 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from .schema import apply_defaults
+from .schema import apply_defaults, shared_schema
 
-# Shared frontmatter keys; everything else is kind-specific and lands in `fields`.
-_SHARED_KEYS = frozenset(
-    {"name", "kind", "scope", "description", "targets", "version", "owner", "display_name"}
-)
+# Shared frontmatter keys — the shared schema's own properties, so the set cannot
+# drift from `shared.json`; everything else is kind-specific and lands in `fields`.
+_SHARED_KEYS = frozenset(shared_schema()["properties"])
 
 
 @dataclass
@@ -32,6 +31,11 @@ class IRArtifact:
     body: str
     display_name: Optional[str]
     owner: Optional[str]
+    # My-layer override markers (set by `cohort personalize`): `overrides` makes
+    # this artifact replace its office twin at merge; `office_sha256` is the office
+    # content hash at personalize time (stale-override detection). Never rendered.
+    overrides: bool = False
+    office_sha256: Optional[str] = None
     fields: dict[str, Any] = field(default_factory=dict)
     source_path: Optional[Path] = None
     # Provenance within the global scope: "office" (the shared source clone) or
@@ -72,6 +76,8 @@ def build_ir(frontmatter: dict[str, Any], body: str, source_path: Path | str | N
         body=body,
         display_name=fm.get("display_name"),
         owner=fm.get("owner"),
+        overrides=fm.get("overrides") is True,
+        office_sha256=fm.get("office_sha256"),
         fields=kind_fields,
         source_path=Path(source_path) if source_path is not None else None,
     )

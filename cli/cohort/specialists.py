@@ -325,7 +325,7 @@ def do_remove_specialist(repo: Path, home: Path, name: str, dry_run: bool) -> di
     targets = {str(src), str(placed), str(paths.cohort_home / "agents" / f"{name}.md")}
     mine = [op for op in manifest.ops if op.dest in targets]
     result = ReverseResult()
-    _reverse_place_ops(mine, result, purge=True)  # purge: the human explicitly targeted it
+    _reverse_place_ops(mine, result, paths, purge=True)  # purge: the human explicitly targeted it
     if src.exists():
         src.unlink()  # team-owned canonical source (never a manifest op) — the command's target
     if placed.is_symlink() and (

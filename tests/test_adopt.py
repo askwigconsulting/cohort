@@ -283,3 +283,35 @@ def test_nested_command_is_listed_but_flagged_not_adoptable(source, home):
     entries = {e["path"]: e for e in report["global"]["unmanaged"]}
     key = str(nested / "deep.md")
     assert key in entries and entries[key]["adoptable"] is False
+
+
+# === #292: the roster extend in adopt's recompile survives a concurrent writer ===
+
+
+def test_adopt_recompile_extends_the_current_roster_not_a_stale_copy(source, home, monkeypatch):
+    """``_recompile_global_claude`` read the roster unlocked, then overwrote it under
+    the lock with that stale copy. A roster entry written by another process in
+    between (here: injected at the compile step) must survive the adopt."""
+    from cohort import adopt as adopt_mod
+    from cohort import compile as compile_mod
+    from cohort.install_model import CohortPaths
+    from cohort.manifest import load_manifest, manifest_lock
+    from cohort.office_setup import persist_roster
+
+    persist_roster(home, ["chief-of-staff"])
+    gpaths = CohortPaths(home)
+    real_compile = compile_mod.compile_ide
+
+    def compile_after_a_concurrent_roster_write(*args, **kwargs):
+        with manifest_lock(gpaths.manifest):
+            fresh = load_manifest(gpaths.manifest)
+            assert fresh is not None
+            fresh.roster = fresh.roster + ["concurrent"]
+            fresh.persist(gpaths.manifest)
+        return real_compile(*args, **kwargs)
+
+    monkeypatch.setattr(compile_mod, "compile_ide", compile_after_a_concurrent_roster_write)
+    adopt_mod._recompile_global_claude(home, source, gpaths, "agent", "perf-auditor")
+    final = load_manifest(gpaths.manifest)
+    assert final is not None
+    assert final.roster == ["chief-of-staff", "concurrent", "perf-auditor"]

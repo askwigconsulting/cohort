@@ -1,8 +1,29 @@
 "use strict";
-// The per-launch token is injected server-side into a <meta> tag (not into this
-// file, which is served verbatim and same-origin). Reading it here keeps the
-// script static so `script-src 'self'` — no 'unsafe-inline' — can hold.
-const TOKEN = document.querySelector('meta[name="cohort-token"]').getAttribute("content");
+// The per-launch token arrives in the URL fragment of the address the CLI
+// printed/opened (`/#<token>`), never in anything the server serves: a bare
+// GET / from another loopback principal (another uid, a doer jail that keeps
+// the network) yields a page with no credential in it (#293). The browser keeps
+// a fragment client-side — it is not sent on the wire, and Referrer-Policy is
+// no-referrer besides. Once read, the fragment is parked in sessionStorage so a
+// reload of *this tab* keeps working, and only then scrubbed from the address
+// bar and history; sessionStorage is same-origin and per-tab, so it exposes the
+// token to exactly the script that already holds it and dies with the tab. If
+// parking fails (a hardened/privacy configuration that blocks storage) the
+// fragment is left in the address bar instead — same-origin and per-tab either
+// way — because scrubbing it would leave a reload with no token and no way back.
+// After a dashboard *restart* the token changes and only the newly printed URL has it.
+const SESSION_SLOT = "cohort-dashboard-session";
+const TOKEN = (() => {
+  const fromHash = location.hash.startsWith("#") ? location.hash.slice(1) : "";
+  if (fromHash) {
+    try {
+      sessionStorage.setItem(SESSION_SLOT, fromHash);
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch (e) { /* storage blocked: keep the fragment so a reload still has it */ }
+    return fromHash;
+  }
+  try { return sessionStorage.getItem(SESSION_SLOT) || ""; } catch (e) { return ""; }
+})();
 const $ = (id) => document.getElementById(id);
 let STATE = null, PENDING = null, FOCUS = null;
 
@@ -150,6 +171,9 @@ function gitChip(it) {
 function thumb(label, title, onClick) {
   const b = document.createElement("button");
   b.className = "thumb"; b.textContent = label; b.title = title;
+  // Accessible name would otherwise come from the emoji textContent (👍/👎/✎/✕);
+  // aria-label makes the descriptive `title` the name a screen reader announces.
+  b.setAttribute("aria-label", title);
   b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); });
   return b;
 }
@@ -227,8 +251,8 @@ function ghostCard(label, onClick) {
   g.addEventListener("click", onClick);
   return g;
 }
-/* One level (company / you / project): all kinds, grouped by kind, each tagged. */
-function renderLevel(layer, holderId, opts) {
+/* One layer (office / my office / project): all kinds, grouped by kind, each tagged. */
+function renderLayer(layer, holderId, opts) {
   opts = opts || {};
   const holder = $(holderId); holder.textContent = "";
   const items = (STATE.inventory || []).filter((it) => it.layer === layer);
@@ -260,16 +284,16 @@ function renderLevel(layer, holderId, opts) {
   }
 }
 function renderLevels() {
-  renderLevel("office", "level-office", {
+  renderLayer("office", "level-office", {
     countId: "cnt-office",
     empty: "No company artifacts yet — run Recompile (or cohort setup) to install the office.",
   });
-  renderLevel("my", "level-my", {
+  renderLayer("my", "level-my", {
     countId: "cnt-my",
     empty: "Nothing that's just yours yet — create an agent, skill, command, or hook.",
     addCard: { label: "＋ Create", onClick: () => openCreate("my") },
   });
-  renderLevel("project", "level-project", {
+  renderLayer("project", "level-project", {
     countId: "cnt-project",
     empty: "Nothing here yet — create an agent, skill, command, or hook for this repo.",
     addCard: { label: "＋ Create", onClick: () => openCreate("project") },
@@ -280,7 +304,7 @@ async function openDetail(it) {
   $("dt-title").textContent = (it.display_name || it.name);
   const meta = $("dt-meta"); meta.textContent = "";
   meta.appendChild(kindTag(it.kind));
-  const LAYER_LABEL = { office: "COMPANY", my: "YOU", project: "PROJECT" };
+  const LAYER_LABEL = { office: "OFFICE", my: "MY OFFICE", project: "PROJECT" };
   for (const bit of [{ text: LAYER_LABEL[it.layer] || it.layer }].concat(metaBits(it))) {
     meta.appendChild(metaChip(bit));
   }
@@ -650,7 +674,7 @@ function markDisconnected() {
   if (DISCONNECTED) return;  // flip + toast once, until a poll next succeeds
   DISCONNECTED = true;
   setLive(false);
-  toast("Dashboard was restarted — reload this page", "err");
+  toast("Dashboard token missing or stale — open the URL `cohort dashboard` printed", "err");
 }
 function notePollFailure(e) {
   POLL_FAILS += 1;
@@ -714,8 +738,8 @@ function syncCreateKind() {
   for (const g of document.querySelectorAll("#create-form [data-kind]"))
     g.hidden = g.getAttribute("data-kind") !== kind;
 }
-function openCreate(level) {
-  CREATE_LEVEL = level === "project" ? "project" : "my";
+function openCreate(layer) {
+  CREATE_LEVEL = layer === "project" ? "project" : "my";
   if (CREATE_LEVEL === "project") {
     const p = (STATE && STATE.project && STATE.project.repo) ? STATE.project.repo.split("/").slice(-1)[0] : "this project";
     $("cr-title").textContent = "Create in " + p;

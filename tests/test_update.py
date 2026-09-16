@@ -303,3 +303,44 @@ def test_uncountable_revlist_is_unavailable(tmp_path, monkeypatch):
 
     monkeypatch.setattr(u, "_git", fake_git)
     assert update_status(src, tmp_path / "home")["available"] is False
+
+
+# --- #292: the rollback ledger is written atomically under a lock -------------
+
+
+def _ledger_entries(home: Path) -> list[dict]:
+    from cohort.update import _history_path
+
+    return json.loads(_history_path(home).read_text(encoding="utf-8"))["entries"]
+
+
+def test_record_update_leaves_a_complete_ledger_and_no_temp_file(tmp_path):
+    """The write goes through a temp file + ``os.replace`` (like ``Manifest.persist``)
+    so a reader never sees a truncated ledger; the temp file does not linger."""
+    from cohort.update import _history_path, _record_update
+
+    home = tmp_path / "home"
+    assert _record_update(home, "aaa", "bbb", "update", at="t1") is True
+    assert _record_update(home, "bbb", "ccc", "update", at="t2") is True
+    assert [e["to"] for e in _ledger_entries(home)] == ["bbb", "ccc"]
+    assert [p.name for p in _history_path(home).parent.iterdir()] == ["update-history.json"]
+
+
+def test_record_update_reports_false_when_the_ledger_lock_is_unavailable(tmp_path, monkeypatch):
+    """A held lock must not hang or crash the update (the clone has already moved):
+    the entry is not recorded and the caller is told so (``False``) to warn."""
+    from cohort import filelock
+    from cohort.update import _history_path, _record_update
+
+    home = tmp_path / "home"
+    path = _history_path(home)
+    path.parent.mkdir(parents=True)
+    real_lock = filelock.file_lock
+
+    def impatient_lock(target, **kwargs):
+        return real_lock(target, timeout=0.2)
+
+    monkeypatch.setattr(filelock, "file_lock", impatient_lock)
+    with real_lock(path):
+        assert _record_update(home, "aaa", "bbb", "update", at="t1") is False
+    assert not path.exists()

@@ -18,6 +18,19 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .engines import ENGINES
+from .loader import load_artifact
+
+
+def engine_tiers() -> tuple[str, ...]:
+    """Every model tier a registered engine offers — registry order, deduplicated.
+    The ``--tier`` domain the reference advertises, read from the code so it cannot
+    drift from what ``cohort engine consult`` accepts."""
+    return tuple(dict.fromkeys(t for spec in ENGINES.values() for t in spec.model_tiers))
+
+
+_TIER_LIST = " | ".join(engine_tiers())
+
 # Curated layout: section title -> ordered entries. An entry is one of:
 #   ("cmd", name)          a canonical /command (description pulled from canonical)
 #   ("skill", name)        a canonical skill    (description pulled from canonical)
@@ -34,7 +47,7 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
         ("cmd", "consult-gpt"), ("cmd", "consult-grok"),
     ]),
     ("External engines · cohort engine …", [
-        ("cli", "consult &lt;e&gt; --tier", "One-shot advisory, read-only. Tier: flagship | cheap."),
+        ("cli", "consult &lt;e&gt; --tier", f"One-shot advisory, read-only. Tier: {_TIER_LIST}."),
         ("cli", "review &lt;e&gt;", "Read-only agentic explore loop — gated per read, transcript recorded."),
         ("cli", "propose &lt;e&gt; --agentic", "Engine proposes a patch; Cohort applies it in a worktree behind the gates. Grok's write path."),
         ("cli", "work gpt", "Codex edits natively in its OS sandbox, confined to a throwaway worktree."),
@@ -88,18 +101,15 @@ _STYLE = """
 
 
 def _frontmatter(path: Path) -> tuple[str, str]:
-    """Return (name, description) from a canonical artifact's frontmatter."""
-    name = path.stem
-    description = ""
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if s.startswith("name:"):
-            name = s[len("name:"):].strip()
-        elif s.startswith("description:"):
-            description = s[len("description:"):].strip()
-        elif s == "---" and description:
-            break
-    return name, description
+    """Return (name, description) from a canonical artifact's frontmatter, via the
+    real loader — a line scanner once took a nested ``args[].description`` for the
+    command's own. An unloadable artifact raises rather than rendering a blank row."""
+    result = load_artifact(path)
+    if result.frontmatter is None:
+        detail = result.load_error.message if result.load_error else "no frontmatter"
+        raise ValueError(f"{path}: {detail}")
+    fm = result.frontmatter
+    return str(fm.get("name", path.stem)), str(fm.get("description", ""))
 
 
 def _canonical(source_root: Path, kind: str) -> dict[str, str]:
@@ -153,7 +163,7 @@ def build_html(source_root: Path) -> str:
         body_parts.append(f"<section><h2>More skills</h2>{rows}</section>")
 
     return (
-        "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n"
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">\n"
         f"<style>{_STYLE}</style></head><body>\n"
         "<header><h1><span class=\"c\">Cohort</span> — Quick Reference</h1>"
         "<div class=\"tag\">Commands &amp; skills, ordered for day-to-day use. Slash commands run in your "

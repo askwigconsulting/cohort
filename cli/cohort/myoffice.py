@@ -102,23 +102,32 @@ def _record_pulled_gated(
 
     Gated-ness is decided by frontmatter ``kind`` (via ``quarantine``), NOT by the
     on-disk directory — the compiler classifies by ``kind``, so a hook misfiled in
-    ``canonical/agents/`` still renders and must still be gated. The diff therefore
-    scans the whole ``canonical`` tree, not only the hook/memory directories.
-    Identity is the on-disk file's content hash, so approving pins the exact bytes.
+    ``canonical/agents/`` still renders and must still be gated. The delta is the
+    diff intersected with what the compiler's own discovery admits, so the two
+    sides can never disagree on what exists. Identity is the on-disk file's content
+    hash, so approving pins the exact bytes.
+
+    Symlinks fail closed (#285). The diff is scoped to the ``canonical`` pathspec, but
+    a link under it reads bytes from outside that pathspec — a co-writer can change
+    them in a later push the delta never sees. A linked entry is refused by
+    discovery outright; a linked ancestor (the root or a kind directory) is followed,
+    so while one exists — or the pull itself touches any link — every gated artifact
+    present is recorded, not just the delta, and changed bytes get a fresh record.
     """
     # Persist the record even if nothing is installed yet: a later install's first
     # recompile must still withhold this pull, not silently activate it.
     state_dir.mkdir(parents=True, exist_ok=True)
     canonical = my / "canonical"
-    if unborn or not before:
-        gated = quarantine.all_gated_in(canonical)
+    everything = quarantine.all_gated_in(canonical)
+    if unborn or not before or quarantine.has_symlinked_layout(canonical):
+        gated = everything
     else:
         rc, out = _git(my, "diff", "--name-only", "-z", before, after, "--", "canonical")
-        if rc != 0:  # a git hiccup must not silently activate a pulled sink
-            gated = quarantine.all_gated_in(canonical)
+        changed = {my / rel for rel in out.split("\x00") if rel}
+        if rc != 0 or any(p.is_symlink() for p in changed):
+            gated = everything  # a git hiccup or a link must not activate a pulled sink
         else:
-            changed = [my / rel for rel in out.split("\x00") if rel]
-            gated = quarantine.gated_artifacts(p for p in changed if p.exists())
+            gated = [item for item in everything if item[2] in changed]
     items = [
         quarantine.QuarantinedArtifact(kind, name, quarantine.content_hash(path), now_iso())
         for kind, name, path in gated
@@ -213,7 +222,7 @@ def do_my_sync(
         )
     pushed = True
 
-    # Quarantine any gated (hook/memory) artifact this pull introduced BEFORE the
+    # Quarantine any gated (hook/memory/skill/agent) artifact this pull introduced BEFORE the
     # recompile, so the recompile withholds it instead of activating it (#107). No
     # pull attempted (no origin/main yet) → nothing to record.
     newly_quarantined: list[quarantine.QuarantinedArtifact] = []

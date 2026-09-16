@@ -33,6 +33,7 @@ jobs:
       # to UTF-8 so the suite isn't at the mercy of the Windows console codepage
       # (cp1252). The CLI itself is independently UTF-8-safe (cli._force_utf8_io).
       PYTHONUTF8: "1"
+      COHORT_REQUIRE_BWRAP: ${{ matrix.os == 'ubuntu-latest' && '1' || '' }}  # Linux installs bwrap; the evaluator-confinement test must fail, not skip, there
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,9 +54,21 @@ jobs:
           # bubblewrap-confinement test on `bwrap` being present, so without
           # this it silently skips and confinement regressions stay green.
           sudo apt-get update -qq && sudo apt-get install -y shellcheck bubblewrap
+          # ubuntu-24.04 restricts unprivileged user namespaces (AppArmor), which leaves
+          # bwrap installed but unable to sandbox, so every confinement test skipped
+          # silently; with COHORT_REQUIRE_BWRAP=1 that is a failure, so unlock it here.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           shellcheck installer/bootstrap.sh
       - name: Schema lint (zero-tolerance)
         run: cohort validate ./canonical
+      - name: Create a real .venv for the bootstrap round-trip test
+        # test_bootstrap_real_venv_round_trip (#277) skip-gates on REPO_ROOT/.venv
+        # existing; nothing here ever created one, so the real end-to-end
+        # bootstrap round-trip never ran on any job. An empty venv is enough —
+        # bootstrap.sh installs `cohort` into it itself, on demand — so this
+        # doesn't duplicate the dev-extras install a few steps up.
+        if: runner.os == 'Linux'
+        run: python -m venv .venv
       - name: Windows entry-point smoke (copy-mode default, changes nothing)
         if: runner.os == 'Windows'
         run: cohort recompile --ide claude --source . --dry-run

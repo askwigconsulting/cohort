@@ -20,6 +20,8 @@ FAIL (a dropped op record); restore it and they pass.
 
 from __future__ import annotations
 
+import ast
+import os
 import shutil
 import threading
 import time
@@ -27,11 +29,18 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from cohort import adopt as adopt_mod
+from cohort import cli as cli_mod
+from cohort import compile as compile_mod
+from cohort import dashboard as dashboard_mod
 from cohort import install as install_mod
 from cohort import office_setup as office_mod
 from cohort import project as project_mod
 from cohort import roster as roster_mod
 from cohort import specialists as specialists_mod
+from cohort import update as update_mod
+from cohort.adapters.claude import StagedFile
+from cohort.compile import CompileResult, write_staging
 from cohort.install import do_install
 from cohort.install_model import CohortPaths, Op, OpType
 from cohort.manifest import Manifest, load_manifest, manifest_lock
@@ -283,3 +292,291 @@ def test_add_office_agent_roster_extend_acquires_the_lock(tmp_path, monkeypatch)
         dry_run=False, to="office",
     )
     assert len(entered) == 1  # the roster-extend read-modify-persist ran under the lock
+
+
+# --- #291: write_staging swaps the IDE tree in UNDER the manifest lock ---------
+#
+# ``do_install`` reads ``compiled/<ide>/`` under the manifest lock, but every
+# caller compiled + wrote staging BEFORE taking it, so a concurrent recompile
+# could rmtree the tree an install was reading from. ``write_staging`` now builds
+# into a temp sibling with no lock held and swaps it in under a fresh, non-nested
+# acquisition of the manifest lock — so a lock holder never sees a half-built or
+# vanished tree, and a writer blocks until the holder is done.
+
+def _result(ide: str, files: dict[str, str]) -> CompileResult:
+    return CompileResult(
+        ide=ide,
+        staged=[StagedFile(rel, body.encode("utf-8")) for rel, body in files.items()],
+    )
+
+
+def _tree(root: Path) -> dict[str, str]:
+    return {
+        p.relative_to(root).as_posix(): p.read_text(encoding="utf-8")  # Windows: no backslashes
+        for p in sorted(root.rglob("*")) if p.is_file()
+    }
+
+
+def test_write_staging_blocks_while_another_process_holds_the_manifest_lock(tmp_path):
+    """A holder of the manifest lock (a ``do_install`` mid-read) must keep seeing the
+    tree it started with: the writer's swap waits for the lock, and the old tree
+    stays intact and complete until then. After release the new tree is live."""
+    home = tmp_path / "home"
+    home.mkdir()
+    paths = _bootstrap_install(home, tmp_path / "source")
+    write_staging(paths, _result("claude", {"agents/a.md": "old-a\n", "agents/b.md": "old-b\n"}))
+    live = paths.compiled_ide("claude")
+    entered = threading.Event()
+    release = threading.Event()
+    done = threading.Event()
+
+    def holder() -> None:
+        with manifest_lock(paths.manifest):
+            entered.set()
+            release.wait(10)
+
+    def writer() -> None:
+        write_staging(paths, _result("claude", {"agents/a.md": "new-a\n"}))
+        done.set()
+
+    holder_thread = threading.Thread(target=holder)
+    holder_thread.start()
+    assert entered.wait(5)
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    assert not done.wait(0.5)  # blocked: the holder still owns the lock
+    assert _tree(live) == {"agents/a.md": "old-a\n", "agents/b.md": "old-b\n"}
+    release.set()
+    holder_thread.join(5)
+    writer_thread.join(5)
+    assert done.is_set()  # a LockTimeout here would mean a nested acquisition
+    assert _tree(live) == {"agents/a.md": "new-a\n"}
+
+
+def test_write_staging_leaves_no_temp_siblings_and_sweeps_an_orphaned_old_tree(tmp_path):
+    """The swap is rename-old → rename-new → rmtree-old. Afterwards ``compiled/``
+    holds exactly the live tree: no ``<ide>.new-*`` build dir, no ``<ide>.old-*``
+    leftover — including one orphaned by a crash between the two renames."""
+    home = tmp_path / "home"
+    home.mkdir()
+    paths = _bootstrap_install(home, tmp_path / "source")
+    write_staging(paths, _result("claude", {"agents/a.md": "v1\n", "agents/gone.md": "x\n"}))
+    orphan = paths.compiled / "claude.old-deadbeef"
+    (orphan / "agents").mkdir(parents=True)
+    (orphan / "agents" / "stale.md").write_text("crashed\n", encoding="utf-8")
+    write_staging(paths, _result("claude", {"agents/a.md": "v2\n"}))
+    assert sorted(p.name for p in paths.compiled.iterdir()) == ["claude"]
+    assert _tree(paths.compiled_ide("claude")) == {"agents/a.md": "v2\n"}  # wholesale rebuild
+
+
+def test_write_staging_failed_swap_keeps_the_old_tree_live_and_leaks_nothing(tmp_path, monkeypatch):
+    """If the swap cannot complete (Windows refusing a rename over an open handle,
+    say) the previously live tree is untouched and the build sibling is removed —
+    a caller sees the error, never a half-swapped ``compiled/``."""
+    home = tmp_path / "home"
+    home.mkdir()
+    paths = _bootstrap_install(home, tmp_path / "source")
+    write_staging(paths, _result("claude", {"agents/a.md": "live\n"}))
+
+    def refuse(staging_root: Path, build_root: Path) -> None:
+        raise PermissionError("simulated: handle open in the old tree")
+
+    monkeypatch.setattr(compile_mod, "_swap_staging", refuse)
+    try:
+        write_staging(paths, _result("claude", {"agents/a.md": "never\n"}))
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError("the swap failure must propagate")
+    assert sorted(p.name for p in paths.compiled.iterdir()) == ["claude"]
+    assert _tree(paths.compiled_ide("claude")) == {"agents/a.md": "live\n"}
+
+
+def test_write_staging_bootstraps_without_a_state_dir(tmp_path):
+    """A first ``cohort init`` writes staging before ``state/`` exists, so the lock
+    file has no parent yet: the acquisition is conditional (bootstrap-(a), like
+    ``do_install``/``do_init``) and must neither raise nor create ``state/``."""
+    paths = CohortPaths(tmp_path / "home")
+    assert not paths.manifest.parent.exists()
+    write_staging(paths, _result("claude", {"agents/a.md": "a\n"}))
+    assert _tree(paths.compiled_ide("claude")) == {"agents/a.md": "a\n"}
+    assert not paths.manifest.parent.exists()
+
+
+def test_write_staging_still_refuses_a_symlinked_staging_root(tmp_path):
+    """The repo-escape guard (``_assert_staging_contained``) survives the rewrite:
+    a symlinked ``compiled/`` is refused before anything is built or swapped."""
+    if os.name == "nt":  # pragma: no cover - symlink creation needs privileges there
+        return
+    paths = CohortPaths(tmp_path / "home")
+    paths.cohort_home.mkdir(parents=True)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    paths.compiled.symlink_to(elsewhere)
+    try:
+        write_staging(paths, _result("claude", {"agents/a.md": "a\n"}))
+    except compile_mod.CompileError:
+        pass
+    else:
+        raise AssertionError("a symlinked compiled/ must be refused")
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_concurrent_recompile_never_disturbs_an_install_reading_staging(tmp_path, monkeypatch):
+    """The r5 probe, as a regression: a racer rewrites staging in a loop while a
+    copy-mode ``do_install`` reads it under the lock. The install must complete
+    and place the bytes of ONE consistent tree (never a torn or vanished one)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    source = tmp_path / "source"
+    paths = _bootstrap_install(home, source)
+    result = _result("claude", {"agents/a.md": "a\n", "agents/b.md": "b\n"})
+    write_staging(paths, result)
+    _slow_persist(monkeypatch, delay=0.05)  # keep the lock held long enough to be raced
+    stop = threading.Event()
+    racer_errors: list[Exception] = []
+
+    def racer() -> None:
+        while not stop.is_set():
+            try:
+                write_staging(paths, result)
+            except Exception as exc:  # noqa: BLE001 - surface to the test
+                racer_errors.append(exc)
+                return
+
+    thread = threading.Thread(target=racer)
+    thread.start()
+    try:
+        report = do_install(
+            home=home, selection=["claude"], mode="copy", force=False, source=source,
+            dry_run=False,
+        )
+    finally:
+        stop.set()
+        thread.join(10)
+    assert not racer_errors
+    assert report.summary["applied"] >= 2
+    placed = home / ".claude" / "agents"
+    assert (placed / "a.md").read_text(encoding="utf-8") == "a\n"
+    assert (placed / "b.md").read_text(encoding="utf-8") == "b\n"
+
+
+def _with_bodies_under_lock(tree: ast.AST) -> list[ast.With]:
+    """Every ``with`` whose context manager is a ``manifest_lock``/``file_lock`` call."""
+    found: list[ast.With] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        for item in node.items:
+            call = item.context_expr
+            if isinstance(call, ast.Call):
+                fn = call.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                if name in {"manifest_lock", "file_lock"}:
+                    found.append(node)
+    return found
+
+
+def test_no_caller_invokes_write_staging_inside_the_manifest_lock():
+    """The lock is not reentrant, so ``write_staging`` (which now takes it) must
+    never be called from inside a ``with manifest_lock(...)``/``file_lock(...)``
+    body. Static proof over every module that calls it: a nested call would be a
+    deadlock-then-``LockTimeout`` at runtime, not flakiness."""
+    modules = [
+        adopt_mod, cli_mod, dashboard_mod, install_mod, office_mod, roster_mod,
+        specialists_mod, update_mod, compile_mod,
+    ]
+    for module in modules:
+        tree = ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
+        for with_node in _with_bodies_under_lock(tree):
+            for node in ast.walk(with_node):
+                if isinstance(node, ast.Call):
+                    fn = node.func
+                    name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+                    assert name != "write_staging", (
+                        f"{module.__name__}:{node.lineno} calls write_staging under the lock"
+                    )
+
+
+# --- #292: the office roster is EXTENDED under the lock, never overwritten -----
+
+
+def test_concurrent_add_agent_keeps_both_roster_entries(tmp_path, monkeypatch):
+    """Two ``add-agent --to office`` runs that both read the roster before either
+    wrote it. The second runs to completion inside the first's read→persist window
+    (injected at the first's compile step). With a blind ``fresh.roster = subset``
+    the first's persist would drop the second's entry; extending ``fresh.roster``
+    under the lock keeps both."""
+    home = tmp_path / "home"
+    home.mkdir()
+    source = tmp_path / "source"
+    source.mkdir()
+    shutil.copytree(COHORT_SRC / "canonical", source / "canonical")
+    do_install(
+        home=home, selection=["claude"], mode="link", force=False, source=source, dry_run=False
+    )
+    persist_roster(home, ["chief-of-staff"])
+    paths = CohortPaths(home)
+    real_compile = roster_mod.compile_ide
+    interleaved: list[str] = []
+
+    def compile_after_a_concurrent_add(*args, **kwargs):
+        if not interleaved:  # only the OUTER add-agent's compile step is intercepted
+            interleaved.append("second")
+            roster_mod.do_add_agent(
+                source, home, "second", "Second", "Ops", "specialist", "desc",
+                dry_run=False, to="office",
+            )
+        return real_compile(*args, **kwargs)
+
+    monkeypatch.setattr(roster_mod, "compile_ide", compile_after_a_concurrent_add)
+    roster_mod.do_add_agent(
+        source, home, "first", "First", "Ops", "specialist", "desc", dry_run=False, to="office",
+    )
+    final = load_manifest(paths.manifest)
+    assert final is not None
+    assert set(final.roster) == {"chief-of-staff", "first", "second"}
+    assert final.roster.count("first") == 1  # extended once, no duplicate
+
+
+# --- #291 (project variant): context staging is unique and made under the lock --
+
+
+def test_refresh_project_context_stages_a_unique_file_under_the_lock(tmp_path, monkeypatch):
+    """``refresh_project_context`` used a FIXED staging path written outside the lock
+    and read inside it, so two refreshes could hand one another's bytes to ``apply``.
+    It now stages to a unique name while holding the lock and removes it after."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    do_init(repo, source=COHORT_SRC, dry_run=False, home=home)
+    paths = CohortPaths.for_project(repo)
+    held: list[bool] = [False]
+    staged_names: list[str] = []
+
+    @contextmanager
+    def recording_lock(path: Path) -> Iterator[None]:
+        with manifest_lock(path):
+            held[0] = True
+            try:
+                yield
+            finally:
+                held[0] = False
+
+    real_stage = project_mod._stage
+
+    def recording_stage(stage_dir: Path, name: str, content: str) -> str:
+        assert held[0], "context staging must happen while the manifest lock is held"
+        staged_names.append(name)
+        return real_stage(stage_dir, name, content)
+
+    monkeypatch.setattr(project_mod, "manifest_lock", recording_lock)
+    monkeypatch.setattr(project_mod, "_stage", recording_stage)
+    project_mod.refresh_project_context(paths)
+    project_mod.refresh_project_context(paths)
+    assert len(staged_names) == 2
+    assert len(set(staged_names)) == 2  # unique per call, never the fixed name
+    assert "context-block.txt" not in staged_names
+    leftovers = [p.name for p in (paths.compiled / "project").glob("context-block*")]
+    assert leftovers == ["context-block.txt"]  # only init's own file remains

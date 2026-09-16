@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import re
+
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -127,3 +130,73 @@ def test_office_guide_skill_places(home):
     placed = home / ".claude" / "skills" / "office-guide" / "SKILL.md"
     assert placed.exists()
     assert "ChiefOfStaff" in placed.read_text(encoding="utf-8")
+
+
+# --- #300 item 3: --layer/--to are hidden aliases of each other -------------
+
+
+@pytest.fixture
+def office_source(tmp_path):
+    """A throwaway clone of canonical/ so an office-layer write never touches
+    this checkout's real tree."""
+    src = tmp_path / "src"
+    src.mkdir()
+    shutil.copytree(REPO_ROOT / "canonical", src / "canonical")
+    return src
+
+
+def test_add_agent_layer_alias_writes_office_like_to(office_source, home):
+    proc = run_cli(
+        "add-agent", "--name", "layer-alias-check", "--department", "Ops",
+        "--description", "Alias smoke test.", "--layer", "office",
+        "--source", str(office_source), home=home,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert (office_source / "canonical" / "agents" / "layer-alias-check.md").exists()
+
+
+def test_edit_to_alias_edits_office_like_layer(office_source, home):
+    add = run_cli(
+        "add-agent", "--name", "edit-alias-check", "--department", "Ops",
+        "--description", "Original description.", "--to", "office",
+        "--source", str(office_source), home=home,
+    )
+    assert add.returncode == 0, add.stderr
+
+    edited = run_cli(
+        "edit", "agent", "edit-alias-check", "--description", "Edited via --to alias.",
+        "--to", "office", "--source", str(office_source), home=home,
+    )
+    assert edited.returncode == 0, edited.stderr
+    text = (office_source / "canonical" / "agents" / "edit-alias-check.md").read_text()
+    assert "Edited via --to alias." in text
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def test_add_agent_help_lists_only_the_canonical_to_spelling():
+    proc = run_cli("add-agent", "--help", home=Path.home())
+    text = _ANSI.sub("", proc.stdout)  # CI terminals colour --help; strip before matching
+    assert "--to" in text
+    assert "--layer" not in text
+
+
+def test_edit_help_lists_only_the_canonical_layer_spelling():
+    proc = run_cli("edit", "--help", home=Path.home())
+    text = _ANSI.sub("", proc.stdout)
+    assert "--layer" in text
+    assert "--to" not in text
+
+
+def test_add_agent_layer_alias_rejects_the_same_way_as_to(office_source, home):
+    via_to = run_cli(
+        "add-agent", "--name", "x", "--department", "Ops", "--description", "d",
+        "--to", "bogus", "--source", str(office_source), home=home,
+    )
+    via_layer = run_cli(
+        "add-agent", "--name", "x", "--department", "Ops", "--description", "d",
+        "--layer", "bogus", "--source", str(office_source), home=home,
+    )
+    assert via_to.returncode == via_layer.returncode == 1
+    assert via_to.stderr.strip() == via_layer.stderr.strip()

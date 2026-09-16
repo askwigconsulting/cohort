@@ -341,11 +341,56 @@ def test_staleness_noop_outside_cohort_repo(tmp_path):
     assert project.staleness_check(plain) is None
 
 
+def test_staleness_check_cli_exits_0_on_an_unreadable_marker(repo, home):
+    # The throttle marker is expected to be a file; if `state/` is in some odd shape
+    # (e.g. a directory sits where the marker file should be — the shape a permissions
+    # mixup or a bad restore can leave behind), `.read_text()` raises. The `cohort
+    # staleness-check` CLI target is a session_start hook and must still exit 0
+    # rather than dump a traceback into every session start.
+    init(repo, home)
+    paths = CohortPaths.for_project(repo)
+    old = project._utc_now().timestamp() - 100 * 3600
+    os.utime(paths.cohort_home / "project_context.md", (old, old))
+    (paths.state / ".staleness-warned").mkdir(parents=True, exist_ok=True)
+    result = run_cli("staleness-check", repo=repo, home=home)
+    assert result.returncode == 0
+
+
 def test_staleness_hook_invokes_cli_not_a_script():
     r = load_artifact(COHORT_SRC / "canonical" / "hooks" / "staleness-warn.md")
     event, entry = render_hook_entry(build_ir(r.frontmatter, r.body))
     assert event == "SessionStart"
     assert entry["hooks"][0]["command"] == "cohort staleness-check"  # CLI, not a script
+
+
+def test_newest_activity_stats_only_the_newest_session_record(repo, home, monkeypatch):
+    """Staleness is a per-session-start hook, so it must not stat a whole session
+    store to answer one question: records are timestamp-named, so the newest by name
+    is the newest by clock and one stat answers it (#295 item 3)."""
+    init(repo, home)
+    paths = CohortPaths.for_project(repo)
+    sessions = paths.cohort_home / "sessions"
+    sessions.mkdir(parents=True, exist_ok=True)
+    for i in range(6):
+        (sessions / f"202607{i + 10:02d}T100000Z-{i:04x}-auto.md").write_text(
+            "---\ntimestamp: '2026-07-01T10:00:00+00:00'\n---\nbody\n", encoding="utf-8")
+    newest = sessions / "20260715T100000Z-0005-auto.md"
+    stamp = project._utc_now().timestamp() - 3600
+    os.utime(newest, (stamp, stamp))
+    ctx = paths.cohort_home / "project_context.md"
+    os.utime(ctx, (stamp - 7200, stamp - 7200))  # the session record is the newest thing
+
+    stats = {"n": 0}
+    real = Path.stat
+
+    def counting(self, *a, **k):
+        if self.parent == sessions:
+            stats["n"] += 1
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", counting)
+    assert project._newest_activity(paths) == stamp
+    assert stats["n"] == 1  # one stat, not one per record
 
 
 # === session capture (default-on session_end observation, opt-out) ==========
@@ -377,6 +422,34 @@ def test_session_capture_respects_opt_out(repo, home):
     assert project.session_capture(repo) is None
     sessions = CohortPaths.for_project(repo).cohort_home / "sessions"
     assert not list(sessions.glob("*-auto.md")) if sessions.exists() else True
+
+
+def test_read_auto_capture_treats_quoted_false_as_off(repo, home):
+    # `auto_capture = "false"` (a quoted string, not a bare TOML boolean) must not
+    # be treated as truthy just because the string is non-empty.
+    init(repo, home)
+    paths = CohortPaths.for_project(repo)
+    toml = paths.cohort_home / "cohort.toml"
+    toml.write_text(
+        toml.read_text(encoding="utf-8").replace(
+            "auto_capture = true", 'auto_capture = "false"'
+        ),
+        encoding="utf-8",
+    )
+    assert project._read_auto_capture(paths) is False
+    assert project.session_capture(repo) is None
+
+
+def test_read_auto_capture_defaults_on_when_unset(repo, home):
+    init(repo, home)
+    paths = CohortPaths.for_project(repo)
+    toml = paths.cohort_home / "cohort.toml"
+    lines = [
+        ln for ln in toml.read_text(encoding="utf-8").splitlines()
+        if not ln.strip().startswith("auto_capture")
+    ]
+    toml.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert project._read_auto_capture(paths) is True
 
 
 # === session recall (the exit -> next-session bridge) ========================

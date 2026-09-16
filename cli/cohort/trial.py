@@ -58,11 +58,13 @@ def do_try(
     *,
     place: bool = False,
     repo: Optional[Path] = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Render + validate the target agent; optionally sandbox it into ``repo``.
 
     Read-only unless ``place`` is set (which reuses the project add-specialist
-    path — the same human-gated, reversible install)."""
+    path — the same human-gated, reversible install). With ``dry_run`` a placement
+    is reported under ``would_place`` instead of written."""
     path, layer = _resolve_target(source, home, target)
     parsed = load_artifact(path)
     if parsed.load_error is not None:
@@ -88,7 +90,7 @@ def do_try(
     result: dict[str, Any] = {
         "action": "try", "name": ir.name, "layer": layer, "source": str(path),
         "tools": tools_line.split(":", 1)[1].strip(),
-        "rendered": rendered,
+        "rendered": rendered, "dry_run": dry_run,
     }
     if place:
         from .specialists import AddSpecialistError, do_add_specialist  # lazy: cycle
@@ -98,10 +100,13 @@ def do_try(
         try:
             report = do_add_specialist(
                 repo, home, ir.name, ir.display_name or ir.name,
-                ir.fields.get("department", "Trial"), ir.description, dry_run=False,
+                ir.fields.get("department", "Trial"), ir.description, dry_run=dry_run,
                 body=ir.body,
             )
         except AddSpecialistError as exc:
             raise TryError(f"could not sandbox {ir.name!r}: {exc}")
-        result["placed"] = report.get("compiled")
+        if dry_run:
+            result["would_place"] = report["path"]
+        else:
+            result["placed"] = report.get("compiled")
     return result

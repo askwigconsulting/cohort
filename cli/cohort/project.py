@@ -243,22 +243,33 @@ def refresh_project_context(
     if not project_context.exists():
         return {"changed": False}  # nothing to merge into yet
     body = managed_context_block(paths)
-    stage_dir = Path(tempfile.mkdtemp()) if dry_run else (paths.compiled / "project")
-    src = _stage(stage_dir, "context-block.txt", body)
-    merge_op = Op(OpType.MERGE.value, PROJECT_IDE, str(project_context),
+
+    def merge_op_for(src: str) -> Op:
+        return Op(OpType.MERGE.value, PROJECT_IDE, str(project_context),
                   src=src, strategy="block", preserve=True)
+
     if dry_run:
-        pf = preflight([merge_op], manifest, force=force)
+        with tempfile.TemporaryDirectory() as tmp:
+            merge_op = merge_op_for(_stage(Path(tmp), "context-block.txt", body))
+            pf = preflight([merge_op], manifest, force=force)
         return {"changed": pf.classified[0].status.value != "satisfied"}
     # Serialize the load→apply→persist cycle: re-read the manifest under the lock
     # so a concurrent recompile/refresh in another process can't have its ops lost
     # to a stale-read overwrite. ``state/`` exists here (the manifest loaded above).
+    # The block is staged INSIDE the lock, to a name unique to this call: a fixed
+    # name written outside it let a concurrent refresh hand ``apply`` another
+    # process's bytes (#291). The recorded merge op keeps no ``src``, so the
+    # staged file is dropped once applied.
     with manifest_lock(paths.manifest):
         manifest = load_manifest(paths.manifest)
         if manifest is None:  # deinited under us between the check and the lock
             return {"error": "not a Cohort project (run cohort init)"}
-        outcomes = apply([merge_op], paths, manifest, force=force)
-        manifest.persist(paths.manifest)
+        src = _stage(paths.compiled / "project", f"context-block.{uuid.uuid4().hex}.txt", body)
+        try:
+            outcomes = apply([merge_op_for(src)], paths, manifest, force=force)
+            manifest.persist(paths.manifest)
+        finally:
+            Path(src).unlink(missing_ok=True)
     return {
         "changed": any(o.status == "applied" for o in outcomes),
         "diverged": sum(getattr(o, "diverged", 0) for o in outcomes),
@@ -338,9 +349,17 @@ def render_snapshot_entry(repo: Path) -> str:
 
 
 def _stage(stage_dir: Path, name: str, content: str) -> str:
+    """Write ``content`` to ``stage_dir/name`` atomically and return its path.
+
+    Staged files are read back by ``apply`` (possibly from another process for
+    the fixed-name ones), so the bytes land via a unique temp file + ``os.replace``
+    and a reader never sees a torn write.
+    """
     stage_dir.mkdir(parents=True, exist_ok=True)
     p = stage_dir / name
-    p.write_text(content, encoding="utf-8")
+    tmp = p.with_name(f"{name}.tmp-{uuid.uuid4().hex}")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(tmp, p)
     return str(p)
 
 
@@ -656,13 +675,27 @@ def _read_staleness_hours(paths: CohortPaths) -> float:
 
 
 def _newest_activity(paths: CohortPaths) -> Optional[float]:
+    """Newest mtime across the project's activity markers: ``project_context.md`` and
+    the session store.
+
+    Only the newest-*named* session record is stat'd, never the whole store: records
+    are named ``<utc-compact>-<id>…`` (:func:`session_capture`, :func:`do_snapshot`),
+    so name order is write order and one stat answers the question a session-start
+    hook asks on every launch. The trade: re-editing an old record's body without
+    renaming it no longer counts as activity — staleness tracks when work was last
+    *captured*, which is what the warning is about."""
     candidates = []
     ctx = paths.cohort_home / "project_context.md"
     if ctx.exists():
         candidates.append(ctx.stat().st_mtime)
     sessions_dir = paths.cohort_home / "sessions"
-    if sessions_dir.exists():
-        candidates.extend(p.stat().st_mtime for p in sessions_dir.glob("*.md"))
+    try:
+        with os.scandir(sessions_dir) as entries:
+            newest = max((e.name for e in entries if e.name.endswith(".md")), default=None)
+        if newest is not None:
+            candidates.append((sessions_dir / newest).stat().st_mtime)
+    except OSError:  # no session store (or unreadable) — the context alone decides
+        pass
     return max(candidates) if candidates else None
 
 
@@ -700,7 +733,17 @@ def staleness_check(cwd: Path) -> Optional[str]:
 
 def _read_auto_capture(paths: CohortPaths) -> bool:
     # Default-on (opt-out): exit context is captured unless the repo sets false.
-    return bool(read_project_config(paths).get("auto_capture", True))
+    # `bool(value)` treated a *quoted* "false" as truthy (any non-empty string is
+    # truthy in Python), so a repo that wrote `auto_capture = "false"` kept
+    # capturing despite opting out. Mirror `read_dashboard_private`: only a real
+    # TOML boolean is honored. Absent still means the documented default (on);
+    # present-but-malformed fails closed to off rather than silently keeping the
+    # unrecognized value's truthiness.
+    config = read_project_config(paths)
+    if "auto_capture" not in config:
+        return True
+    value = config["auto_capture"]
+    return value if isinstance(value, bool) else False
 
 
 def render_auto_capture_entry(repo: Path) -> str:

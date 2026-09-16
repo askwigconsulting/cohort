@@ -11,8 +11,11 @@ fails if they disagree or if the current version has no CHANGELOG section.
 
 ## Cut a release
 
-`scripts/release.py` does the mechanical steps atomically (it edits files only —
-it never commits, pushes, or tags, so you stay in the loop):
+`scripts/release.py` validates before writing, then does the mechanical steps (it edits
+files only — it never commits, pushes, or tags, so you stay in the loop). It is two
+sequential file writes, not a single atomic transaction, but every precondition below is
+checked first, so a refused release never leaves a half-written CHANGELOG or version
+bump:
 
 ```bash
 # 1. Make sure everything you want is under [Unreleased] and the suite is green.
@@ -39,7 +42,8 @@ The script fails closed on the mistakes that have actually bitten:
 - **Empty `[Unreleased]`** → refuses (nothing to release).
 - **Version not greater than current**, or not `X.Y.Z` → refuses.
 - **A `## [X.Y.Z]` section already exists** → refuses.
-- Version files are always written together, so they can't drift.
+- Version files are validated together before either is written, so a refused release
+  never leaves them out of lockstep.
 
 To verify the repo is release-consistent at any time (e.g. in a pre-push hook):
 
