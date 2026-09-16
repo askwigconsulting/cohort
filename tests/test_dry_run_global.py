@@ -28,6 +28,7 @@ import inspect
 import json
 import os
 import shutil
+import platform
 import socket
 import subprocess
 from contextlib import contextmanager
@@ -115,6 +116,11 @@ def sealed(monkeypatch: pytest.MonkeyPatch) -> None:
     Applied *after* the fixtures that legitimately shell out (git init, cohort init) so the
     command under test is the only thing that could trip it.
     """
+    # Windows before Python 3.12 gets the OS version by spawning a subprocess the first
+    # time platform.uname() runs; the result is cached, so warm it before arming the
+    # trap — `report`'s environment block is legitimate output, not egress.
+    platform.system()
+    platform.release()
     monkeypatch.setattr(subprocess, "run", _forbid)
     monkeypatch.setattr(subprocess, "Popen", _forbid)
     monkeypatch.setattr(subprocess, "check_output", _forbid)
