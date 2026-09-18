@@ -43,10 +43,11 @@ worktree, never on trusting the engine:
 * Nothing is committed or merged here. The coordinator reviews the diff and integrates;
   the human PR-reviews. A change that lands outside a declared footprint is surfaced.
 
-**grok-cli is wired through a Cohort-imposed sandbox.** grok-cli has no sandbox,
-read-only, or approval mode of its own, so — unlike Codex, which confines itself —
-Cohort runs it inside a **bubblewrap** jail rooted at the worktree: writes are confined
-to the worktree by the kernel and the user's real home is not mounted. bubblewrap does
+**grok is wired through a Cohort-imposed sandbox.** xAI's Grok Build has a sandbox and
+an approval mode of its own, but Cohort does not accept a vendor's own confinement as
+the boundary for that vendor, so it runs grok inside a **bubblewrap** jail rooted at the
+worktree regardless: writes are confined to the worktree by the kernel and the user's
+real home — the saved Grok login included — is not mounted. bubblewrap does
 **no** host egress filtering, so the network is fully open (not restricted to the xAI
 API). The secret-exfiltration surface an open network would otherwise create is closed
 two other ways instead: grok-cli inherits a **scrubbed, minimal environment** — only
@@ -99,15 +100,18 @@ _DEFAULT_MAX_WIRE_BYTES: int = 50_000_000
 # `work`, `ratchet` and `consult` agree on what "gpt" or "xai" means (#243).
 _CODEX_ENGINE_ALIASES = aliases_of("codex")
 _GROK_ENGINE_ALIASES = aliases_of("grok")
-# Bound grok-cli's agentic loop (its own default is 400 rounds — far too loose here).
-_GROK_MAX_TOOL_ROUNDS = "60"
+# Bound Grok Build's agentic loop (its own default is far looser than a doer needs).
+_GROK_MAX_TURNS = "60"
 
 # Environment variables each vendor CLI legitimately needs, beyond PATH/HOME. Every
 # other host variable is scrubbed (see :func:`_scrubbed_env`) so an untrusted vendor
 # CLI cannot read a host secret (``AWS_*``, ``GITHUB_TOKEN``, another repo's tokens) out
 # of an inherited environment and exfiltrate it over the open network. The keys ride the
 # environment, never argv.
-_GROK_ENV_PASSTHROUGH = ("GROK_API_KEY", "GROK_BASE_URL", "GROK_MODEL")
+# Grok Build reads ``XAI_API_KEY``; Cohort's engine spec declares ``GROK_API_KEY``. Both
+# pass through, and :func:`run_grok_in_worktree` maps one onto the other so a user who
+# exported either name is authenticated (they are the same xAI key).
+_GROK_ENV_PASSTHROUGH = ("XAI_API_KEY", "GROK_API_KEY", "GROK_BASE_URL", "GROK_MODEL")
 _CODEX_ENV_PASSTHROUGH = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "CODEX_HOME")
 # Non-secret TLS trust-store pointers (file/dir paths, not credentials) the node-based
 # vendor CLIs need to reach their HTTPS API behind a corporate CA — kept for every doer
@@ -859,11 +863,33 @@ def clear_cli_broken() -> None:
         pass
 
 
+def _grok_binary() -> str:
+    """Absolute path to the real ``grok`` executable, symlinks resolved.
+
+    xAI's installer chains ``~/.local/bin/grok`` -> ``~/.grok/bin/grok`` -> the versioned
+    binary under ``~/.grok/downloads``. The jail mounts the directory holding the real
+    file (:func:`_vendor_binary_binds`) and nothing else from the home, so a PATH lookup
+    inside the jail would follow a link whose intermediate directory is not mounted.
+    Resolving out here keeps the jail's mount set minimal.
+
+    Raises:
+        DoerUnavailableError: ``grok`` is not on PATH.
+    """
+    exe = shutil.which("grok")
+    if exe is None:
+        raise DoerUnavailableError(
+            "the 'grok' CLI is not installed; install xAI's Grok Build "
+            "(https://x.ai/cli) and set XAI_API_KEY to use the Grok doer"
+        )
+    return str(Path(exe).resolve())
+
+
 def _grok_cli_available() -> bool:
     """Whether the locally-installed, bubblewrap-sandboxed grok CLI can run here.
 
-    True only when BOTH the ``grok`` CLI and ``bwrap`` are installed: grok-cli has no
-    sandbox of its own, so Cohort will only run it confined by bubblewrap (see
+    True only when BOTH the ``grok`` CLI and ``bwrap`` are installed. Grok Build ships a
+    sandbox of its own, but Cohort does not rely on a vendor to confine that vendor: the
+    containment that matters here is the one Cohort imposes with the kernel (see
     :func:`_grok_sandbox_argv`). Callers use this to prefer the local CLI (which has
     real, worktree-scoped file access) and fall back to the xAI API-direct path when it
     returns False. Mirrors the two checks :func:`_assert_grok_sandbox_available` enforces,
@@ -876,8 +902,8 @@ def _assert_grok_sandbox_available() -> None:
     will not run grok unconfined."""
     if shutil.which("grok") is None:
         raise DoerUnavailableError(
-            "the 'grok' CLI is not installed; install grok-cli and set GROK_API_KEY to "
-            "use the Grok doer"
+            "the 'grok' CLI is not installed; install xAI's Grok Build "
+            "(https://x.ai/cli) and set XAI_API_KEY to use the Grok doer"
         )
     if _bwrap() is None:
         raise DoerUnavailableError(
@@ -974,12 +1000,14 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
     """A bubblewrap invocation that runs ``inner`` with ``worktree`` as the ONLY
     persistent writable path.
 
-    grok-cli has no sandbox of its own, so Cohort imposes one with the kernel: ``/usr``
-    (and the usr-merge lib/bin dirs) is read-only, ``HOME`` is an ephemeral tmpfs
-    (grok-cli's history/logs are discarded), and grok-cli's ``~/.grok`` settings are
-    bind-mounted read-only so it keeps the user's base-URL/model. The user's real home —
-    SSH keys, dotfiles, other repos — is NOT mounted, and grok cannot write anywhere but
-    the worktree. This is the OS-level confinement Codex gets from ``--sandbox
+    Grok Build ships a sandbox of its own, but Cohort does not take a vendor's word for
+    confining that vendor, so it imposes one with the kernel regardless: ``/usr`` (and the
+    usr-merge lib/bin dirs) is read-only, ``HOME`` is an ephemeral tmpfs (the engine's
+    sessions, history and logs are discarded with it), and the user's real ``~/.grok`` —
+    saved login included — is not mounted at all. The user's real home — SSH keys,
+    dotfiles, other repos — is NOT mounted, and grok cannot write anywhere but the
+    worktree. Verified by probe: an engine told to write outside the worktree reports
+    success and the host file does not exist. This is the OS-level confinement Codex gets from ``--sandbox
     workspace-write``, applied from the outside.
 
     **Known residual read-exposure (grok), mirroring the codex framing.** This confines
@@ -1041,9 +1069,13 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
     # jail died with ``execvp grok: No such file or directory`` (#244). Bind exactly what it
     # needs, read-only, and nothing more.
     argv += _vendor_binary_binds("grok")
-    grok_cfg = Path.home() / ".grok"
-    if grok_cfg.is_dir():
-        argv += ["--ro-bind", str(grok_cfg), str(sandbox_home / ".grok")]
+    # The user's real ``~/.grok`` is deliberately NOT mounted. Grok Build keeps its saved
+    # login there (``auth.json``) and writes session state under ``$HOME/.grok`` at run
+    # time: a read-only bind exposed that credential to the engine *and* still broke it
+    # ("Couldn't create session: Read-only file system"). The ephemeral tmpfs HOME above
+    # gives it a writable ``.grok`` of its own, and the key reaches it through the scrubbed
+    # environment instead — so the engine authenticates without ever seeing the user's
+    # stored credentials, settings or session history.
     argv += [
         "--bind", str(worktree), str(worktree),  # the ONLY persistent writable path
         "--chdir", str(worktree),
@@ -1074,7 +1106,23 @@ def run_grok_in_worktree(
         DoerUnavailableError: the ``grok`` CLI or ``bwrap`` is not installed.
     """
     _assert_grok_sandbox_available()
-    inner = ["grok", "-d", str(worktree), "--max-tool-rounds", _GROK_MAX_TOOL_ROUNDS]
+    # Invoke the RESOLVED binary, not ``grok`` on PATH: the installer symlinks
+    # ``~/.local/bin/grok`` -> ``~/.grok/bin/grok`` -> ``~/.grok/downloads/<build>``, and the
+    # jail mounts only the directory holding the real file. Resolving here means the
+    # intermediate link directory never has to be mounted (``execvp grok: No such file or
+    # directory`` otherwise).
+    inner = [
+        _grok_binary(),
+        "--cwd", str(worktree),
+        "--max-turns", _GROK_MAX_TURNS,
+        # The jail is the containment; inside it the doer must not stop to ask a human who
+        # is not there. Without this it blocks on an approval prompt until the timeout.
+        "--permission-mode", "bypassPermissions",
+        # The task is the repo in front of it. Web search widens egress beyond the prompt
+        # and the worktree for no benefit a doer needs.
+        "--disable-web-search",
+        "--output-format", "plain",
+    ]
     if model:
         inner += ["-m", model]
     inner += ["-p", task]
@@ -1082,6 +1130,11 @@ def run_grok_in_worktree(
     # The sandbox leaves the network open, so scrub the environment to a minimal
     # allow-list: grok-cli receives ONLY this dict, never the host environment's secrets.
     env = _scrubbed_env(home=Path.home(), passthrough=_GROK_ENV_PASSTHROUGH)
+    # One xAI key, two spellings: Grok Build reads XAI_API_KEY, Cohort's registry declares
+    # GROK_API_KEY. Map whichever the user exported onto the name the CLI reads, so the
+    # doer is not "not signed in" for a user whose key Cohort itself can already see.
+    if not env.get("XAI_API_KEY") and env.get("GROK_API_KEY"):
+        env["XAI_API_KEY"] = env["GROK_API_KEY"]
     # This doer is non-interactive: close stdin (DEVNULL) so a TTY cannot inject keystrokes
     # into grok (TIOCSTI — belt-and-braces with the jail's --new-session).
     #
@@ -1367,8 +1420,8 @@ def run_codex_doer(
 
 def run_doer(engine: str, task: str, **kwargs) -> DoerResult:
     """Dispatch ``engine``'s CLI doer. Codex-family engines are sandboxed by the CLI
-    itself; Grok is sandboxed by Cohort via bubblewrap (grok-cli has no sandbox of its
-    own). Either way the write is OS-confined to a throwaway worktree."""
+    itself; Grok is sandboxed by Cohort via bubblewrap, whose confinement Cohort controls
+    rather than the vendor. Either way the write is OS-confined to a throwaway worktree."""
     name = engine.strip().lower()
     if name in _CODEX_ENGINE_ALIASES:
         return run_codex_doer(task, **kwargs)

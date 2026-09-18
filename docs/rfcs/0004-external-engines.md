@@ -52,6 +52,28 @@ The architecture below is retained for context; where it conflicts with the abov
 the grok-cli confinement in §3 and the "doer" framing), **the decision wins** — except where
 the Amendment below has since superseded it.
 
+## Amendment — 2026-09-17: the grok doer is xAI's Grok Build
+
+The community `grok-cli` this RFC and the 2026-07-31 amendment describe went unmaintained
+(last release 2025-11) and its API path was retired: every dispatch returned
+`410 Live search is deprecated`. xAI's own **Grok Build** replaced it, and its installer
+takes over the `grok` command, so Cohort now drives that instead.
+
+Two premises below are no longer true, and the reasoning that rested on them has moved:
+
+- *"grok-cli has no sandbox of its own"* — Grok Build ships one (`--sandbox`), plus
+  permission modes and `--allow`/`--deny` rules. Cohort still imposes its own bubblewrap
+  jail and does **not** rely on the vendor's: a vendor confining itself is the vendor's
+  claim, not Cohort's guarantee. The confinement decision is unchanged; only its
+  justification is.
+- *"`--max-tool-rounds` default 400"* — that flag is gone. The bound is `--max-turns`.
+
+One thing got stricter. The jail used to bind the user's real `~/.grok` read-only to carry
+settings; Grok Build keeps its **saved login** there, so that bind handed a credential to
+the engine — and still broke it, because it writes session state to the same directory.
+The directory is no longer mounted at all: the ephemeral HOME gives the engine its own,
+and the key arrives through the scrubbed environment.
+
 ## Amendment — 2026-07-31: grok-cli adopted as a sandboxed doer
 
 **What changed.** Two releases reversed decisions 1 and 2 above:
