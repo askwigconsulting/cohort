@@ -26,8 +26,9 @@ This is the invariant, not a preference:
     agentic CLI edits a fresh worktree directly, with real file access, every write
     OS/kernel-confined there: `cohort engine work gpt` runs Codex under its own
     `workspace-write` sandbox;
-    `cohort engine work grok` runs grok-cli under a Cohort-imposed **bubblewrap** jail
-    (grok-cli has no sandbox of its own). An engine with no available sandbox is refused —
+    `cohort engine work grok` runs xAI's Grok Build under a Cohort-imposed **bubblewrap**
+    jail — it ships a sandbox of its own, but a vendor confining itself is the vendor's
+    claim, not Cohort's guarantee. An engine with no available sandbox is refused —
     never run unconfined.
   - **Gated patch proposal (API fallback)** — `cohort engine propose <engine> [--agentic]`
     has the engine return (or explore-then-return) a candidate diff that Cohort — never the

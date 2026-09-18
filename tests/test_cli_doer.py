@@ -1352,3 +1352,98 @@ def test_a_repo_without_local_records_is_checked_out_unchanged(tmp_path: Path) -
         assert cli_doer._tracked_worktree_files(worktree) == ["src/app.py"]
     finally:
         patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+# === grok doer: driving xAI's Grok Build ===================================
+
+
+def _completed() -> subprocess.CompletedProcess:
+    """A successful vendor run, for tests that assert on argv/env rather than output."""
+    return subprocess.CompletedProcess(["grok"], 0, stdout="", stderr="")
+
+
+def _grok_inner(argv: list[str]) -> list[str]:
+    """The jailed command itself — everything after bwrap's ``--`` separator."""
+    return argv[argv.index("--") + 1:]
+
+
+def test_grok_doer_drives_grok_build_not_the_retired_community_cli(monkeypatch, tmp_path):
+    """The argv must speak Grok Build's flags. The community grok-cli Cohort used to
+    drive is unmaintained and its API path was retired, and its flags (``-d``,
+    ``--max-tool-rounds``) make Grok Build exit with 'unexpected argument' — a doer that
+    cannot start is indistinguishable from one with nothing to say."""
+    binary = tmp_path / "bin" / "grok"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli_doer.shutil, "which", lambda name: str(binary) if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    launched = {}
+    monkeypatch.setattr(
+        cli_doer, "_launch_vendor_cli",
+        lambda argv, **kw: launched.update(argv=argv, env=kw.get("env")) or _completed(),
+    )
+
+    cli_doer.run_grok_in_worktree(tmp_path / "wt", "fix it")
+
+    inner = _grok_inner(launched["argv"])
+    assert "--cwd" in inner and "-d" not in inner
+    assert "--max-turns" in inner and "--max-tool-rounds" not in inner
+    # A doer has no human to answer an approval prompt; without this it blocks to timeout.
+    assert inner[inner.index("--permission-mode") + 1] == "bypassPermissions"
+    assert "--disable-web-search" in inner          # egress stays the prompt + worktree
+    assert inner[inner.index("-p") + 1] == "fix it"
+
+
+def test_grok_doer_invokes_the_resolved_binary_not_a_path_lookup(monkeypatch, tmp_path):
+    """xAI's installer chains ~/.local/bin/grok -> ~/.grok/bin/grok -> the real binary.
+    The jail mounts only the directory holding the real file, so a bare ``grok`` would
+    die as ``execvp grok: No such file or directory``."""
+    real = tmp_path / "downloads" / "grok-linux-x86_64"
+    real.parent.mkdir(parents=True)
+    real.write_text("#!/bin/sh\n")
+    link = tmp_path / "bin" / "grok"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(real)
+    monkeypatch.setattr(cli_doer.shutil, "which", lambda name: str(link) if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    launched = {}
+    monkeypatch.setattr(
+        cli_doer, "_launch_vendor_cli",
+        lambda argv, **kw: launched.update(argv=argv) or _completed(),
+    )
+
+    cli_doer.run_grok_in_worktree(tmp_path / "wt", "t")
+
+    assert _grok_inner(launched["argv"])[0] == str(real)
+
+
+def test_grok_jail_never_mounts_the_users_real_grok_directory(tmp_path):
+    """Grok Build keeps its saved login in ~/.grok. Mounting it read-only handed that
+    credential to the engine and still broke it (it writes session state there); the
+    ephemeral HOME gives it a writable .grok of its own instead."""
+    argv = cli_doer._grok_sandbox_argv(tmp_path / "wt", tmp_path / "home", ["grok", "-p", "x"])
+    binds = [argv[i + 1] for i, tok in enumerate(argv) if tok in ("--ro-bind", "--bind")]
+    assert str(Path.home() / ".grok") not in binds
+
+
+def test_grok_env_maps_either_key_spelling_onto_the_one_grok_build_reads(monkeypatch, tmp_path):
+    """Cohort's registry declares GROK_API_KEY; Grok Build reads XAI_API_KEY. One xAI
+    key, two names — a user who exported the name Cohort documents must not get
+    'Not signed in' from the doer."""
+    binary = tmp_path / "grok"
+    binary.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(cli_doer.shutil, "which", lambda name: str(binary) if name == "grok" else None)
+    monkeypatch.setattr(cli_doer, "_bwrap", lambda: "/usr/bin/bwrap")
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setenv("GROK_API_KEY", "xai-only-the-cohort-spelling")
+    launched = {}
+    monkeypatch.setattr(
+        cli_doer, "_launch_vendor_cli",
+        lambda argv, **kw: launched.update(env=kw.get("env")) or _completed(),
+    )
+
+    cli_doer.run_grok_in_worktree(tmp_path / "wt", "t")
+
+    assert launched["env"]["XAI_API_KEY"] == "xai-only-the-cohort-spelling"
+    assert "xai-only-the-cohort-spelling" not in " ".join(launched.get("argv", []))
+
