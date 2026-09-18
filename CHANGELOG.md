@@ -11,6 +11,23 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- **The grok CLI doer is now xAI's Grok Build.** The community `grok-cli` Cohort used to
+  drive is unmaintained and its API path was retired (every dispatch returned a 410), and
+  Grok Build's installer takes over the `grok` command — so Cohort was building argv the
+  new binary rejects outright. It now speaks Grok Build's flags (`--cwd`, `--max-turns`,
+  `--permission-mode bypassPermissions`, `--disable-web-search`), invokes the resolved
+  binary rather than a PATH lookup, and accepts either `XAI_API_KEY` (what Grok Build
+  reads) or `GROK_API_KEY` (what Cohort's registry declares). Confinement is unchanged and
+  still Cohort's bubblewrap jail, not the vendor's own sandbox.
+
+### Security
+- **The grok jail no longer mounts the user's real `~/.grok`.** Grok Build stores its saved
+  login there, so the previous read-only bind exposed that credential to the engine — and
+  still broke it, since it writes session state to the same directory. The ephemeral HOME
+  now gives the engine its own, and the API key reaches it through the scrubbed environment.
+
+
 ### Security
 - **A symlinked artifact no longer walks through the my-office quarantine (#285).** Discovery
   (compile and quarantine alike) reads only `<canonical>/<kind-dir>/*.md`, refuses an entry
