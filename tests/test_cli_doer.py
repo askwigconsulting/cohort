@@ -1447,3 +1447,25 @@ def test_grok_env_maps_either_key_spelling_onto_the_one_grok_build_reads(monkeyp
     assert launched["env"]["XAI_API_KEY"] == "xai-only-the-cohort-spelling"
     assert "xai-only-the-cohort-spelling" not in " ".join(launched.get("argv", []))
 
+
+
+def test_the_doer_gates_list_a_non_utf8_tracked_name(tmp_path: Path) -> None:
+    """The wire cap and secret scan walk the same listing the exclusion does; a name git
+    emits as raw bytes must be measured, not crash the dispatch."""
+    if os.name == "nt":
+        pytest.skip("filesystem refuses non-UTF-8 file names")
+    raw = os.path.join(os.fsencode(tmp_path), b"\xfe.py")
+    try:
+        with open(raw, "wb") as fh:
+            fh.write(b"x = 1\n")
+    except OSError:
+        pytest.skip("filesystem refuses non-UTF-8 file names")
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        listed = cli_doer._tracked_worktree_files(worktree)
+        assert os.fsdecode(b"\xfe.py") in listed
+        assert cli_doer._worktree_exposed_byte_count(worktree) == len("value = 1\n") + 6
+        cli_doer._assert_worktree_files_have_no_secrets(worktree, tmp_path)
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)

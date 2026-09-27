@@ -19,6 +19,7 @@ The safety-critical properties asserted here:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -738,3 +739,49 @@ def test_a_failed_exclusion_aborts_and_leaves_no_worktree(
     with pytest.raises(patch_proposal.ProposalError, match="local records"):
         patch_proposal._create_worktree(tmp_path)
     assert _worktree_count(tmp_path) == 1
+
+
+def _non_utf8_names_supported(root: Path) -> bool:
+    """Linux filesystems take arbitrary bytes; APFS and NTFS refuse non-UTF-8 names."""
+    if os.name == "nt":
+        return False
+    probe = os.path.join(os.fsencode(root), b"probe-\xff")
+    try:
+        with open(probe, "wb"):
+            pass
+    except OSError:
+        return False
+    os.remove(probe)
+    return True
+
+
+def test_non_utf8_tracked_names_are_excluded_or_kept_without_crashing(
+    tmp_path: Path,
+) -> None:
+    """``git ls-files -z`` emits names verbatim, so a tracked name that is not UTF-8 must
+    neither crash worktree creation (every engine path now runs the exclusion) nor slip
+    a record past it."""
+    if not _non_utf8_names_supported(tmp_path):
+        pytest.skip("filesystem refuses non-UTF-8 file names")
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    raw_root = os.fsencode(tmp_path)
+    record = os.path.join(raw_root, b".cohort", b"sessions", b"\xff.md")
+    source = os.path.join(raw_root, b"src", b"\xfe.py")
+    os.makedirs(os.path.dirname(record))
+    for path in (record, source):
+        with open(path, "wb") as fh:
+            fh.write(b"author: Jane Doe\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "raw"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        raw_worktree = os.fsencode(worktree)
+        assert not os.path.lexists(os.path.join(raw_worktree, b".cohort", b"sessions", b"\xff.md"))
+        assert os.path.isfile(os.path.join(raw_worktree, b"src", b"\xfe.py"))
+        assert _worktree_status(worktree) == ""
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)

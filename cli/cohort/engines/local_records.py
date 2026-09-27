@@ -64,21 +64,34 @@ def is_local_record(rel: str) -> bool:
     )
 
 
-def _git(worktree: Path, *args: str) -> str:
-    """Run a bounded git command in ``worktree`` and return stdout (raises on failure)."""
-    return subprocess.run(
+def _git(worktree: Path, *args: str) -> None:
+    """Run a bounded git command in ``worktree`` (raises on failure). Output is kept as
+    bytes and discarded, so nothing here decodes a raw path."""
+    subprocess.run(
         ["git", "-C", str(worktree), *args],
         capture_output=True,
-        text=True,
         check=True,
         timeout=_GIT_TIMEOUT_SECONDS,
-    ).stdout
+    )
 
 
 def tracked_paths(worktree: Path) -> list[str]:
     """Every path in the worktree's index, unfiltered. NUL-delimited so a path with an
-    embedded newline is not split."""
-    return [rel for rel in _git(worktree, "ls-files", "-z").split("\0") if rel]
+    embedded newline is not split.
+
+    Read as **bytes** and decoded with :func:`os.fsdecode`: ``-z`` emits names verbatim,
+    and a tracked name that is not UTF-8 (legal on Linux) would otherwise crash the
+    decode — and with it every engine path, since all of them run the exclusion. The
+    surrogate-escaped str round-trips: ``Path`` operations and subprocess argv re-encode
+    it with ``os.fsencode``, so the unlink and ``update-index`` reach the exact bytes git
+    listed."""
+    raw = subprocess.run(
+        ["git", "-C", str(worktree), "ls-files", "-z"],
+        capture_output=True,
+        check=True,
+        timeout=_GIT_TIMEOUT_SECONDS,
+    ).stdout
+    return [os.fsdecode(rel) for rel in raw.split(b"\0") if rel]
 
 
 def exclude_local_records(worktree: Path) -> None:
