@@ -95,6 +95,21 @@ def test_patched_and_decoration_time_names_stay_module_level() -> None:
     )
 
 
+def test_urllib_request_is_absent_from_the_cli_import_tree() -> None:
+    """``cohort.engines.xai`` (imported eagerly by ``cohort.cli`` as ``engine_xai``)
+    used to import ``urllib.request``/``urllib.error`` at module level (#306 T3).
+    Those pull in ``http.client``, ``ssl`` and ``email`` — heavy stdlib modules
+    every hook process paid for even though only the network-facing functions in
+    ``xai.py`` ever touch them. The imports now live inside those functions."""
+    names = {name for name, _cost, _depth in _import_tree()}
+    heavy = names & {"urllib.request", "urllib.error"}
+    assert heavy == set(), (
+        f"these stdlib modules are imported when `cohort.cli` is imported: {heavy}. "
+        "Defer the `import urllib.request` / `import urllib.error` into the function "
+        "body that makes the network call."
+    )
+
+
 def test_import_cost_composition_is_recorded() -> None:
     """Print where `import cohort.cli` spends its time. Recorded, never asserted —
     wall-clock numbers vary by machine and by CI runner."""
