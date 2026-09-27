@@ -646,3 +646,48 @@ def test_ratchet_names_the_registered_engines_for_an_unknown_one(tmp_path: Path)
         )
     assert "codex (aliases: chatgpt, gpt, openai)" in str(excinfo.value)
     assert "grok (aliases: xai)" in str(excinfo.value)
+
+
+_LOCAL_RECORDS = {
+    ".cohort/sessions/2026-01-01-000000.md": "author: Jane Doe <jane@example.com>\n",
+    ".cohort/feedback/2026-01-01-000000.md": "the CLI made me swear\n",
+    ".cohort/proposals/p1.json": '{"summary": "earlier engine payload"}\n',
+    ".cohort/state/local.json": '{"seen": true}\n',
+}
+
+
+@pytest.mark.parametrize("record", sorted(_LOCAL_RECORDS))
+def test_ratchet_worktree_never_holds_a_local_record_across_keeps_and_reverts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    """#306: the ratchet hands its worktree to codex (which reads every file) on every
+    iteration, so the records must be gone at creation AND stay gone through a keep's
+    commit and a revert's ``reset --hard``/``clean``."""
+    _init_git_repo(tmp_path, {"metric.txt": "10\n", record: _LOCAL_RECORDS[record]})
+    seen_by_doer: list[bool] = []
+    doer = _doer_writes([9, 12, 7])  # keep, revert, keep
+
+    def propose(engine, task, worktree, **kwargs):
+        seen_by_doer.append((Path(worktree) / record).exists())
+        doer(engine, task, worktree, **kwargs)
+
+    monkeypatch.setattr(ratchet, "_propose_into_worktree", propose)
+
+    result = ratchet.run_ratchet(
+        "gpt", "lower the number", repo_root=tmp_path,
+        evaluator_cmd=_EVAL, goal="minimize", budget=3,
+    )
+
+    assert seen_by_doer == [False, False, False]
+    assert not (result.worktree / record).exists()
+    status = subprocess.run(
+        ["git", "-C", str(result.worktree), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert status == ""
+    # The staircase commits carry the records untouched — never a deletion to merge.
+    committed = subprocess.run(
+        ["git", "-C", str(result.worktree), "ls-tree", "-r", "--name-only", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    assert record in committed

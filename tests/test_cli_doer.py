@@ -1317,7 +1317,7 @@ def test_the_wire_byte_count_excludes_the_local_records(tmp_path: Path) -> None:
     """The cap must bound what the vendor CLI can actually read — counting files that are
     not in the checkout would over-charge every dispatch."""
     _repo_with_local_records(tmp_path)
-    worktree = cli_doer._create_doer_worktree(tmp_path)
+    worktree = patch_proposal._create_worktree(tmp_path)
     try:
         listed = cli_doer._tracked_worktree_files(worktree)
         assert not [rel for rel in listed if rel.startswith(".cohort/sessions/")]
@@ -1347,7 +1347,7 @@ def test_the_grok_gate_sequence_excludes_the_local_records(
 def test_a_repo_without_local_records_is_checked_out_unchanged(tmp_path: Path) -> None:
     """The exclusion is a no-op on a repo that has none — no stray git call, no error."""
     _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
-    worktree = cli_doer._create_doer_worktree(tmp_path)
+    worktree = patch_proposal._create_worktree(tmp_path)
     try:
         assert cli_doer._tracked_worktree_files(worktree) == ["src/app.py"]
     finally:

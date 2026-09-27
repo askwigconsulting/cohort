@@ -639,3 +639,102 @@ def test_cli_propose_agentic_end_to_end(
     assert result.exit_code == 0, result.output
     assert "transcript" in result.output  # the audit path is surfaced
     assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "value = 1\n"
+
+
+# --------------------------------------------------------------------------- #
+# Cohort's own local records never reach an engine worktree (#275, #306)
+# --------------------------------------------------------------------------- #
+
+# One record per excluded prefix: each carries identity or private free text.
+_LOCAL_RECORDS = {
+    ".cohort/sessions/2026-01-01-000000.md": "author: Jane Doe <jane@example.com>\n",
+    ".cohort/feedback/2026-01-01-000000.md": "the CLI made me swear\n",
+    ".cohort/proposals/p1.json": '{"summary": "earlier engine payload"}\n',
+    ".cohort/state/local.json": '{"seen": true}\n',
+}
+
+
+def _worktree_status(worktree: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(worktree), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+@pytest.mark.parametrize("record", sorted(_LOCAL_RECORDS))
+def test_one_shot_proposal_worktree_never_contains_a_local_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    """Every creation path excludes the records, not just the CLI doers — the proposal
+    worktree is what the coordinator reviews and integrates from."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", record: _LOCAL_RECORDS[record]})
+    reply = _patch_json(
+        edits=[{"path": "src/app.py", "search": "value = 1", "replace": "value = 2"}]
+    )
+    monkeypatch.setattr(patch_proposal.xai, "consult", _RecordingConsult(reply))
+
+    outcome = patch_proposal.propose_patch(
+        "grok", "bump", repo_root=tmp_path, allowed_footprint=["src"],
+        project_context_text="",
+    )
+    try:
+        assert not (outcome.worktree / record).exists()
+        # The only change git sees is the engine's; the exclusion is not a deletion.
+        assert _worktree_status(outcome.worktree) == " M src/app.py\n"
+        assert (tmp_path / record).is_file()  # the repo itself keeps its records
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, outcome.worktree)
+
+
+@pytest.mark.parametrize("record", sorted(_LOCAL_RECORDS))
+def test_agentic_proposal_worktree_never_contains_a_local_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", record: _LOCAL_RECORDS[record]})
+    reply = _patch_json(
+        edits=[{"path": "src/app.py", "search": "value = 1", "replace": "value = 2"}]
+    )
+    monkeypatch.setattr(
+        patch_proposal.xai_agentic, "run_agentic", lambda *a, **k: _agentic(reply)
+    )
+
+    outcome = patch_proposal.propose_patch_agentic(
+        "grok", "bump", repo_root=tmp_path, allowed_footprint=["src"]
+    )
+    try:
+        assert not (outcome.worktree / record).exists()
+        assert _worktree_status(outcome.worktree) == " M src/app.py\n"
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, outcome.worktree)
+
+
+def test_a_fresh_worktree_holds_no_local_record_and_reads_clean(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", **_LOCAL_RECORDS})
+
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        for record in _LOCAL_RECORDS:
+            assert not (worktree / record).exists(), record
+        assert _worktree_status(worktree) == ""
+        assert (worktree / "src" / "app.py").is_file()
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+def test_a_failed_exclusion_aborts_and_leaves_no_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worktree whose records could not be excluded must never be handed back: the
+    caller would ship it. Fail closed, and reclaim the half-built worktree."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", **_LOCAL_RECORDS})
+
+    def broken_exclusion(worktree: Path) -> None:
+        raise subprocess.CalledProcessError(128, ["git", "update-index"])
+
+    monkeypatch.setattr(
+        "cohort.engines.local_records.exclude_local_records", broken_exclusion
+    )
+
+    with pytest.raises(patch_proposal.ProposalError, match="local records"):
+        patch_proposal._create_worktree(tmp_path)
+    assert _worktree_count(tmp_path) == 1

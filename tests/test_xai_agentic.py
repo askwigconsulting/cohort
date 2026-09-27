@@ -187,6 +187,90 @@ def test_list_dir_lists_entries(repo: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Cohort's own local records are invisible to the reviewer (#306)
+# --------------------------------------------------------------------------- #
+
+_RECORD_PREFIXES = [
+    ".cohort/sessions",
+    ".cohort/feedback",
+    ".cohort/proposals",
+    ".cohort/state",
+]
+# A token only the record holds: any hit on it means the record's bytes egressed.
+_RECORD_MARKER = "jane-doe-private-note"
+
+
+def _plant_record(repo: Path, prefix: str) -> str:
+    rel = f"{prefix}/entry.md"
+    (repo / prefix).mkdir(parents=True)
+    (repo / rel).write_text(f"author: Jane Doe {_RECORD_MARKER}\n", encoding="utf-8")
+    (repo / ".cohort" / "project_context.md").write_text("# context\n", encoding="utf-8")
+    return rel
+
+
+@pytest.mark.parametrize("prefix", _RECORD_PREFIXES)
+def test_read_file_refuses_a_local_record(repo: Path, prefix: str) -> None:
+    rel = _plant_record(repo, prefix)
+    out = ReadOnlyToolbox(repo).read_file(rel)
+    assert out.startswith("refused:")
+    assert _RECORD_MARKER not in out
+
+
+@pytest.mark.parametrize("prefix", _RECORD_PREFIXES)
+def test_list_dir_hides_local_record_directories(repo: Path, prefix: str) -> None:
+    _plant_record(repo, prefix)
+    box = ReadOnlyToolbox(repo)
+    listing = box.list_dir(".cohort")
+    assert "project_context.md" in listing  # the repo's own instructions stay readable
+    assert prefix.rsplit("/", 1)[1] not in listing
+    assert box.list_dir(prefix).startswith("refused:")
+
+
+@pytest.mark.parametrize("prefix", _RECORD_PREFIXES)
+def test_grep_and_find_never_surface_a_local_record(repo: Path, prefix: str) -> None:
+    rel = _plant_record(repo, prefix)
+    box = ReadOnlyToolbox(repo)
+    assert box.grep(_RECORD_MARKER) == "(no matches)"
+    assert box.grep(_RECORD_MARKER, path=".cohort") == "(no matches)"
+    assert box.grep(_RECORD_MARKER, path=prefix).startswith("refused:")
+    assert rel not in box.find_files("**/*")
+
+
+def test_a_differently_cased_record_path_is_refused(repo: Path) -> None:
+    """On a case-insensitive filesystem ``.Cohort/Sessions`` IS the records directory,
+    so the predicate folds case rather than trust the spelling it was handed."""
+    (repo / ".Cohort" / "Sessions").mkdir(parents=True)
+    (repo / ".Cohort" / "Sessions" / "entry.md").write_text(_RECORD_MARKER, encoding="utf-8")
+    box = ReadOnlyToolbox(repo)
+    assert box.read_file(".Cohort/Sessions/entry.md").startswith("refused:")
+    assert box.grep(_RECORD_MARKER) == "(no matches)"
+
+
+def test_a_dot_segment_spelling_of_a_record_is_refused(repo: Path) -> None:
+    _plant_record(repo, ".cohort/sessions")
+    box = ReadOnlyToolbox(repo)
+    assert box.read_file("./.cohort//sessions/entry.md").startswith("refused:")
+
+
+@requires_symlinks
+def test_an_in_tree_symlink_alias_to_a_record_is_refused(repo: Path) -> None:
+    """A symlink inside the root passes the escape check, so the record check must also
+    run on what the path resolves to."""
+    rel = _plant_record(repo, ".cohort/sessions")
+    (repo / "notes.md").symlink_to(repo / rel)
+    (repo / "notes_dir").symlink_to(repo / ".cohort" / "sessions", target_is_directory=True)
+    box = ReadOnlyToolbox(repo)
+
+    assert box.read_file("notes.md").startswith("refused:")
+    assert box.read_file("notes_dir/entry.md").startswith("refused:")
+    assert box.list_dir("notes_dir").startswith("refused:")
+    listing = box.list_dir(".")
+    assert "notes.md" not in listing and "notes_dir" not in listing
+    assert box.grep(_RECORD_MARKER) == "(no matches)"
+    assert _RECORD_MARKER not in box.grep("Jane Doe", path="notes_dir")
+
+
+# --------------------------------------------------------------------------- #
 # The agentic loop — injected poster, no network
 # --------------------------------------------------------------------------- #
 
