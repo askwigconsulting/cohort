@@ -323,6 +323,53 @@ def test_collect_state_carries_the_skipped_projects(home, tmp_path, source, monk
     assert collect_state(home, plain)["skipped"] == []
 
 
+def test_api_state_over_http_carries_skipped(server, home, tmp_path, source):
+    """#270: the front-end note reads ``skipped`` off ``/api/state`` (not just the
+    in-process ``collect_state`` return value) — pin the field on the actual wire
+    response the dashboard.js poll consumes."""
+    srv, focused_repo = server
+    other_repo = inited_repo(tmp_path, source, home, name="repo-b")
+    run_cli("snapshot", home=home, cwd=focused_repo)
+    run_cli("snapshot", home=home, cwd=other_repo)
+    (other_repo / ".cohort" / "sessions" / "corrupt.md").write_bytes(b"\xff\xfe bad \x80\x81\x00")
+    code, data = request(srv, "GET", "/api/state", token=srv.token)
+    assert code == 200
+    state = json.loads(data)
+    assert state["skipped"] == ["repo-b"]
+
+
+def test_dashboard_html_has_a_skipped_note_element(server):
+    """A place for the front-end to render the "(N projects unreadable)" note
+    lives near the office-wide feeds it describes (#270)."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/")
+    page = data.decode("utf-8")
+    assert 'id="skipped-note"' in page
+
+
+def test_dashboard_js_renders_the_skipped_note_keyed_on_skipped(server):
+    """The front-end never rendered ``skipped`` (#270): the cross-project feed
+    silently undercounts with no visible hint. renderSkipped() must key off
+    ``s.skipped``, correctly pluralize, escape names via textContent/title
+    (never innerHTML — a hostile project name must render as text, not markup),
+    and produce nothing when the list is empty."""
+    srv, _ = server
+    _, data = request(srv, "GET", "/dashboard.js")
+    js = data.decode("utf-8")
+    match = re.search(r"function renderSkipped\(s\) \{.*?\n\}", js, re.S)
+    assert match, "renderSkipped() not found in dashboard.js"
+    body = match.group(0)
+    assert "s.skipped" in body
+    assert 'skipped.length === 1 ? "" : "s"' in body  # correct pluralisation
+    assert "innerHTML" not in body  # names are escaped via textContent/title
+    assert "el.textContent" in body
+    assert 'el.title' in body or 'setAttribute("title"' in body
+    # empty/absent list renders nothing
+    assert 'el.textContent = "";' in body
+    assert "function renderSkipped(" in js
+    assert "renderSkipped(s);" in js  # actually wired into the render() pipeline
+
+
 # === server: guard rails =====================================================
 
 

@@ -473,6 +473,30 @@ function renderCrossProjectActivity(s) {
     li.appendChild(ico); li.appendChild(what); li.appendChild(when); feed.appendChild(li);
   }
 }
+/* A project whose session or feedback store couldn't be read (corrupt/non-UTF-8
+   file, permission error, ...) is dropped from both cross-project feeds above
+   (server-side, #226) so one bad project never sinks the whole poll — but a
+   dropped project must stay visible, or the office-wide totals silently
+   undercount (#270, s.skipped). Names are set via textContent/title, never
+   innerHTML, so a hostile project name (e.g. an HTML-looking string) renders
+   as inert text rather than executing. Empty/absent list renders nothing. */
+function renderSkipped(s) {
+  const el = $("skipped-note");
+  const skipped = s.skipped || [];
+  if (!skipped.length) {
+    el.textContent = "";
+    el.removeAttribute("title");
+    el.removeAttribute("aria-label");
+    return;
+  }
+  // Icon + text (not color alone) carries the signal, matching the rest of the
+  // file's a11y conventions (thumb(), the sparkline's redundant sign encoding).
+  el.textContent = "⚠ " + skipped.length + " project" + (skipped.length === 1 ? "" : "s") + " unreadable";
+  const detail = "Records could not be read for: " + skipped.join(", ") +
+    " — office activity and agent scorecards below may be missing their entries.";
+  el.title = detail;
+  el.setAttribute("aria-label", detail);
+}
 /* Per-agent scorecards: binary up/down feedback aggregated across every
    initialized project (s.scorecards), with a day-by-day sparkline over the last
    30 days. Bar heights/colors are computed from numeric counts only — no
@@ -639,6 +663,7 @@ function render(s) {
   renderProjectSwitcher(s);
   renderProjectsOverview(s);
   renderCrossProjectActivity(s);
+  renderSkipped(s);
   renderScorecards(s);
   renderLevels();
   renderProject(s.project || null);
