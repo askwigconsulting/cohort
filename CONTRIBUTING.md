@@ -15,6 +15,11 @@ python -m pytest        # full suite must pass
 cohort validate ./canonical
 ```
 
+Running more than one suite at a time (e.g. several worktrees on the same machine)?
+Pytest's default `basetemp` (`/tmp/pytest-of-<user>/pytest-current`) is shared across every
+invocation, so concurrent runs contend for and prune each other's temp directories. Pass
+your own with `--basetemp=<some private dir>` to keep them isolated.
+
 On **Windows**, first allow local scripts once
 (`Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`), then use
 `py -m venv .venv; .\.venv\Scripts\Activate.ps1`, and set

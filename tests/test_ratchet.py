@@ -9,11 +9,9 @@ end to end without any external engine or network.
 from __future__ import annotations
 
 import os
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -22,26 +20,10 @@ import pytest
 from cohort import gitutil
 from cohort.engines import cli_doer, gates, ratchet
 
-
-@pytest.fixture(autouse=True)
-def _reclaim_leaked_worktrees():
-    """Remove any proposal worktree a test leaves behind.
-
-    `run_ratchet` deliberately leaves its worktree in place on success so a human can
-    review the diff — correct for a real run, and a leak in a suite that calls it ten
-    times. Nothing reclaimed them afterwards, so every full-suite run stranded up to ten
-    `cohort-proposal-*` directories under the system temp dir; 1,592 had accumulated over
-    nine days and eventually exhausted the tmpfs quota mid-run.
-
-    Autouse and snapshot-based rather than per-call cleanup, so a test added later cannot
-    forget: only directories that appear *during* a test are removed, never one that was
-    already there.
-    """
-    tmp = Path(tempfile.gettempdir())
-    before = set(tmp.glob("cohort-proposal-*"))
-    yield
-    for leaked in set(tmp.glob("cohort-proposal-*")) - before:
-        shutil.rmtree(leaked, ignore_errors=True)
+# `run_ratchet` deliberately leaves its worktree in place on success so a human can review
+# the diff. A leaked-worktree reclaim now lives once, generically, in
+# tests/conftest.py::_redirect_system_tempdir_into_pytest_space — it applies to every test
+# in the suite, not just this file's ten `run_ratchet` calls, so it is not repeated here.
 
 # Cross-platform evaluator (no Unix `cat`): a committed script prints metric.txt's number.
 _EVAL = "python read.py"

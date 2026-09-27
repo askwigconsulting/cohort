@@ -84,6 +84,25 @@ def _worktree_count(root: Path) -> int:
     return sum(1 for line in out.splitlines() if line.startswith("worktree "))
 
 
+def _linked_worktrees(root: Path) -> list[Path]:
+    """Paths of every worktree registered for the repo at ``root`` other than ``root``
+    itself — used to find (and then clean up) a worktree a CLI invocation created without
+    handing the test a direct reference to it."""
+    out = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    paths = [
+        Path(line[len("worktree ") :])
+        for line in out.splitlines()
+        if line.startswith("worktree ")
+    ]
+    return [p for p in paths if p.resolve() != root.resolve()]
+
+
 def _patch_json(
     *,
     summary: str = "bump the value",
@@ -497,6 +516,41 @@ def test_agentic_proposal_applies_in_worktree_leaving_source_untouched(
     assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "value = 1\n"  # untouched
     assert _worktree_count(tmp_path) == 2  # left in place for review
 
+    patch_proposal.cleanup_worktree(tmp_path, outcome.worktree)
+
+
+def test_a_leaked_review_worktree_is_fully_reclaimed_by_the_test_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guard for tests/conftest.py's `_redirect_system_tempdir_into_pytest_space`: a
+    representative "leave it for a human to review" path — the same one exercised above —
+    must leave nothing behind once the fixture's reclaim runs, even when the test itself
+    never calls `cleanup_worktree`. Calls the fixture's own reclaim helper directly rather
+    than waiting for this test's own teardown, since a test cannot observe its own
+    fixtures finalizing."""
+    from conftest import _PROPOSAL_PREFIX, _reclaim_stray_proposal_worktree
+
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    reply = _patch_json(
+        summary="bump the value",
+        edits=[{"path": "src/app.py", "search": "value = 1", "replace": "value = 2"}],
+    )
+    monkeypatch.setattr(
+        patch_proposal.xai_agentic, "run_agentic", lambda *a, **k: _agentic(reply)
+    )
+
+    outcome = patch_proposal.propose_patch_agentic(
+        "grok", "bump the value", repo_root=tmp_path, allowed_footprint=["src"]
+    )
+    leaked_parent = outcome.worktree.parent
+    assert leaked_parent.name.startswith(_PROPOSAL_PREFIX)  # same shape production leaves
+    assert _worktree_count(tmp_path) == 2  # left in place, deliberately not cleaned up here
+
+    _reclaim_stray_proposal_worktree(leaked_parent)
+
+    assert not leaked_parent.exists()
+    assert _worktree_count(tmp_path) == 1  # no stale `git worktree` registration survives
+
 
 def test_agentic_proposal_honors_the_egress_optout_before_exploring(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -641,6 +695,11 @@ def test_cli_propose_agentic_end_to_end(
     assert "transcript" in result.output  # the audit path is surfaced
     assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "value = 1\n"
 
+    # The CLI leaves the worktree for review same as the library call; clean it up so this
+    # test doesn't leak (there's no `outcome` object here to hand cleanup_worktree).
+    linked = _linked_worktrees(tmp_path)
+    assert len(linked) == 1
+    patch_proposal.cleanup_worktree(tmp_path, linked[0])
 
 # --------------------------------------------------------------------------- #
 # Cohort's own local records never reach an engine worktree (#275, #306)
