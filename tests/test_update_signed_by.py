@@ -70,6 +70,31 @@ def test_signed_by_parses_a_multi_line_array(tmp_path):
     assert _signed_by(home) == ["SHA256:aaa", "SHA256:bbb"]
 
 
+def test_signed_by_reads_a_double_quoted_key(tmp_path):
+    # #306: a quoted key ('"signed_by" = [...]') is valid TOML and equivalent to
+    # the bare form. _update_table_value already handles this (#276); the array
+    # reader must match or a quoted-key config silently pins nothing, failing
+    # the signature-identity gate open.
+    home = tmp_path / "home"
+    _write_config(home, '[update]\n"signed_by" = ["SHA256:aaa"]\n')
+    assert _signed_by(home) == ["SHA256:aaa"]
+
+
+def test_signed_by_reads_a_single_quoted_key(tmp_path):
+    home = tmp_path / "home"
+    _write_config(home, "[update]\n'signed_by' = [\"SHA256:aaa\"]\n")
+    assert _signed_by(home) == ["SHA256:aaa"]
+
+
+def test_signed_by_reads_a_multi_line_array_under_a_quoted_key(tmp_path):
+    home = tmp_path / "home"
+    _write_config(
+        home,
+        '[update]\n"signed_by" = [\n  "SHA256:aaa",\n  "SHA256:bbb",\n]\n',
+    )
+    assert _signed_by(home) == ["SHA256:aaa", "SHA256:bbb"]
+
+
 # === fingerprint extraction & matching (host-independent) =====================
 
 

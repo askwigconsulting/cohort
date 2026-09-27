@@ -153,7 +153,9 @@ def _update_array_text(text: str, key: str) -> Optional[str]:
     gate like ``signed_by``. This joins the array's lines so every element is seen
     (and an unterminated array still surfaces its elements rather than vanishing).
     Comments are stripped per line; the pinned fingerprints Cohort matches never
-    contain ``#``."""
+    contain ``#``. The key is matched via :func:`_strip_toml_key_quotes`, same as
+    ``_update_table_value``, so a quoted key (``"signed_by" = [...]``) is not read
+    as absent (#306)."""
     in_update = False
     collecting = False
     buf: list[str] = []
@@ -171,7 +173,7 @@ def _update_array_text(text: str, key: str) -> Optional[str]:
             continue
         if in_update and "=" in s:
             k, _, v = s.partition("=")
-            if k.strip() == key:
+            if _strip_toml_key_quotes(k.strip()) == key:
                 v = v.strip()
                 if "[" not in v or "]" in v:  # scalar or single-line array — done
                     return v
