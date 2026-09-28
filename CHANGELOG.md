@@ -26,6 +26,15 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   login there, so the previous read-only bind exposed that credential to the engine — and
   still broke it, since it writes session state to the same directory. The ephemeral HOME
   now gives the engine its own, and the API key reaches it through the scrubbed environment.
+- **No engine path is handed Cohort's local records any more (#306, completing #275).**
+  `.cohort/sessions`, `feedback`, `proposals` and `state` (git author name and email, private
+  notes) are excluded at the single worktree creation point, so one-shot and agentic
+  `propose` and the ratchet get the same exclusion the CLI doers had; a worktree whose records
+  could not be excluded is discarded. The agentic read tools refuse those paths by spelling
+  (case-folded) and by symlink target, and hide them from listings, grep and find.
+- **A quoted `signed_by` key is no longer read as absent (#306).** `'signed_by' = [...]` is
+  valid TOML; the array reader now unquotes keys like the scalar reader (#276), so signature
+  pinning no longer silently fails open.
 
 
 ### Security
@@ -58,6 +67,16 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   (#276)**; `[update]` honours quoted TOML keys.
 
 ### Fixed
+- **`cohort gc --scan-deadline SECONDS`** exposes the scan budget (finite, > 0) and reports how
+  many candidates went unexamined, in text and `--json`; a timed-out scan no longer prints
+  "Nothing to reclaim" (#306).
+- **The dashboard says when the office feed is partial**: "⚠ N projects unreadable", with the
+  names on hover (#306).
+- **Engine worktrees tolerate non-UTF-8 tracked file names** instead of crashing the dispatch.
+- **`import cohort.cli` no longer loads `urllib.request`**; the xAI transport imports it on
+  first use, trimming every hook invocation (#306).
+- **The test suite no longer leaks `cohort-proposal-*` worktrees** into the system temp dir;
+  pytest keeps only failed runs' temp dirs (#306).
 - **Global `--dry-run` is honoured by every command or refused with exit 2 (#267)**; `status`
   exits 1 when it printed a `!` diagnostic and `--json` carries `ok`; `my-office sync` names a
   real remedy and exits non-zero on a failed recompile; `/api/state` lists skipped projects (#270).
