@@ -9,11 +9,9 @@ end to end without any external engine or network.
 from __future__ import annotations
 
 import os
-import shutil
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -22,26 +20,10 @@ import pytest
 from cohort import gitutil
 from cohort.engines import cli_doer, gates, ratchet
 
-
-@pytest.fixture(autouse=True)
-def _reclaim_leaked_worktrees():
-    """Remove any proposal worktree a test leaves behind.
-
-    `run_ratchet` deliberately leaves its worktree in place on success so a human can
-    review the diff — correct for a real run, and a leak in a suite that calls it ten
-    times. Nothing reclaimed them afterwards, so every full-suite run stranded up to ten
-    `cohort-proposal-*` directories under the system temp dir; 1,592 had accumulated over
-    nine days and eventually exhausted the tmpfs quota mid-run.
-
-    Autouse and snapshot-based rather than per-call cleanup, so a test added later cannot
-    forget: only directories that appear *during* a test are removed, never one that was
-    already there.
-    """
-    tmp = Path(tempfile.gettempdir())
-    before = set(tmp.glob("cohort-proposal-*"))
-    yield
-    for leaked in set(tmp.glob("cohort-proposal-*")) - before:
-        shutil.rmtree(leaked, ignore_errors=True)
+# `run_ratchet` deliberately leaves its worktree in place on success so a human can review
+# the diff. A leaked-worktree reclaim now lives once, generically, in
+# tests/conftest.py::_redirect_system_tempdir_into_pytest_space — it applies to every test
+# in the suite, not just this file's ten `run_ratchet` calls, so it is not repeated here.
 
 # Cross-platform evaluator (no Unix `cat`): a committed script prints metric.txt's number.
 _EVAL = "python read.py"
@@ -646,3 +628,48 @@ def test_ratchet_names_the_registered_engines_for_an_unknown_one(tmp_path: Path)
         )
     assert "codex (aliases: chatgpt, gpt, openai)" in str(excinfo.value)
     assert "grok (aliases: xai)" in str(excinfo.value)
+
+
+_LOCAL_RECORDS = {
+    ".cohort/sessions/2026-01-01-000000.md": "author: Jane Doe <jane@example.com>\n",
+    ".cohort/feedback/2026-01-01-000000.md": "the CLI made me swear\n",
+    ".cohort/proposals/p1.json": '{"summary": "earlier engine payload"}\n',
+    ".cohort/state/local.json": '{"seen": true}\n',
+}
+
+
+@pytest.mark.parametrize("record", sorted(_LOCAL_RECORDS))
+def test_ratchet_worktree_never_holds_a_local_record_across_keeps_and_reverts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    """#306: the ratchet hands its worktree to codex (which reads every file) on every
+    iteration, so the records must be gone at creation AND stay gone through a keep's
+    commit and a revert's ``reset --hard``/``clean``."""
+    _init_git_repo(tmp_path, {"metric.txt": "10\n", record: _LOCAL_RECORDS[record]})
+    seen_by_doer: list[bool] = []
+    doer = _doer_writes([9, 12, 7])  # keep, revert, keep
+
+    def propose(engine, task, worktree, **kwargs):
+        seen_by_doer.append((Path(worktree) / record).exists())
+        doer(engine, task, worktree, **kwargs)
+
+    monkeypatch.setattr(ratchet, "_propose_into_worktree", propose)
+
+    result = ratchet.run_ratchet(
+        "gpt", "lower the number", repo_root=tmp_path,
+        evaluator_cmd=_EVAL, goal="minimize", budget=3,
+    )
+
+    assert seen_by_doer == [False, False, False]
+    assert not (result.worktree / record).exists()
+    status = subprocess.run(
+        ["git", "-C", str(result.worktree), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert status == ""
+    # The staircase commits carry the records untouched — never a deletion to merge.
+    committed = subprocess.run(
+        ["git", "-C", str(result.worktree), "ls-tree", "-r", "--name-only", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.splitlines()
+    assert record in committed

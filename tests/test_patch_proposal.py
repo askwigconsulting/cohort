@@ -19,6 +19,7 @@ The safety-critical properties asserted here:
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -81,6 +82,25 @@ def _worktree_count(root: Path) -> int:
         text=True,
     ).stdout
     return sum(1 for line in out.splitlines() if line.startswith("worktree "))
+
+
+def _linked_worktrees(root: Path) -> list[Path]:
+    """Paths of every worktree registered for the repo at ``root`` other than ``root``
+    itself — used to find (and then clean up) a worktree a CLI invocation created without
+    handing the test a direct reference to it."""
+    out = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    paths = [
+        Path(line[len("worktree ") :])
+        for line in out.splitlines()
+        if line.startswith("worktree ")
+    ]
+    return [p for p in paths if p.resolve() != root.resolve()]
 
 
 def _patch_json(
@@ -496,6 +516,41 @@ def test_agentic_proposal_applies_in_worktree_leaving_source_untouched(
     assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "value = 1\n"  # untouched
     assert _worktree_count(tmp_path) == 2  # left in place for review
 
+    patch_proposal.cleanup_worktree(tmp_path, outcome.worktree)
+
+
+def test_a_leaked_review_worktree_is_fully_reclaimed_by_the_test_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guard for tests/conftest.py's `_redirect_system_tempdir_into_pytest_space`: a
+    representative "leave it for a human to review" path — the same one exercised above —
+    must leave nothing behind once the fixture's reclaim runs, even when the test itself
+    never calls `cleanup_worktree`. Calls the fixture's own reclaim helper directly rather
+    than waiting for this test's own teardown, since a test cannot observe its own
+    fixtures finalizing."""
+    from conftest import _PROPOSAL_PREFIX, _reclaim_stray_proposal_worktree
+
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    reply = _patch_json(
+        summary="bump the value",
+        edits=[{"path": "src/app.py", "search": "value = 1", "replace": "value = 2"}],
+    )
+    monkeypatch.setattr(
+        patch_proposal.xai_agentic, "run_agentic", lambda *a, **k: _agentic(reply)
+    )
+
+    outcome = patch_proposal.propose_patch_agentic(
+        "grok", "bump the value", repo_root=tmp_path, allowed_footprint=["src"]
+    )
+    leaked_parent = outcome.worktree.parent
+    assert leaked_parent.name.startswith(_PROPOSAL_PREFIX)  # same shape production leaves
+    assert _worktree_count(tmp_path) == 2  # left in place, deliberately not cleaned up here
+
+    _reclaim_stray_proposal_worktree(leaked_parent)
+
+    assert not leaked_parent.exists()
+    assert _worktree_count(tmp_path) == 1  # no stale `git worktree` registration survives
+
 
 def test_agentic_proposal_honors_the_egress_optout_before_exploring(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -639,3 +694,153 @@ def test_cli_propose_agentic_end_to_end(
     assert result.exit_code == 0, result.output
     assert "transcript" in result.output  # the audit path is surfaced
     assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "value = 1\n"
+
+    # The CLI leaves the worktree for review same as the library call; clean it up so this
+    # test doesn't leak (there's no `outcome` object here to hand cleanup_worktree).
+    linked = _linked_worktrees(tmp_path)
+    assert len(linked) == 1
+    patch_proposal.cleanup_worktree(tmp_path, linked[0])
+
+# --------------------------------------------------------------------------- #
+# Cohort's own local records never reach an engine worktree (#275, #306)
+# --------------------------------------------------------------------------- #
+
+# One record per excluded prefix: each carries identity or private free text.
+_LOCAL_RECORDS = {
+    ".cohort/sessions/2026-01-01-000000.md": "author: Jane Doe <jane@example.com>\n",
+    ".cohort/feedback/2026-01-01-000000.md": "the CLI made me swear\n",
+    ".cohort/proposals/p1.json": '{"summary": "earlier engine payload"}\n',
+    ".cohort/state/local.json": '{"seen": true}\n',
+}
+
+
+def _worktree_status(worktree: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(worktree), "status", "--porcelain"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+@pytest.mark.parametrize("record", sorted(_LOCAL_RECORDS))
+def test_one_shot_proposal_worktree_never_contains_a_local_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    """Every creation path excludes the records, not just the CLI doers — the proposal
+    worktree is what the coordinator reviews and integrates from."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", record: _LOCAL_RECORDS[record]})
+    reply = _patch_json(
+        edits=[{"path": "src/app.py", "search": "value = 1", "replace": "value = 2"}]
+    )
+    monkeypatch.setattr(patch_proposal.xai, "consult", _RecordingConsult(reply))
+
+    outcome = patch_proposal.propose_patch(
+        "grok", "bump", repo_root=tmp_path, allowed_footprint=["src"],
+        project_context_text="",
+    )
+    try:
+        assert not (outcome.worktree / record).exists()
+        # The only change git sees is the engine's; the exclusion is not a deletion.
+        assert _worktree_status(outcome.worktree) == " M src/app.py\n"
+        assert (tmp_path / record).is_file()  # the repo itself keeps its records
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, outcome.worktree)
+
+
+@pytest.mark.parametrize("record", sorted(_LOCAL_RECORDS))
+def test_agentic_proposal_worktree_never_contains_a_local_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", record: _LOCAL_RECORDS[record]})
+    reply = _patch_json(
+        edits=[{"path": "src/app.py", "search": "value = 1", "replace": "value = 2"}]
+    )
+    monkeypatch.setattr(
+        patch_proposal.xai_agentic, "run_agentic", lambda *a, **k: _agentic(reply)
+    )
+
+    outcome = patch_proposal.propose_patch_agentic(
+        "grok", "bump", repo_root=tmp_path, allowed_footprint=["src"]
+    )
+    try:
+        assert not (outcome.worktree / record).exists()
+        assert _worktree_status(outcome.worktree) == " M src/app.py\n"
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, outcome.worktree)
+
+
+def test_a_fresh_worktree_holds_no_local_record_and_reads_clean(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", **_LOCAL_RECORDS})
+
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        for record in _LOCAL_RECORDS:
+            assert not (worktree / record).exists(), record
+        assert _worktree_status(worktree) == ""
+        assert (worktree / "src" / "app.py").is_file()
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)
+
+
+def test_a_failed_exclusion_aborts_and_leaves_no_worktree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worktree whose records could not be excluded must never be handed back: the
+    caller would ship it. Fail closed, and reclaim the half-built worktree."""
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n", **_LOCAL_RECORDS})
+
+    def broken_exclusion(worktree: Path) -> None:
+        raise subprocess.CalledProcessError(128, ["git", "update-index"])
+
+    monkeypatch.setattr(
+        "cohort.engines.local_records.exclude_local_records", broken_exclusion
+    )
+
+    with pytest.raises(patch_proposal.ProposalError, match="local records"):
+        patch_proposal._create_worktree(tmp_path)
+    assert _worktree_count(tmp_path) == 1
+
+
+def _non_utf8_names_supported(root: Path) -> bool:
+    """Linux filesystems take arbitrary bytes; APFS and NTFS refuse non-UTF-8 names."""
+    if os.name == "nt":
+        return False
+    probe = os.path.join(os.fsencode(root), b"probe-\xff")
+    try:
+        with open(probe, "wb"):
+            pass
+    except OSError:
+        return False
+    os.remove(probe)
+    return True
+
+
+def test_non_utf8_tracked_names_are_excluded_or_kept_without_crashing(
+    tmp_path: Path,
+) -> None:
+    """``git ls-files -z`` emits names verbatim, so a tracked name that is not UTF-8 must
+    neither crash worktree creation (every engine path now runs the exclusion) nor slip
+    a record past it."""
+    if not _non_utf8_names_supported(tmp_path):
+        pytest.skip("filesystem refuses non-UTF-8 file names")
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    raw_root = os.fsencode(tmp_path)
+    record = os.path.join(raw_root, b".cohort", b"sessions", b"\xff.md")
+    source = os.path.join(raw_root, b"src", b"\xfe.py")
+    os.makedirs(os.path.dirname(record))
+    for path in (record, source):
+        with open(path, "wb") as fh:
+            fh.write(b"author: Jane Doe\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.co", "-c", "user.name=t", "commit", "-q", "-m", "raw"],
+        cwd=tmp_path, check=True, capture_output=True,
+    )
+
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        raw_worktree = os.fsencode(worktree)
+        assert not os.path.lexists(os.path.join(raw_worktree, b".cohort", b"sessions", b"\xff.md"))
+        assert os.path.isfile(os.path.join(raw_worktree, b"src", b"\xfe.py"))
+        assert _worktree_status(worktree) == ""
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)

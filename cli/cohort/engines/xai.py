@@ -19,10 +19,11 @@ import math
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import urllib.request
 
 from cohort.engines import EngineSpec, get_engine
 
@@ -130,6 +131,8 @@ def _build_request(
     endpoint: str, key: str, body: dict[str, Any]
 ) -> urllib.request.Request:
     """Build the POST request. The key is used only to set the bearer header."""
+    import urllib.request
+
     data = json.dumps(body).encode("utf-8")
     return urllib.request.Request(
         endpoint,
@@ -241,6 +244,9 @@ def consult(
         EngineUnavailableError: network failure, timeout, 5xx, a non-429 4xx, or a
             malformed/empty response.
     """
+    import urllib.error
+    import urllib.request
+
     prompt_bytes = len(prompt.encode("utf-8"))
     if prompt_bytes > max_prompt_bytes:
         raise EnginePayloadError(

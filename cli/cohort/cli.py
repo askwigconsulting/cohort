@@ -33,6 +33,7 @@ def _force_utf8_io() -> None:
 _force_utf8_io()
 
 import json as _json
+import math
 import os
 import re
 import time
@@ -307,6 +308,21 @@ def gc(
         False, "--include-live",
         help="Also remove worktrees git still resolves — a diff someone may be reviewing.",
     ),
+    scan_deadline: float = typer.Option(
+        # Matches `cohort.gc.DEFAULT_SCAN_DEADLINE_SECONDS`. Not imported from `cohort.gc`
+        # directly: that module is deferred out of this file's import tree (see
+        # tests/test_import_time.py), and a Typer option default is read at decoration
+        # time, before the command body's lazy import runs. Kept in sync by
+        # test_scan_deadline_default_matches_the_gc_module_default.
+        30.0, "--scan-deadline",
+        help=(
+            "Wall-clock budget in seconds for the scan half of gc (default: 30s). Must be "
+            "a finite number > 0. There is deliberately no way to disable the budget from "
+            "the CLI — gc.scan() itself accepts an unbounded scan, but this command may run "
+            "unattended from a hook or cron, and an unbounded scan there could hang rather "
+            "than fail loudly."
+        ),
+    ),
     apply_: bool = typer.Option(
         False, "--apply", help="Actually remove. Without this, nothing is deleted."
     ),
@@ -322,6 +338,12 @@ def gc(
     from . import gc as gc_mod
     from .project import find_repo_root
 
+    if not math.isfinite(scan_deadline) or scan_deadline <= 0:
+        typer.echo(
+            f"error: --scan-deadline must be a finite number > 0 (got {scan_deadline!r})",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     if apply_ and _global_dry_run(ctx):
         typer.echo("(dry-run) --apply disarmed: reporting only, nothing is deleted", err=True)
         apply_ = False
@@ -330,6 +352,7 @@ def gc(
         repo_root=repo_root,
         all_projects_home=Path.home() if all_projects else None,
         min_age_days=days, keep_transcripts=keep_transcripts,
+        scan_deadline_seconds=scan_deadline,
     )
     if apply_:
         gc_mod.reclaim(report, include_live=include_live, repo_root=repo_root)
@@ -356,27 +379,29 @@ def gc(
         "by_kind": by_kind,
         "bytes": report.reclaimable_bytes,
         "removed": [str(p) for p in report.removed],
+        "unexamined": report.unexamined,
     }
     if json_output:
         typer.echo(_json.dumps(payload, indent=2))
         raise typer.Exit(code=0)
 
-    if not report.items:
+    if not report.items and not report.unexamined:
         typer.echo("Nothing to reclaim — no stale Cohort artifacts found.")
         raise typer.Exit(code=0)
 
-    mb = report.reclaimable_bytes / 1_000_000
-    if apply_:
-        typer.echo(f"Reclaimed {len(report.removed)} item(s), about {mb:.1f} MB.")
-    else:
-        typer.echo(
-            f"Would reclaim {len(safe)} item(s), about {mb:.1f} MB. "
-            "Nothing was deleted — re-run with --apply."
-        )
-    for item in safe[:10]:
-        typer.echo(f"  {item.kind:18s} {item.state:5s} {item.age_days:5.1f}d  {item.path}")
-    if len(safe) > 10:
-        typer.echo(f"  … and {len(safe) - 10} more")
+    if report.items:
+        mb = report.reclaimable_bytes / 1_000_000
+        if apply_:
+            typer.echo(f"Reclaimed {len(report.removed)} item(s), about {mb:.1f} MB.")
+        else:
+            typer.echo(
+                f"Would reclaim {len(safe)} item(s), about {mb:.1f} MB. "
+                "Nothing was deleted — re-run with --apply."
+            )
+        for item in safe[:10]:
+            typer.echo(f"  {item.kind:18s} {item.state:5s} {item.age_days:5.1f}d  {item.path}")
+        if len(safe) > 10:
+            typer.echo(f"  … and {len(safe) - 10} more")
     notes = [i for i in live if i.kind == "working-note"]
     worktrees = [i for i in live if i.kind != "working-note"]
     if worktrees:
@@ -389,6 +414,12 @@ def gc(
             f"\n{len(notes)} working note(s) are staged and unpromoted. These are never "
             "deleted automatically — an unpromoted note may be the only copy of context a "
             "session meant to keep. Promote or discard them from the session that owns them."
+        )
+    if report.unexamined:
+        typer.echo(
+            f"\n{report.unexamined} candidate(s) were not examined within the "
+            f"{scan_deadline:g}s scan budget — the report above may be incomplete. Re-run "
+            "with a larger --scan-deadline to check them."
         )
     raise typer.Exit(code=0)
 

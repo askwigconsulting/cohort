@@ -43,6 +43,7 @@ from typing import Any, Callable
 
 from cohort.engines import EngineSpec, get_engine
 from cohort.engines import gates
+from cohort.engines.local_records import is_local_record
 from cohort.engines.xai import (
     EngineAuthError,
     EnginePayloadError,
@@ -196,7 +197,12 @@ class ReadOnlyToolbox:
         * paths that escape the repo — absolute, ``..``, backslash, or a symlink whose
           resolved target lands outside the root;
         * ``.git`` / ``.ssh`` internals and credential *files* by path (``.env*``, key
-          material, ``.netrc``/``.npmrc``/``credentials``/``id_rsa`` …).
+          material, ``.netrc``/``.npmrc``/``credentials``/``id_rsa`` …);
+        * Cohort's own local records (``.cohort/sessions`` and friends — author identity
+          and private notes, :mod:`cohort.engines.local_records`), by the path asked for
+          *or* the path it resolves to (:meth:`_names_local_record`). The root here is
+          often the user's live repo, not a scrubbed worktree, so this gate is the only
+          thing between those records and the vendor.
 
         Everything else is allowed at the path level; the real backstop is the
         content-level :func:`gates.scan_for_secrets` in :meth:`read_file`/:meth:`grep`,
@@ -222,7 +228,30 @@ class ReadOnlyToolbox:
         resolved = (self.root / rel).resolve()
         if resolved != self.root and self.root not in resolved.parents:
             return f"refused: {rel!r} resolves outside the repository root (symlink?)"
+        if self._names_local_record(rel):
+            return (
+                f"refused: {rel!r} is one of Cohort's local records (author identity, "
+                "private notes); never sent to an engine"
+            )
         return None
+
+    def _names_local_record(self, rel: str) -> bool:
+        """True if ``rel`` names a local record, as spelled or as resolved.
+
+        Both, because each misses what the other catches: the spelling check (normalised
+        through ``PurePosixPath``, so ``./.cohort//sessions`` cannot dodge the prefix)
+        refuses a record on a case-insensitive filesystem where ``resolve`` keeps the
+        caller's casing; the resolved check refuses an in-tree symlink — ``notes.md`` →
+        ``.cohort/sessions/x.md`` — that passes the escape check because its target is
+        inside the root. The caller has already refused ``..`` and absolute paths.
+        """
+        if is_local_record(PurePosixPath(rel).as_posix()):
+            return True
+        try:
+            resolved_rel = (self.root / rel).resolve().relative_to(self.root).as_posix()
+        except ValueError:
+            return False  # outside the root: the escape check refuses it on its own
+        return is_local_record(resolved_rel)
 
     def _rel(self, path: Path) -> str:
         try:
@@ -244,6 +273,10 @@ class ReadOnlyToolbox:
             return f"error: {path!r} is not a directory"
         entries: list[str] = []
         for child in sorted(target.iterdir(), key=lambda p: p.name):
+            # A record — or an alias to one — is left out entirely, directory or not: the
+            # listing must not reveal that a session log exists, let alone its name.
+            if self._names_local_record(child.relative_to(self.root).as_posix()):
+                continue
             name = child.name + ("/" if child.is_dir() else "")
             # Hide dotfiles the policy would refuse anyway, so the listing doesn't
             # advertise paths that can't be read; keep ordinary dot-config visible.

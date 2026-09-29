@@ -9,12 +9,14 @@ not remove anything until asked.
 
 from __future__ import annotations
 
+import json
 import re
 
 import subprocess
 import time
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from cohort import gc
@@ -332,3 +334,95 @@ def test_scan_deadline_none_disables_the_budget(tmp_path) -> None:
 
     assert len(report.items) == 5
     assert report.unexamined == 0
+
+
+# --------------------------------------------------------------------------- #
+# CLI: `--scan-deadline` plumbing, validation, and unexamined reporting (#306 T4)
+# --------------------------------------------------------------------------- #
+
+
+def test_scan_deadline_option_is_plumbed_to_scan(monkeypatch, tmp_path) -> None:
+    """The CLI must forward the flag's value, not just accept it and drop it on the floor.
+
+    ``cli.gc`` does ``from . import gc as gc_mod`` inside the command body, which binds the
+    same module object already in ``sys.modules`` — so patching ``gc.scan`` here is visible
+    to the CLI's call without needing to reach into ``cohort.cli`` internals.
+    """
+    captured: dict = {}
+
+    def fake_scan(**kwargs):
+        captured.update(kwargs)
+        return gc.GcReport()
+
+    monkeypatch.setattr(gc, "scan", fake_scan)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["gc", "--scan-deadline", "5"])
+
+    assert result.exit_code == 0, result.output
+    assert captured.get("scan_deadline_seconds") == 5.0
+
+
+def test_scan_deadline_default_matches_the_gc_module_default(monkeypatch, tmp_path) -> None:
+    """The CLI's Typer default is a separate literal (module-level import of `cohort.gc` is
+    deferred, per `test_import_time.py`), so it must be pinned against drift rather than
+    trusted to stay in sync by hand."""
+    captured: dict = {}
+
+    def fake_scan(**kwargs):
+        captured.update(kwargs)
+        return gc.GcReport()
+
+    monkeypatch.setattr(gc, "scan", fake_scan)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["gc"])
+
+    assert result.exit_code == 0, result.output
+    assert captured.get("scan_deadline_seconds") == gc.DEFAULT_SCAN_DEADLINE_SECONDS
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "-3.5", "nan", "inf", "-inf"])
+def test_scan_deadline_rejects_non_positive_or_non_finite_values(bad: str, tmp_path) -> None:
+    """0, negatives, NaN, and infinities have no sane meaning as a wall-clock budget, so the
+    CLI must refuse them with a clear error rather than pass them through to `scan`."""
+    result = runner.invoke(app, ["gc", "--scan-deadline", bad])
+    assert result.exit_code == 2, result.output
+    assert "scan-deadline" in result.output
+
+
+def test_unexamined_candidates_are_reported_in_human_output(monkeypatch, tmp_path) -> None:
+    def fake_scan(**kwargs):
+        return gc.GcReport(unexamined=3)
+
+    monkeypatch.setattr(gc, "scan", fake_scan)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["gc", "--scan-deadline", "0.001"])
+
+    assert result.exit_code == 0, result.output
+    assert "3" in result.output
+    assert "not examined" in result.output
+    assert "--scan-deadline" in result.output
+
+
+def test_unexamined_candidates_are_reported_in_json_output(monkeypatch, tmp_path) -> None:
+    def fake_scan(**kwargs):
+        return gc.GcReport(unexamined=3)
+
+    monkeypatch.setattr(gc, "scan", fake_scan)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["gc", "--scan-deadline", "0.001", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["unexamined"] == 3
+
+
+def test_unexamined_zero_prints_no_budget_message(tmp_path) -> None:
+    """Default behaviour (an unbudgeted scan that reaches everything) must not grow a new
+    line of noise."""
+    result = runner.invoke(app, ["gc"])
+    assert result.exit_code == 0, result.output
+    assert "not examined" not in result.output

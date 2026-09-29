@@ -35,3 +35,9 @@ cohort = ["dashboard.html", "dashboard.js"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Every test gets its own tmp_path under the shared /tmp/pytest-of-<user>/pytest-current
+# basetemp; keeping only the failed runs' directories (and just the latest of those) is
+# what stops that shared root from filling up when several suites run concurrently on one
+# machine (requires pytest>=7.3; this repo pins >=8.0 — see [project.optional-dependencies]).
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1

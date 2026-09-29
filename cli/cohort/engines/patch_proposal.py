@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from cohort.engines import EngineSpec, get_engine
-from cohort.engines import gates, patch
+from cohort.engines import gates, local_records, patch
 from cohort.engines import xai, xai_agentic
 from cohort.engines.patch import PatchResult, PatchProposal
 
@@ -165,11 +165,20 @@ def cleanup_worktree(repo_root: Path, worktree: Path) -> None:
 
 
 def _create_worktree(repo_root: Path) -> Path:
-    """Create a fresh detached worktree off ``repo_root`` at HEAD in a temp dir.
+    """Create a fresh detached worktree off ``repo_root`` at HEAD in a temp dir, with
+    Cohort's own local records excluded from the checkout.
 
-    Returns the worktree path. Raises :class:`ProposalError` if git fails (e.g.
-    ``repo_root`` is not a git repository or has no commits yet), so a git failure is
-    surfaced as a loop-level error rather than a raw ``CalledProcessError``.
+    The single creation point for every engine worktree — one-shot and agentic propose,
+    the ratchet, and the CLI doers — so the exclusion (#275, #306) cannot be reached by
+    one path and missed by another, and the doer gates that follow measure and scan
+    exactly what an engine can read. See :func:`local_records.exclude_local_records` for
+    what is excluded, how, and the residual it does not close.
+
+    Returns the worktree path; the caller owns its lifecycle. Raises
+    :class:`ProposalError` if git fails (e.g. ``repo_root`` is not a git repository or has
+    no commits yet) or the records could not be excluded, so a git failure is surfaced as
+    a loop-level error rather than a raw ``CalledProcessError``. A worktree whose records
+    could not be excluded is removed before raising — never handed back.
     """
     parent = Path(tempfile.mkdtemp(prefix="cohort-proposal-"))
     worktree = parent / "worktree"
@@ -188,6 +197,18 @@ def _create_worktree(repo_root: Path) -> Path:
             f"could not create an isolated git worktree from {repo_root} "
             "(is it a git repository with at least one commit?)"
         ) from exc
+    try:
+        local_records.exclude_local_records(worktree)
+    except (subprocess.SubprocessError, OSError) as exc:
+        cleanup_worktree(repo_root, worktree)
+        raise ProposalError(
+            "could not exclude Cohort's local records from the isolated worktree; "
+            "refusing to hand an engine a checkout that may still hold them"
+        ) from exc
+    except BaseException:
+        # An interrupt mid-exclusion must not leak a registered worktree either.
+        cleanup_worktree(repo_root, worktree)
+        raise
     return worktree
 
 

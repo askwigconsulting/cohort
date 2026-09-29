@@ -136,6 +136,8 @@ def test_codex_doer_edits_the_worktree_leaving_source_untouched(
     assert (tmp_path / "src" / "app.py").read_text(encoding="utf-8") == "value = 1\n"  # untouched
     assert _worktree_count(tmp_path) == 2  # left for review
 
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
+
 
 def test_codex_doer_command_is_sandbox_confined_to_the_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
@@ -158,6 +160,8 @@ def test_codex_doer_command_is_sandbox_confined_to_the_worktree(
     assert cmd[cmd.index("-C") + 1] == str(result.worktree)  # confined to the worktree
     assert cmd[cmd.index("-m") + 1] == "gpt-5.6-sol"
 
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
+
 
 def test_codex_doer_reports_footprint_violations(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
@@ -169,6 +173,8 @@ def test_codex_doer_reports_footprint_violations(
     )
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, footprint=["src"])
     assert any("other/sneaky.py" in v for v in result.footprint_violations)
+
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
 
 
 def test_egress_optout_blocks_before_spawning_the_cli(
@@ -259,6 +265,8 @@ def test_explicit_project_context_kwarg_overrides_repo_state(
         project_context_text="## Egress\n\ncohort:egress=allow\n",
     )
     assert result.returncode == 0
+
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
 
 
 def test_default_wire_cap_is_50mb(tmp_path: Path) -> None:
@@ -557,8 +565,10 @@ def test_declared_fixture_clears_the_worktree_scan_and_dispatch_proceeds(
         return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
 
     monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", spy)
-    cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    result = cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
     assert spawned["called"] is True
+
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
 
 
 def _declare_on_feature_branch(tmp_path, digest: str, rel: str) -> None:
@@ -633,10 +643,12 @@ def test_a_human_confirming_unblocks_a_branch_local_declaration(
         return subprocess.CompletedProcess(cmd, 0, stdout="done", stderr="")
 
     monkeypatch.setattr("cohort.engines.cli_doer._launch_vendor_cli", spy)
-    cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
+    result = cli_doer.run_doer("gpt", "tidy the config", repo_root=tmp_path)
 
     assert spawned["called"] is True
     assert asked["n"] == 1
+
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
 
 
 def test_confirmation_cannot_wave_through_an_undeclared_secret(
@@ -763,6 +775,8 @@ def test_doer_allows_when_total_wire_bytes_within_cap(
     result = cli_doer.run_doer("gpt", "t", repo_root=tmp_path, max_wire_bytes=101)
     assert result.returncode == 0
     assert result.changed_files == ["data.txt"]
+
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
 
 
 def test_assert_worktree_within_wire_budget_bites_at_the_boundary(tmp_path):
@@ -1295,6 +1309,8 @@ def test_the_doer_worktree_never_contains_a_session_record(
     # Project context stays: it is the repo's own instructions to the engine.
     assert (result.worktree / ".cohort" / "project_context.md").is_file()
 
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
+
 
 def test_excluded_records_are_not_reported_as_engine_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
@@ -1312,12 +1328,14 @@ def test_excluded_records_are_not_reported_as_engine_changes(
     assert result.changed_files == ["src/app.py"]
     assert ".cohort/sessions" not in result.diff
 
+    patch_proposal.cleanup_worktree(tmp_path, result.worktree)
+
 
 def test_the_wire_byte_count_excludes_the_local_records(tmp_path: Path) -> None:
     """The cap must bound what the vendor CLI can actually read — counting files that are
     not in the checkout would over-charge every dispatch."""
     _repo_with_local_records(tmp_path)
-    worktree = cli_doer._create_doer_worktree(tmp_path)
+    worktree = patch_proposal._create_worktree(tmp_path)
     try:
         listed = cli_doer._tracked_worktree_files(worktree)
         assert not [rel for rel in listed if rel.startswith(".cohort/sessions/")]
@@ -1347,7 +1365,7 @@ def test_the_grok_gate_sequence_excludes_the_local_records(
 def test_a_repo_without_local_records_is_checked_out_unchanged(tmp_path: Path) -> None:
     """The exclusion is a no-op on a repo that has none — no stray git call, no error."""
     _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
-    worktree = cli_doer._create_doer_worktree(tmp_path)
+    worktree = patch_proposal._create_worktree(tmp_path)
     try:
         assert cli_doer._tracked_worktree_files(worktree) == ["src/app.py"]
     finally:
@@ -1447,3 +1465,25 @@ def test_grok_env_maps_either_key_spelling_onto_the_one_grok_build_reads(monkeyp
     assert launched["env"]["XAI_API_KEY"] == "xai-only-the-cohort-spelling"
     assert "xai-only-the-cohort-spelling" not in " ".join(launched.get("argv", []))
 
+
+
+def test_the_doer_gates_list_a_non_utf8_tracked_name(tmp_path: Path) -> None:
+    """The wire cap and secret scan walk the same listing the exclusion does; a name git
+    emits as raw bytes must be measured, not crash the dispatch."""
+    if os.name == "nt":
+        pytest.skip("filesystem refuses non-UTF-8 file names")
+    raw = os.path.join(os.fsencode(tmp_path), b"\xfe.py")
+    try:
+        with open(raw, "wb") as fh:
+            fh.write(b"x = 1\n")
+    except OSError:
+        pytest.skip("filesystem refuses non-UTF-8 file names")
+    _init_git_repo(tmp_path, {"src/app.py": "value = 1\n"})
+    worktree = patch_proposal._create_worktree(tmp_path)
+    try:
+        listed = cli_doer._tracked_worktree_files(worktree)
+        assert os.fsdecode(b"\xfe.py") in listed
+        assert cli_doer._worktree_exposed_byte_count(worktree) == len("value = 1\n") + 6
+        cli_doer._assert_worktree_files_have_no_secrets(worktree, tmp_path)
+    finally:
+        patch_proposal.cleanup_worktree(tmp_path, worktree)

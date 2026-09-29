@@ -371,6 +371,8 @@ def run_ratchet(
     gates.require_egress_allowed(project_context_text)
     gates.assert_no_secrets(task)
 
+    # Created with Cohort's local records excluded (#306): codex reads every file here on
+    # every iteration, and a keep's commit / a revert's reset leaves them excluded.
     worktree = patch_proposal._create_worktree(repo_root)
     try:
         baseline, _ = _evaluate(worktree, evaluator_cmd, metric_regex, eval_timeout)
