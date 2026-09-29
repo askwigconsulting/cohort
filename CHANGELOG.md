@@ -11,6 +11,8 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-09-28 · Audit r5 hardening
+
 ### Changed
 - **The grok CLI doer is now xAI's Grok Build.** The community `grok-cli` Cohort used to
   drive is unmaintained and its API path was retired (every dispatch returned a 410), and
@@ -20,6 +22,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
   binary rather than a PATH lookup, and accepts either `XAI_API_KEY` (what Grok Build
   reads) or `GROK_API_KEY` (what Cohort's registry declares). Confinement is unchanged and
   still Cohort's bubblewrap jail, not the vendor's own sandbox.
+- Compiled project doers are labelled "(project doer — write-capable)" instead of "advisory
+  office agent"; my-office help derives the gated kinds from `GATED_KINDS`; `--layer` and
+  `--to` are accepted as aliases on the add-* and `edit` commands (#300).
+- Dashboard aggregate cache TTL is 30 s (above the poll), session/feedback feeds parse only the
+  newest records, parity parses canonical once per poll, and the YAML loader uses libyaml when
+  available (#295).
+- CI: bubblewrap can sandbox on ubuntu-24.04 (user namespaces unlocked), the confinement tests
+  fail rather than skip there, and the real-venv bootstrap round-trip runs on Linux (#277).
 
 ### Security
 - **The grok jail no longer mounts the user's real `~/.grok`.** Grok Build stores its saved
@@ -35,9 +45,6 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 - **A quoted `signed_by` key is no longer read as absent (#306).** `'signed_by' = [...]` is
   valid TOML; the array reader now unquotes keys like the scalar reader (#276), so signature
   pinning no longer silently fails open.
-
-
-### Security
 - **A symlinked artifact no longer walks through the my-office quarantine (#285).** Discovery
   (compile and quarantine alike) reads only `<canonical>/<kind-dir>/*.md`, refuses an entry
   whose own `lstat` is a symlink, never descends a linked directory, and a pull that touches a
@@ -97,18 +104,6 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 - Dashboard: every dialog control has a label, `--faint` meets AA inside cards, action buttons
   carry `aria-label`, the three homes are OFFICE / MY OFFICE / PROJECT; `--help` uses plain
   formatting under `NO_COLOR` or `TERM=dumb` (#298, #300).
-
-### Changed
-- Compiled project doers are labelled "(project doer — write-capable)" instead of "advisory
-  office agent"; my-office help derives the gated kinds from `GATED_KINDS`; `--layer` and
-  `--to` are accepted as aliases on the add-* and `edit` commands (#300).
-- Dashboard aggregate cache TTL is 30 s (above the poll), session/feedback feeds parse only the
-  newest records, parity parses canonical once per poll, and the YAML loader uses libyaml when
-  available (#295).
-- CI: bubblewrap can sandbox on ubuntu-24.04 (user namespaces unlocked), the confinement tests
-  fail rather than skip there, and the real-venv bootstrap round-trip runs on Linux (#277).
-
-### Fixed
 - **Secret scanner: quoted keys and label-glued assignments were exempt (#265).** The
   generic-assignment rule required the separator to follow the identifier directly, so
   `{"password": "..."}` (JSON, the shape a config dump or API error body takes) and quoted
@@ -988,7 +983,8 @@ repo, compiled from a single canonical source.
   never edits canonical (Phase 8).
 - Design notes (`docs/DESIGN.md`), a worked example, CI, and end-to-end tests (Phase 9).
 
-[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/askwigconsulting/cohort/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/askwigconsulting/cohort/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/askwigconsulting/cohort/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/askwigconsulting/cohort/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/askwigconsulting/cohort/compare/v0.14.0...v0.15.0
