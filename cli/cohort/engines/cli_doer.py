@@ -879,6 +879,38 @@ def _vendor_binary_binds(name: str) -> list[str]:
     return binds
 
 
+# Directory names under a cert tree that hold keys rather than trust anchors.
+_PRIVATE_KEY_DIR_NAMES = frozenset({"private", "entitlement"})
+
+
+def _private_key_dirs(tree: Path) -> list[str]:
+    """Every ``private``/``entitlement`` directory under ``tree``, for the jail to shadow,
+    spelled as the jail sees it (``tree`` is bound at its own path).
+
+    Found by name at any depth rather than from a fixed list: layouts differ by distro, and
+    a fixed list misses e.g. ``/etc/pki/akmods/private``. A match is not descended into. A
+    symlinked match is not mounted over itself (bwrap would follow it) — its target is
+    shadowed instead when that target is a directory inside ``tree``; a target outside
+    ``tree`` is not bound, so it dangles in the jail and needs nothing. Symlinks are never
+    walked, so the walk cannot loop; an unreadable directory is skipped, not raised.
+    """
+    found: list[str] = []
+    real_tree = tree.resolve()
+    for parent, dirs, _files in os.walk(tree, followlinks=False):
+        for name in list(dirs):
+            if name not in _PRIVATE_KEY_DIR_NAMES:
+                continue
+            dirs.remove(name)
+            path = Path(parent) / name
+            if not path.is_symlink():
+                found.append(str(path))
+                continue
+            target = path.resolve()
+            if target.is_dir() and real_tree in target.parents:
+                found.append(str(tree / target.relative_to(real_tree)))
+    return found
+
+
 def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> list[str]:
     """A bubblewrap invocation that runs ``inner`` with ``worktree`` as the ONLY
     persistent writable path.
@@ -897,7 +929,9 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
     *writes* to the worktree, but ``/usr`` and a **minimal ``/etc`` subset** stay readable
     inside the jail — only the paths grok needs for TLS and name resolution (``/etc/ssl``,
     ``/etc/resolv.conf``, ``/etc/hosts``, ``/etc/nsswitch.conf``, and the CA-store dirs
-    ``/etc/ca-certificates`` / ``/etc/pki`` where present), each bound only if it exists.
+    ``/etc/ca-certificates`` / ``/etc/pki`` where present), each bound only if it exists,
+    with the key-holding ``private``/``entitlement`` subtrees of the cert trees shadowed
+    by an empty tmpfs (:func:`_private_key_dirs`, #236).
     The rest of ``/etc`` and the real home are NOT mounted, so grok cannot read host
     secrets outside the worktree; but this is a *reduced*, not eliminated, read surface, so
     do not read it as "grok can read nothing outside the worktree." A repo that must keep
@@ -940,6 +974,16 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
     ):
         if Path(p).exists():
             argv += ["--ro-bind", p, p]
+    # The cert trees carry private subtrees next to the public certs — local-service TLS
+    # keys, entitlement certs, and on Fedora the akmods kernel-module signing key. TLS needs
+    # none of them, so each is covered by an empty tmpfs AFTER its bind (bwrap applies
+    # mounts in argv order). Usually root-0700 already; this makes it independent of host
+    # permissions (#236). Shadowing rather than binding cert leaves keeps every distro's
+    # layout working.
+    for tree in ("/etc/ssl", "/etc/pki"):
+        if Path(tree).exists():
+            for private in _private_key_dirs(Path(tree)):
+                argv += ["--tmpfs", private]
     # /lib /lib64 /bin /sbin are real dirs on some distros and usr-merge symlinks on
     # others; bind whichever actually exist so the node runtime resolves either way.
     for p in ("/lib", "/lib64", "/bin", "/sbin"):
@@ -1028,24 +1072,44 @@ def run_grok_in_worktree(
 
 
 def _egress_gate_text(repo_root: Path, project_context_text: str) -> str:
-    """Return the text the egress gate must judge, deriving it from repo state when the
-    caller omitted it.
+    """Return the project context a caller works with: the explicit
+    ``project_context_text`` when given, else the repo's own
+    ``.cohort/project_context.md`` (#229).
 
-    #229: a caller that omits ``project_context_text`` must not thereby ship an opted-out
-    repo — a bare ``run_*_doer(task, repo_root=...)`` would otherwise pass ``""`` and the
-    egress gate would read that as "not opted out". So when the kwarg is empty we read the
-    repo's own ``repo_root/.cohort/project_context.md`` and gate on that, exactly as the
-    CLI entrypoints already do. A non-empty kwarg is an explicit override and is kept
-    verbatim (it never *loosens* the gate — the derivation only ever adds an opt-out
-    signal). The file read is not error-guarded on purpose: if it exists but cannot be
-    read, the OSError propagates and the dispatch aborts (fail closed), never fails open.
+    This is the *context*, not the egress decision: the gate is
+    :func:`_require_egress_allowed`, which judges the kwarg and the repo file separately,
+    so a non-empty kwarg returned here can never stand in for the repo's own opt-out. The
+    file read is not error-guarded on purpose: an unreadable file aborts (fail closed).
     """
     if project_context_text:
         return project_context_text
+    return _repo_context_text(repo_root)
+
+
+def _repo_context_text(repo_root: Path) -> str:
+    """The repo's own ``.cohort/project_context.md``, or ``""`` when it has none. Not
+    error-guarded: an unreadable file aborts the dispatch (fail closed)."""
     context_path = repo_root / ".cohort" / "project_context.md"
     if context_path.is_file():
         return context_path.read_text(encoding="utf-8")
     return ""
+
+
+def _require_egress_allowed(repo_root: Path, project_context_text: str) -> None:
+    """Refuse egress if the caller's context **or** the repo's own file opts out.
+
+    Each source is judged on its own rather than concatenated: an ``## Egress`` heading
+    in one and a ``cohort:egress=allow`` marker in the other must not combine into
+    "allowed". An explicit ``project_context_text`` can therefore add an opt-out but never
+    remove the repo's — before this, any non-empty kwarg replaced the on-disk file, so a
+    caller passing allow-marked text shipped a repo that had opted out (#229 residual).
+
+    Raises:
+        gates.EgressBlockedError: either source opts out.
+        OSError: the repo's context file exists but cannot be read (fail closed).
+    """
+    gates.require_egress_allowed(project_context_text)
+    gates.require_egress_allowed(_repo_context_text(repo_root))
 
 
 def _grok_gated_worktree(
@@ -1090,10 +1154,10 @@ def _grok_gated_worktree(
         raise DoerError("task is empty")
 
     _assert_grok_sandbox_available()  # fail fast — never create a worktree we can't use
-    # Derive the egress context from repo state when the caller omitted it, so an opted-out
-    # repo can't be shipped by dropping the kwarg (#229). Gate ORDER is unchanged.
-    egress_text = _egress_gate_text(repo_root, project_context_text)
-    gates.require_egress_allowed(egress_text)
+    # Judge the caller's context and the repo's own file separately, so an opted-out repo
+    # can't be shipped by dropping the kwarg or by passing an allowing one (#229). Gate
+    # ORDER is unchanged.
+    _require_egress_allowed(repo_root, project_context_text)
     gates.assert_no_secrets(task)
 
     worktree = patch_proposal._create_worktree(repo_root)
@@ -1266,11 +1330,10 @@ def run_codex_doer(
 
     # Gate the outbound task BEFORE spawning the CLI: honor the repo egress opt-out and
     # refuse a task that carries a secret. (The CLI then reads only committed worktree
-    # files, and its writes are OS-confined to the worktree.) Derive the egress context
-    # from repo state when the caller omitted it so an opted-out repo can't be shipped by
-    # dropping the kwarg (#229); gate ORDER is unchanged.
-    egress_text = _egress_gate_text(repo_root, project_context_text)
-    gates.require_egress_allowed(egress_text)
+    # files, and its writes are OS-confined to the worktree.) The caller's context and the
+    # repo's own file are judged separately, so an opted-out repo can't be shipped by
+    # dropping the kwarg or passing an allowing one (#229); gate ORDER is unchanged.
+    _require_egress_allowed(repo_root, project_context_text)
     gates.assert_no_secrets(task)
 
     worktree = patch_proposal._create_worktree(repo_root)
