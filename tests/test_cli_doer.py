@@ -251,6 +251,51 @@ def test_grok_egress_optout_derived_from_repo_when_kwarg_omitted(
     assert _worktree_count(tmp_path) == 1
 
 
+_REPO_DENY = {".cohort/project_context.md": "## Egress\n\ncohort:egress=deny\n"}
+_KWARG_ALLOW = "## Egress\n\ncohort:egress=allow\n"
+
+
+def test_repo_optout_wins_over_an_allowing_kwarg_for_the_codex_doer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
+) -> None:
+    """#229 residual: an explicit context may add an opt-out but never remove the repo's
+    own. A caller passing allow-marked text must not ship a repo that opted out on disk."""
+    _init_git_repo(tmp_path, {"a.py": "1\n", **_REPO_DENY})
+    monkeypatch.setattr(
+        "cohort.engines.cli_doer._launch_vendor_cli", _fake_codex({"a.py": "2\n"})
+    )
+    with pytest.raises(gates.EgressBlockedError):
+        cli_doer.run_doer("gpt", "t", repo_root=tmp_path, project_context_text=_KWARG_ALLOW)
+    assert _worktree_count(tmp_path) == 1
+
+
+def test_repo_optout_wins_over_an_allowing_kwarg_for_the_grok_doer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _grok_installed
+) -> None:
+    _init_git_repo(tmp_path, {"a.py": "1\n", **_REPO_DENY})
+    calls, spy = _spy_grok()
+    monkeypatch.setattr(cli_doer, "run_grok_in_worktree", spy)
+    with pytest.raises(gates.EgressBlockedError):
+        cli_doer.run_grok_review(
+            "review", repo_root=tmp_path, project_context_text=_KWARG_ALLOW
+        )
+    assert calls["n"] == 0
+
+
+def test_a_kwarg_optout_still_blocks_a_repo_that_allows(
+    tmp_path: Path, _codex_installed
+) -> None:
+    """The kwarg keeps its power to add an opt-out: deny from either source refuses."""
+    _init_git_repo(
+        tmp_path,
+        {"a.py": "1\n", ".cohort/project_context.md": "## Egress\n\ncohort:egress=allow\n"},
+    )
+    with pytest.raises(gates.EgressBlockedError):
+        cli_doer.run_doer(
+            "gpt", "t", repo_root=tmp_path, project_context_text="cohort:egress=deny\n"
+        )
+
+
 def test_explicit_project_context_kwarg_overrides_repo_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _codex_installed
 ) -> None:

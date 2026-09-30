@@ -1072,24 +1072,44 @@ def run_grok_in_worktree(
 
 
 def _egress_gate_text(repo_root: Path, project_context_text: str) -> str:
-    """Return the text the egress gate must judge, deriving it from repo state when the
-    caller omitted it.
+    """Return the project context a caller works with: the explicit
+    ``project_context_text`` when given, else the repo's own
+    ``.cohort/project_context.md`` (#229).
 
-    #229: a caller that omits ``project_context_text`` must not thereby ship an opted-out
-    repo — a bare ``run_*_doer(task, repo_root=...)`` would otherwise pass ``""`` and the
-    egress gate would read that as "not opted out". So when the kwarg is empty we read the
-    repo's own ``repo_root/.cohort/project_context.md`` and gate on that, exactly as the
-    CLI entrypoints already do. A non-empty kwarg is an explicit override and is kept
-    verbatim (it never *loosens* the gate — the derivation only ever adds an opt-out
-    signal). The file read is not error-guarded on purpose: if it exists but cannot be
-    read, the OSError propagates and the dispatch aborts (fail closed), never fails open.
+    This is the *context*, not the egress decision: the gate is
+    :func:`_require_egress_allowed`, which judges the kwarg and the repo file separately,
+    so a non-empty kwarg returned here can never stand in for the repo's own opt-out. The
+    file read is not error-guarded on purpose: an unreadable file aborts (fail closed).
     """
     if project_context_text:
         return project_context_text
+    return _repo_context_text(repo_root)
+
+
+def _repo_context_text(repo_root: Path) -> str:
+    """The repo's own ``.cohort/project_context.md``, or ``""`` when it has none. Not
+    error-guarded: an unreadable file aborts the dispatch (fail closed)."""
     context_path = repo_root / ".cohort" / "project_context.md"
     if context_path.is_file():
         return context_path.read_text(encoding="utf-8")
     return ""
+
+
+def _require_egress_allowed(repo_root: Path, project_context_text: str) -> None:
+    """Refuse egress if the caller's context **or** the repo's own file opts out.
+
+    Each source is judged on its own rather than concatenated: an ``## Egress`` heading
+    in one and a ``cohort:egress=allow`` marker in the other must not combine into
+    "allowed". An explicit ``project_context_text`` can therefore add an opt-out but never
+    remove the repo's — before this, any non-empty kwarg replaced the on-disk file, so a
+    caller passing allow-marked text shipped a repo that had opted out (#229 residual).
+
+    Raises:
+        gates.EgressBlockedError: either source opts out.
+        OSError: the repo's context file exists but cannot be read (fail closed).
+    """
+    gates.require_egress_allowed(project_context_text)
+    gates.require_egress_allowed(_repo_context_text(repo_root))
 
 
 def _grok_gated_worktree(
@@ -1134,10 +1154,10 @@ def _grok_gated_worktree(
         raise DoerError("task is empty")
 
     _assert_grok_sandbox_available()  # fail fast — never create a worktree we can't use
-    # Derive the egress context from repo state when the caller omitted it, so an opted-out
-    # repo can't be shipped by dropping the kwarg (#229). Gate ORDER is unchanged.
-    egress_text = _egress_gate_text(repo_root, project_context_text)
-    gates.require_egress_allowed(egress_text)
+    # Judge the caller's context and the repo's own file separately, so an opted-out repo
+    # can't be shipped by dropping the kwarg or by passing an allowing one (#229). Gate
+    # ORDER is unchanged.
+    _require_egress_allowed(repo_root, project_context_text)
     gates.assert_no_secrets(task)
 
     worktree = patch_proposal._create_worktree(repo_root)
@@ -1310,11 +1330,10 @@ def run_codex_doer(
 
     # Gate the outbound task BEFORE spawning the CLI: honor the repo egress opt-out and
     # refuse a task that carries a secret. (The CLI then reads only committed worktree
-    # files, and its writes are OS-confined to the worktree.) Derive the egress context
-    # from repo state when the caller omitted it so an opted-out repo can't be shipped by
-    # dropping the kwarg (#229); gate ORDER is unchanged.
-    egress_text = _egress_gate_text(repo_root, project_context_text)
-    gates.require_egress_allowed(egress_text)
+    # files, and its writes are OS-confined to the worktree.) The caller's context and the
+    # repo's own file are judged separately, so an opted-out repo can't be shipped by
+    # dropping the kwarg or passing an allowing one (#229); gate ORDER is unchanged.
+    _require_egress_allowed(repo_root, project_context_text)
     gates.assert_no_secrets(task)
 
     worktree = patch_proposal._create_worktree(repo_root)
