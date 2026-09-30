@@ -879,6 +879,38 @@ def _vendor_binary_binds(name: str) -> list[str]:
     return binds
 
 
+# Directory names under a cert tree that hold keys rather than trust anchors.
+_PRIVATE_KEY_DIR_NAMES = frozenset({"private", "entitlement"})
+
+
+def _private_key_dirs(tree: Path) -> list[str]:
+    """Every ``private``/``entitlement`` directory under ``tree``, for the jail to shadow,
+    spelled as the jail sees it (``tree`` is bound at its own path).
+
+    Found by name at any depth rather than from a fixed list: layouts differ by distro, and
+    a fixed list misses e.g. ``/etc/pki/akmods/private``. A match is not descended into. A
+    symlinked match is not mounted over itself (bwrap would follow it) — its target is
+    shadowed instead when that target is a directory inside ``tree``; a target outside
+    ``tree`` is not bound, so it dangles in the jail and needs nothing. Symlinks are never
+    walked, so the walk cannot loop; an unreadable directory is skipped, not raised.
+    """
+    found: list[str] = []
+    real_tree = tree.resolve()
+    for parent, dirs, _files in os.walk(tree, followlinks=False):
+        for name in list(dirs):
+            if name not in _PRIVATE_KEY_DIR_NAMES:
+                continue
+            dirs.remove(name)
+            path = Path(parent) / name
+            if not path.is_symlink():
+                found.append(str(path))
+                continue
+            target = path.resolve()
+            if target.is_dir() and real_tree in target.parents:
+                found.append(str(tree / target.relative_to(real_tree)))
+    return found
+
+
 def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> list[str]:
     """A bubblewrap invocation that runs ``inner`` with ``worktree`` as the ONLY
     persistent writable path.
@@ -897,7 +929,9 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
     *writes* to the worktree, but ``/usr`` and a **minimal ``/etc`` subset** stay readable
     inside the jail — only the paths grok needs for TLS and name resolution (``/etc/ssl``,
     ``/etc/resolv.conf``, ``/etc/hosts``, ``/etc/nsswitch.conf``, and the CA-store dirs
-    ``/etc/ca-certificates`` / ``/etc/pki`` where present), each bound only if it exists.
+    ``/etc/ca-certificates`` / ``/etc/pki`` where present), each bound only if it exists,
+    with the key-holding ``private``/``entitlement`` subtrees of the cert trees shadowed
+    by an empty tmpfs (:func:`_private_key_dirs`, #236).
     The rest of ``/etc`` and the real home are NOT mounted, so grok cannot read host
     secrets outside the worktree; but this is a *reduced*, not eliminated, read surface, so
     do not read it as "grok can read nothing outside the worktree." A repo that must keep
@@ -940,6 +974,16 @@ def _grok_sandbox_argv(worktree: Path, sandbox_home: Path, inner: list[str]) -> 
     ):
         if Path(p).exists():
             argv += ["--ro-bind", p, p]
+    # The cert trees carry private subtrees next to the public certs — local-service TLS
+    # keys, entitlement certs, and on Fedora the akmods kernel-module signing key. TLS needs
+    # none of them, so each is covered by an empty tmpfs AFTER its bind (bwrap applies
+    # mounts in argv order). Usually root-0700 already; this makes it independent of host
+    # permissions (#236). Shadowing rather than binding cert leaves keeps every distro's
+    # layout working.
+    for tree in ("/etc/ssl", "/etc/pki"):
+        if Path(tree).exists():
+            for private in _private_key_dirs(Path(tree)):
+                argv += ["--tmpfs", private]
     # /lib /lib64 /bin /sbin are real dirs on some distros and usr-merge symlinks on
     # others; bind whichever actually exist so the node runtime resolves either way.
     for p in ("/lib", "/lib64", "/bin", "/sbin"):

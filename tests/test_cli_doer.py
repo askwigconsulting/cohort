@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from cohort.engines import cli_doer, gates, patch_proposal
+from conftest import requires_symlinks
 
 
 class _FakePopen:
@@ -375,6 +376,71 @@ def test_grok_sandbox_argv_narrows_etc_to_tls_and_resolver(tmp_path):
     assert all(p in allowed for p in etc_binds)  # only the TLS/resolver subset
     if Path("/etc/ssl").exists():                # the cert store, on any real Linux host
         assert "--ro-bind /etc/ssl /etc/ssl" in joined
+
+
+def test_private_key_dirs_under_the_cert_trees_are_found(tmp_path):
+    """#236: every ``private``/``entitlement`` directory under a bound cert tree is found —
+    including ones the issue didn't list (Fedora's ``/etc/pki/akmods/private`` holds kernel
+    module signing keys) — without descending into a match."""
+    (tmp_path / "ssl" / "private").mkdir(parents=True)
+    (tmp_path / "ssl" / "certs").mkdir()
+    (tmp_path / "pki" / "tls" / "private").mkdir(parents=True)
+    (tmp_path / "pki" / "akmods" / "private" / "private").mkdir(parents=True)
+    (tmp_path / "pki" / "entitlement").mkdir()
+    (tmp_path / "pki" / "tls" / "certs").mkdir()
+
+    found = cli_doer._private_key_dirs(tmp_path)
+
+    assert sorted(found) == sorted(
+        str(tmp_path / p)
+        for p in ("ssl/private", "pki/tls/private", "pki/akmods/private", "pki/entitlement")
+    )
+
+
+def test_a_deeply_nested_private_dir_is_still_found(tmp_path):
+    """No depth cap: a key dir six levels down is as exposed by the recursive bind."""
+    deep = tmp_path / "pki" / "a" / "b" / "c" / "d" / "private"
+    deep.mkdir(parents=True)
+    assert cli_doer._private_key_dirs(tmp_path) == [str(deep)]
+
+
+@requires_symlinks
+def test_a_symlinked_private_dir_has_its_in_tree_target_shadowed(tmp_path):
+    """``private -> keys``: mounting over the link would follow it, so the target is what
+    gets shadowed — spelled under the tree as the jail sees it."""
+    (tmp_path / "ssl" / "keys").mkdir(parents=True)
+    (tmp_path / "ssl" / "private").symlink_to(tmp_path / "ssl" / "keys")
+    assert cli_doer._private_key_dirs(tmp_path / "ssl") == [str(tmp_path / "ssl" / "keys")]
+
+
+@requires_symlinks
+def test_a_symlinked_private_dir_pointing_outside_the_tree_needs_no_shadow(tmp_path):
+    """A target outside the bound tree isn't mounted in the jail, so the link dangles."""
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "ssl").mkdir()
+    (tmp_path / "ssl" / "private").symlink_to(tmp_path / "elsewhere")
+    assert cli_doer._private_key_dirs(tmp_path / "ssl") == []
+
+
+def test_grok_sandbox_argv_shadows_private_key_dirs_after_binding_them(
+    tmp_path, monkeypatch
+):
+    """#236: the private subtrees of a bound cert tree are covered by an empty tmpfs, and
+    the tmpfs comes AFTER the bind (bwrap applies mounts in argv order)."""
+    shadowed = ["/etc/pki/tls/private", "/etc/ssl/private"]
+    monkeypatch.setattr(
+        cli_doer, "_private_key_dirs",
+        lambda root: [p for p in shadowed if p.startswith(str(root) + "/")],
+    )
+    monkeypatch.setattr(cli_doer.Path, "exists", lambda self: str(self) in {"/etc/ssl", "/etc/pki"})
+
+    argv = cli_doer._grok_sandbox_argv(tmp_path / "wt", tmp_path / "home", ["grok"])
+
+    for private in shadowed:
+        tree = "/etc/pki" if private.startswith("/etc/pki") else "/etc/ssl"
+        bind = argv.index(tree)  # the --ro-bind source position
+        tmpfs = [i for i, tok in enumerate(argv) if tok == "--tmpfs" and argv[i + 1] == private]
+        assert tmpfs and tmpfs[0] > bind
 
 
 def test_grok_sandbox_argv_has_new_session_for_tiocsti(tmp_path):
