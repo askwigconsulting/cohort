@@ -475,9 +475,9 @@ def test_grok_sandbox_argv_shadows_private_key_dirs_after_binding_them(
     shadowed = ["/etc/pki/tls/private", "/etc/ssl/private"]
     monkeypatch.setattr(
         cli_doer, "_private_key_dirs",
-        lambda root: [p for p in shadowed if p.startswith(str(root) + "/")],
+        lambda root: [p for p in shadowed if p.startswith(root.as_posix() + "/")],
     )
-    monkeypatch.setattr(cli_doer.Path, "exists", lambda self: str(self) in {"/etc/ssl", "/etc/pki"})
+    monkeypatch.setattr(cli_doer.Path, "exists", lambda self: self.as_posix() in {"/etc/ssl", "/etc/pki"})
 
     argv = cli_doer._grok_sandbox_argv(tmp_path / "wt", tmp_path / "home", ["grok"])
 
