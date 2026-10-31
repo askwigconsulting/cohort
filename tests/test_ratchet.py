@@ -153,6 +153,28 @@ def test_ratchet_honors_egress_optout_before_any_doer_call(
     assert reached["doer"] is False
 
 
+def test_ratchet_repo_optout_wins_over_an_allowing_kwarg(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#229 residual: an explicit context can't remove the repo's own on-disk opt-out."""
+    _init_git_repo(
+        tmp_path,
+        {"metric.txt": "10\n", ".cohort/project_context.md": "## Egress\n\ncohort:egress=deny\n"},
+    )
+    reached = {"doer": False}
+
+    def must_not_run(*a, **k):
+        reached["doer"] = True
+
+    monkeypatch.setattr(ratchet, "_propose_into_worktree", must_not_run)
+    with pytest.raises(gates.EgressBlockedError):
+        ratchet.run_ratchet(
+            "gpt", "t", repo_root=tmp_path, evaluator_cmd=_EVAL, budget=1,
+            project_context_text="## Egress\n\ncohort:egress=allow\n",
+        )
+    assert reached["doer"] is False
+
+
 def test_ratchet_rejects_empty_task_and_evaluator(tmp_path: Path) -> None:
     _init_git_repo(tmp_path, {"metric.txt": "10\n"})
     with pytest.raises(ratchet.RatchetError):

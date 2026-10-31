@@ -11,6 +11,16 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Security
+- **An explicit project context can no longer override a repo's own egress opt-out
+  (#229).** A non-empty `project_context_text` used to replace `.cohort/project_context.md`,
+  so a caller passing allow-marked text shipped a repo that had opted out. Both are now
+  judged separately; either one can opt the repo out. Covers the codex, grok and ratchet
+  paths.
+- **The engine jail hides the cert trees' private subtrees (#236).** `/etc/ssl` and
+  `/etc/pki` are bound for TLS; every `private`/`entitlement` directory under them (e.g.
+  Fedora's akmods module-signing key) is now covered by an empty tmpfs.
+
 ## [0.18.0] — 2026-09-28 · Audit r5 hardening
 
 ### Changed

@@ -367,8 +367,8 @@ def run_ratchet(
     if budget < 1:
         raise RatchetError("budget must be at least 1 iteration")
 
+    cli_doer._require_egress_allowed(repo_root, project_context_text)
     project_context_text = cli_doer._egress_gate_text(repo_root, project_context_text)
-    gates.require_egress_allowed(project_context_text)
     gates.assert_no_secrets(task)
 
     # Created with Cohort's local records excluded (#306): codex reads every file here on
