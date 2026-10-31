@@ -191,7 +191,7 @@ def test_multi_ide_install_with_copilot(home):
         "recompile", "--ide", "claude,codex,cursor,copilot", "--source", str(COHORT_SRC), home=home
     )
     assert proc.returncode == 0, proc.stderr
-    assert len(list((home / ".copilot" / "agents").glob("*.md"))) == 17
+    assert len(list((home / ".copilot" / "agents").glob("*.md"))) == 18
 
 
 def test_slice_uninstall_removes_copilot_only(home):
