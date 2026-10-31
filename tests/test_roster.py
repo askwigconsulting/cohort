@@ -37,6 +37,7 @@ EXPECTED_ROSTER = [
     ("test-engineer", "TestEngineer", "Engineering", "specialist"),
     ("data-analyst", "DataAnalyst", "Data", "specialist"),
     ("researcher", "Researcher", "Research", "specialist"),
+    ("reverse-engineer", "ReverseEngineer", "Security", "specialist"),
 ]
 CLOUD_AGENTS = {"cloud-architect"}
 

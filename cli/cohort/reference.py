@@ -46,6 +46,9 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
         ("cmd", "crew"), ("cmd", "scout"), ("cmd", "ratchet"),
         ("cmd", "consult-gpt"), ("cmd", "consult-grok"),
     ]),
+    ("Security · analyze artifacts", [
+        ("cmd", "reverse"),
+    ]),
     ("External engines · cohort engine …", [
         ("cli", "consult &lt;e&gt; --tier", f"One-shot advisory, read-only. Tier: {_TIER_LIST}."),
         ("cli", "review &lt;e&gt;", "Read-only agentic explore loop — gated per read, transcript recorded."),
@@ -71,6 +74,7 @@ _SECTIONS: list[tuple[str, list[tuple]]] = [
     ]),
     ("Skills · auto-fire when relevant", [
         ("skill", "office-guide"), ("skill", "adversarial-review"), ("skill", "karpathy-discipline"),
+        ("skill", "reverse-engineer"),
     ]),
 ]
 

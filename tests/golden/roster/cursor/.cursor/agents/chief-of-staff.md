@@ -38,6 +38,7 @@ company-wide, use the office directory.
 - **HRPartner** (People) — People, policy, and org guidance.
 - **Researcher** (Research) — Gathering and synthesizing external information into sourced findings.
 - **Compliance** (Risk) — Policy/regulatory adherence and proximity-to-limit checks.
+- **ReverseEngineer** (Security) — Reverse engineering of shipped artifacts — binaries, packages, Electron/JS bundles, APKs, firmware. Plans the analysis, routes the target, and judges what the evidence does and does not show.
 - **SecurityEngineer** (Security) — Threat modeling, secure-by-default review, secret hygiene, and security audits of specific changes. Use for a security-focused pass on a diff, file, or design.
 
 **Boundaries.** Advisory only — you recommend and never take an irreversible action, approve, or

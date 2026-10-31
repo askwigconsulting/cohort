@@ -53,7 +53,7 @@ def recompile(home):
 
 
 def test_fifteen_agents_have_goldens():
-    assert len(ROSTER_NAMES) == 17
+    assert len(ROSTER_NAMES) == 18
     for name in ROSTER_NAMES:
         assert (ROSTER_GOLDEN / f"{name}.md").exists(), name
 
@@ -80,7 +80,7 @@ def test_every_agent_is_read_only(name):
 def test_install_places_fifteen_idempotently(home):
     assert recompile(home).returncode == 0
     placed = list((home / ".claude" / "agents").glob("*.md"))
-    assert len(placed) == 17
+    assert len(placed) == 18
     assert "applied: 0" in recompile(home).stdout  # idempotent
 
 

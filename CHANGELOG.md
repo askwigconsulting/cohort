@@ -11,6 +11,14 @@ While Cohort is pre-1.0, a minor bump may include breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Reverse engineering, method-only.** A `reverse-engineer` skill, a `/reverse` command and an
+  advisory `ReverseEngineer` specialist, adapted from [REA](https://github.com/morluto/rea)
+  (MIT). Analysis is static-first and read-only; running, debugging, instrumenting or
+  capturing traffic waits for an explicit yes at every supervision level, and an authorization
+  statement comes first. REA itself stays optional and user-installed — Cohort does not bundle
+  or fetch it. See `docs/reverse-engineering.md`.
+
 ## [0.18.0] — 2026-09-28 · Audit r5 hardening
 
 ### Changed
